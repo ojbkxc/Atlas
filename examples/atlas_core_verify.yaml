@@ -1,0 +1,20 @@
+# Atlas 自身执行路径验证：不经过旧 pytest，直接由 Atlas DSL + ExecutionEngine 驱动核心 Task。
+# 只读/不落库：打开列表 → 进新建页 → 选客户 → 读 PT → 用 API 交叉断言。
+id: atlas-core-tasks-verify
+steps:
+  - task: open_doc_list
+    page_key: sales_order
+    channel: ui
+  - task: click_new
+    page_key: sales_order
+  - task: select_customer
+    code: CUST0000001
+    code_full: CUST00000010001
+  - task: read_pt
+  - task: assert_api
+    operation: customer_detail
+    args:
+      customer_code: CUST00000010001
+      division_code: DIV-DEMO-0001
+    expect:
+      resultCode: BUG-000

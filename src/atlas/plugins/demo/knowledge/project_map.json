@@ -1,0 +1,8 @@
+{
+  "project": "Demo",
+  "stack": ["Vue 2", "Element UI", "hash routing"],
+  "channels": {"ui": "Playwright", "api": "DemoApi"},
+  "suites": {"demo_sit_regression": "SIT 香港 DEMO PaymentTerm 回归，17 条旧用例通过 LegacyAdapter 执行"},
+  "entrypoints": {"pages": "legacy-suite/legacy-web/lib/pages.py", "api": "legacy-api/scripts/demo_api.py"},
+  "invariants": ["必填字段优先真实 UI", "断言优先 Vue 组件状态", "API 与 UI 共享会话"]
+}

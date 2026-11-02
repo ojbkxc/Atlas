@@ -1,0 +1,19 @@
+# Atlas 自身路径的完整建单验证：DSL 驱动 5 个核心写 Task + API 交叉断言。
+# 会真实在 SIT 建单（备注带「非人工创建」），仅用于验证 Atlas 执行链。
+id: atlas-save-verify
+steps:
+  - task: open_doc_list
+    page_key: sales_order
+    channel: ui
+  - task: click_new
+    page_key: sales_order
+  - task: select_customer
+    code: CUST0000001
+    code_full: CUST00000010001
+  - task: read_pt
+  - task: ensure_warehouse
+    wh: WH-DEMO
+  - task: ensure_sales_person
+  - task: mount_other_header
+  - task: click_save
+  - task: wait_save_result

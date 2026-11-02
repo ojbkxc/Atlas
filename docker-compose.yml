@@ -1,0 +1,15 @@
+services:
+  atlas-linux:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # 只跑离线门禁 + 无头浏览器冒烟；真实 SIT 需要 .env 与网络，按需挂载。
+    environment:
+      ATLAS_BROWSER_CHANNEL: chromium
+    volumes:
+      - ./reports:/app/reports
+    command: >
+      sh -c "python3 -m pytest -q
+      && python3 -m compileall -q src scripts examples
+      && python3 examples/smoke_browser.py
+      && echo LINUX_ACCEPTANCE_PASSED"

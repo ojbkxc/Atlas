@@ -1,0 +1,15 @@
+id: sales-order-default-pt
+plugin: demo
+# 运行前通过 Python 注入 DataProvider；示例只声明条件，不写死单号。
+requires:
+  source_order:
+    entity: SalesOrder
+    where:
+      status: [1003, 1006]
+    strategy: find_only
+steps:
+  - task: open_doc_list
+    page_key: sales_order
+    channel: ui
+  - task: read_pt
+    channel: ui

@@ -1,0 +1,13 @@
+# 复杂单据的状态机示例：只有多状态、需审批回写的单据才用状态机。
+# 线性流程请继续使用 examples/sales_order.yaml 的线性 DSL。
+initial: draft
+terminal: [approved]
+states:
+  draft:
+    - to: submitted
+      task: submit
+  submitted:
+    - to: approved
+      task: approve
+      guard: can_approve
+  approved: []

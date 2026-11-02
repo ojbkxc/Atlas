@@ -1,0 +1,51 @@
+{
+  "policy": "分级而非全量：core 做完整字段校验，high 只查通用规则，minimal 只判存活。数百条接口不逐条写强 schema，避免维护成本压垮收益。",
+  "contracts": [
+    {
+      "name": "客户付款条件",
+      "method": "POST",
+      "path": "/web/legacy-web-mdm/orgCustomerInfo/findEntireCustDetails",
+      "level": "core",
+      "result_code": "BUG-000",
+      "required": {
+        "collectPayments": "array"
+      }
+    },
+    {
+      "name": "销售订单列表",
+      "method": "POST",
+      "path": "/web/demo-sales/saleOrder/getList4Demo",
+      "level": "high"
+    },
+    {
+      "name": "销售订单保存",
+      "method": "POST",
+      "path": "/web/demo-sales/saleOrder/saveSalesOrder",
+      "level": "high"
+    },
+    {
+      "name": "销售变更单列表",
+      "method": "POST",
+      "path": "/web/demo-sales/saleOrderChange/list",
+      "level": "high"
+    },
+    {
+      "name": "销售退货单列表",
+      "method": "POST",
+      "path": "/web/demo-sales/saleOrderReturn/returnList4Demo",
+      "level": "high"
+    },
+    {
+      "name": "来源单查询",
+      "method": "POST",
+      "path": "/web/demo-sales/order/findReturnOrder",
+      "level": "high"
+    },
+    {
+      "name": "LOV 字典",
+      "method": "POST",
+      "path": "/web/demo-api/lov/getByTypes",
+      "level": "minimal"
+    }
+  ]
+}

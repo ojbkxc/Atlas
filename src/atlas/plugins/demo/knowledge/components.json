@@ -1,0 +1,60 @@
+{
+  "components": {
+    "customer_selection": {
+      "selectors": {
+        "dialog": ".el-dialog__wrapper:visible",
+        "search": "button:has(i.demoicon--search)",
+        "confirm": ".el-dialog:visible .el-button--primary"
+      },
+      "models": {"result_table": "toggleRowSelection", "row_key": "vendorCorpNumber"},
+      "notes": "按 vendorCorpNumber 精确命中并断言，禁止盲选第一行；Confirm 需父组件回传"
+    },
+    "payment_terms": {
+      "selectors": {
+        "trigger": ".el-form-item:has(.el-form-item__label) .el-select input",
+        "dropdown": ".el-select-dropdown:visible .el-select-dropdown__item"
+      },
+      "models": {
+        "ui_model": "amountHeader.myform.paymentTerms",
+        "save_model": "OrderHeader.saleOrderForm.paymentTerms"
+      },
+      "notes": "双模型：改选后必须显式同步保存源并断言 headerPT == 目标值"
+    },
+    "order_header": {
+      "selectors": {
+        "warehouse": ".el-form-item:has(.el-form-item__label) .el-select input",
+        "save": "button:has(i.demoicon--save), .app-main button"
+      },
+      "models": {
+        "required_models": ["saleOrderForm", "resetSaleOrderForm", "detail.headerObj"]
+      },
+      "notes": "必填字段（Warehouse/Sales Person）走真实 UI；直写模型不刷新校验状态"
+    },
+    "source_order_modal": {
+      "selectors": {
+        "dialog_title": ".el-dialog__title",
+        "tables": ".el-dialog:visible .el-table"
+      },
+      "models": {
+        "component": "order-select-modal",
+        "selection_models": ["newSelectedAll", "selectedAll", "selectedRow"]
+      },
+      "notes": "必须同时勾单头与 Selected Parts 明细分表；只 toggleRowSelection 不回传父组件"
+    },
+    "spare_part_dialog": {
+      "selectors": {"dialog": ".el-dialog:visible", "table": ".el-dialog:visible .el-table"},
+      "models": {"rows": "vm.data", "selection": "toggleRowSelection"},
+      "notes": "DOM 有行但 vm.data 为空是异步未同步，必须轮询组件状态"
+    },
+    "return_reason": {
+      "selectors": {"tab": ".el-tabs__item:has-text('Return')", "cell_select": ".el-table .el-select"},
+      "models": {"options": "returnReasonList"},
+      "notes": "退货明细 Return Reason 必填，行模型无对应字段，必须真实 UI 填写"
+    },
+    "navigation_menu": {
+      "selectors": {"submenu": "li.el-submenu", "item": "li.el-menu-item"},
+      "models": {},
+      "notes": "菜单需 hover 展开；reload 后语言可能重置为中文，菜单正则必须中英兼容"
+    }
+  }
+}

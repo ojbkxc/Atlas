@@ -1,0 +1,17 @@
+# 双轨示例：把旧项目 step_N 接进 Atlas 流程，不改旧代码。
+# module 为相对旧项目 legacy-web/testcases/ 的路径。
+# 注意：legacy_step 会真实驱动浏览器，运行前必须有已登录会话。
+id: legacy-step-mix
+steps:
+  - task: legacy_step
+    module: demo_sit_regression/01_sales_order_default_pt/sales_order_default_pt.py
+    step: 1
+    save_as: step1_done
+  - task: assert_api
+    operation: sale_order_list
+    args:
+      division_code: DIV-DEMO-0001
+      __page: 1
+      __pagesize: 5
+    expect:
+      data.0.paymentTerms: "NET30"

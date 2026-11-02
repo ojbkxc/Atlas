@@ -1,0 +1,60 @@
+name: atlas-ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+          python -m playwright install --with-deps chromium
+      - name: Offline gate
+        run: |
+          python -m pytest -q
+          python -m compileall -q src scripts examples
+          python -m atlas doctor || true
+      - name: Headless browser smoke (Linux)
+        env:
+          ATLAS_BROWSER_CHANNEL: chromium
+        run: python examples/smoke_browser.py
+
+      - name: System chromium smoke (Linux, when available)
+        env:
+          ATLAS_BROWSER_CHANNEL: ""
+        run: |
+          BROWSER=$(command -v chromium || command -v chromium-browser || true)
+          if [ -z "$BROWSER" ]; then echo "no system chromium on runner; skipped"; exit 0; fi
+          ATLAS_BROWSER_EXECUTABLE="$BROWSER" python examples/smoke_browser.py
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+          python -m playwright install chromium
+      - name: Offline gate
+        run: |
+          python -m pytest -q
+          python -m compileall -q src scripts examples
+      - name: Headless browser smoke (Windows)
+        run: python examples/smoke_browser.py

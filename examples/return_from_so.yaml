@@ -1,0 +1,38 @@
+# 方案 3.3 完整示例：API 造数 + UI 验证 + assert 块断言。
+# 运行：atlas run examples/return_from_so.yaml --create-quota 1
+id: return-from-so
+plugin: demo
+requires:
+  source_order:
+    entity: SalesOrder
+    where:
+      status: [1003, 1006]
+    strategy: find_or_create
+    on_env_blocked: skip
+steps:
+  - task: open_doc_list
+    page_key: sales_order
+    channel: ui
+  - task: click_new
+    page_key: sales_order
+  - task: select_customer
+    code: CUST0000001
+    code_full: CUST00000010001
+  - task: read_pt
+  - task: ensure_warehouse
+    wh: WH-DEMO
+  - task: ensure_sales_person
+  - task: mount_other_header
+  - task: click_save
+  - task: wait_save_result
+assert:
+  - document_no != ""
+  - task: assert_api
+    operation: sale_order_list
+    args:
+      division_code: DIV-DEMO-0001
+      __page: 1
+      __pagesize: 5
+    expect:
+      resultCode: BUG-000
+on_env_blocked: skip
