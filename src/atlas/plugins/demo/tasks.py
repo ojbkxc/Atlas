@@ -1,33 +1,104 @@
 """首批 10 个核心 Task：元数据可独立用于流程拼装，实现委托旧页面库。"""
 from __future__ import annotations
 import importlib.util
+import os
 import sys
 from pathlib import Path
 from typing import Any
 from ...core import Channel, Task, TaskMetadata
 
-def _session_default(key: str):
-    """业务会话默认值的唯一数据源（knowledge/session.json）。Task 与 CLI/Runtime 同源，不漂移。"""
-    import json
-    return json.loads((Path(__file__).parent / "knowledge" / "session.json")
-                      .read_text(encoding="utf-8"))[key]
+# session.json 是虚构示例默认值；指向真实业务时用环境变量整体覆盖（与 bridge 映射同精神：
+# 引擎/仓库零真实字面量，真实值只在本机 .env 里）。
+SESSION_ENV_KEYS = {"account": "ATLAS_SESSION_ACCOUNT", "ou": "ATLAS_SESSION_OU",
+                    "division_code": "ATLAS_SESSION_DIVISION", "language": "ATLAS_SESSION_LANGUAGE"}
 
-_DEFAULT_DIVISION = _session_default("division_code")
+def overlay_session(defaults: dict) -> dict:
+    for key, env in SESSION_ENV_KEYS.items():
+        value = os.environ.get(env, "").strip()
+        if value:
+            defaults[key] = value
+    return defaults
+
+
+# 已批准 overlay 坐标 → 会话链环境变量。空值与非会话键不改执行路径（只做数据池参考）。
+_BU_ENV_KEYS = {"ou": "ATLAS_SESSION_OU", "division": "ATLAS_SESSION_DIVISION",
+                "division_code": "ATLAS_SESSION_DIVISION", "account": "ATLAS_SESSION_ACCOUNT",
+                "language": "ATLAS_SESSION_LANGUAGE"}
+
+def _is_coordinate(value) -> bool:
+    """合法坐标 = 非空标量（字符串/数字），与 probes.find_document_number 的 #117 单号
+    判据同纪律（#92/#97：多点位同一判据收敛）。旧判据 `value in (None, "")` 漏了空容器：
+    `[]`/`{}` 被 `str()` 成字面量 `"[]"`/`"{}"` 写进 ATLAS_SESSION_*（探针实锤
+    2026-11-04），真实执行 switch_to_ou 拿 `"[]"` 必超时——坏形态伪装合法坐标
+    （#77 键在值空不算 / #102 假绿同族）。bool 也不算坐标（True→"True" 是假 OU），
+    数字 0/空白串以外照常接受（#115：标量正常路径零涟漪，不翻成错误）。"""
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, (str, int, float)):
+        return str(value).strip() != ""
+    return False
+
+def apply_bu(bu: str, overlays: dict, environ=os.environ) -> dict:
+    """`--bu` 已批准坐标接进 session 默认链；显式 ATLAS_SESSION_* env 优先于 --bu。
+
+    #134：顶层 overlays 由 `load_overlays` 保证是 dict，但**某个 BU 的值**手滑存成
+    数组/字符串（合法 JSON 但形态不对，#127 同族）时旧实现 `.items()` 裸
+    AttributeError——CLI run --bu 只捕 KeyError，漏网变 traceback。现点名
+    「BU 值形态非映射」抛 ValueError（可定位归因，接 #79/#80 rc2 口径）。"""
+    if bu not in overlays:
+        raise KeyError(f"BU 不在已批准 overlay 库：{bu!r}，可用：{sorted(overlays)}")
+    coords = overlays[bu]
+    if not isinstance(coords, dict):
+        raise ValueError(f"BU {bu!r} 的坐标形态是 {type(coords).__name__} 而非映射，"
+                         f"无法接入会话链：{coords!r}")
+    applied, ignored = {}, []
+    for key, value in coords.items():
+        env = _BU_ENV_KEYS.get(key)
+        if not env or not _is_coordinate(value):
+            ignored.append(key)
+            continue
+        if environ.get(env):
+            ignored.append(f"{key}(env显式优先)")
+            continue
+        environ[env] = str(value)
+        applied[key] = value
+    return {"bu": bu, "applied": applied, "ignored": ignored}
+
+def _session_default(key: str):
+    """业务会话默认值的唯一数据源——委托 `DemoPlugin.session_defaults()`
+    （私有→包内逐文件回退 + ATLAS_SESSION_* 覆盖）。
+
+    #137：旧实现自己 `json.loads` 直读**包内** session.json，绕开 KnowledgeBase
+    回退链——探针实锤设 `ATLAS_KNOWLEDGE_DIR` 指真实业务后，CLI/运行时
+    （session_defaults）拿私有真实 division，而 auto API 快路径
+    （select_customer/read_pt 的 division 兜底）拿虚构默认查错客户：
+    两份「唯一来源」漂移（#92 改一漏一），红线 #11「真实值只在私有目录」被
+    引擎侧旁路击穿。现收敛单一真相；私有文件损坏时与 CLI 同回落包内（load 语义），
+    行为一致可预期。"""
+    from .plugin import DemoPlugin
+    try:
+        return DemoPlugin().session_defaults()[key]
+    except KeyError:
+        raise KeyError(
+            f"会话默认值缺键 {key!r}：私有/包内 session.json 未覆盖该键，"
+            f"且 ATLAS_SESSION_* 未设置——补齐文件或显式设 env") from None
+
 
 class Pages:
     def __init__(self, path: Path | None = None):
         if path is None:
             from ...config import AtlasConfig
             config = AtlasConfig.from_root()
-            path = config.external_project("ATLAS_LEGACY_PROJECT", "../legacy-suite") / "legacy-web" / "lib" / "pages.py"
+            path = (config.legacy_project / config.legacy_web / "lib" / "pages.py")
         self.path = Path(path)
         self._module = None
 
     def get(self):
         if self._module is None:
-            # 旧 pages.py 依赖 `from lib.runner import ...`，必须先把 legacy-web/ 放进 sys.path，
+            # 旧 pages.py 依赖 `from lib.runner import ...`，必须先把 web 子目录
+            # （默认 legacy-web，真实项目可能是 iservice）放进 sys.path，
             # 否则真实执行时报 No module named 'lib'（离线测试发现不了）。
-            root = self.path.parent.parent  # .../legacy-web
+            root = self.path.parent.parent  # .../<legacy_web>
             if (root / "lib").is_dir() and str(root) not in sys.path:
                 sys.path.insert(0, str(root))
             spec = importlib.util.spec_from_file_location("atlas_demo_legacy_pages", self.path)
@@ -109,7 +180,7 @@ class SelectCustomerTask(DemoTask):
         if "customer_detail" not in getattr(api, "atlas_allowed_operations", set()):
             raise NotImplementedError("customer_detail 不在白名单")
         code_full = self.params.get("code_full") or self.params.get("code")
-        division = self.params.get("division_code", _DEFAULT_DIVISION)
+        division = self.params.get("division_code") or _session_default("division_code")
         response = api.customer_detail(code_full, division)
         if not response.get("ok"):
             raise NotImplementedError(f"API 查客户失败：{response.get('status')}")
@@ -132,7 +203,7 @@ class ReadPtTask(DemoTask):
         code_full = customer.get("code_full") or customer.get("code")
         if not code_full:
             raise NotImplementedError("ctx 缺少 customer.code_full")
-        division = self.params.get("division_code", _DEFAULT_DIVISION)
+        division = self.params.get("division_code") or _session_default("division_code")
         response = api.customer_detail(code_full, division)
         if not response.get("ok"):
             raise NotImplementedError(f"API 查客户失败：{response.get('status')}")

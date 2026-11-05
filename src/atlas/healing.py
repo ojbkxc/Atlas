@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 from .core import Channel, Task
+from .failures import CONTROL_FLOW
 
 @dataclass
 class HealingProposal:
@@ -39,9 +40,22 @@ class Healer:
 
         写操作重复执行可能造成重复建单/提交，一律不自动重试。
         没有命中知识时也不重试——盲目重试会掩盖真实缺陷并放大 flaky。
-        """
+        匹配必须带 status="approved" 过滤：pending 草稿的 trigger 更长时会遮蔽
+        同异常的已审核坑点（纯按长度择一后单看胜者状态），正当自愈被静默压制。
+
+        #108：控制流异常（KeyboardInterrupt/SystemExit/GeneratorExit）一律拒绝自愈——
+        它们是操作者/宿主的终止信号，不是业务失败，remedy 知识无从「修复」它们。
+        探针实锤可达路径：draft_pitfall 的 trigger 恰是异常类名，人审批准（review
+        --template/--apply）一条含 KeyboardInterrupt 的草稿后，`trigger in text` 命中
+        + approved + remedy → Ctrl-C 被就地重试吞掉继续执行，违反 #70 的 interrupted
+        终态口径与 dsl.py:184 既有语义（engine 的 `except BaseException` 本就捕 KI，
+        此前只靠 trigger 恰不命中侥幸挡住，无任何防线）。
+        #114：判据收敛 failures.CONTROL_FLOW 单一真相——recorder/engine 同源；
+        此处若仍内联硬编码三元组，新增控制流类型时只改一处必漂移（#92/#97 同红线）。"""
+        if isinstance(exc, CONTROL_FLOW):
+            return False
         if not task.metadata.read_only or task.metadata.channel == Channel.API:
             return False
-        hit = self.knowledge.match_pitfall(exc, task.metadata.domain)
-        return bool(hit and hit.get("status") == "approved" and hit.get("remedy"))
+        hit = self.knowledge.match_pitfall(exc, task.metadata.domain, status="approved")
+        return bool(hit and hit.get("remedy"))
 

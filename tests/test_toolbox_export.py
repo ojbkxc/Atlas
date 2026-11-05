@@ -33,8 +33,10 @@ def test_sensor_saves_har_to_disk(tmp_path):
     assert json.loads(path.read_text(encoding="utf-8"))["log"]["entries"] == []
 
 
-def test_sensor_learn_contracts_imports_weak_ones():
-    """learn_contracts 从 200 状态的抓包导入弱契约（high 级）。"""
+def test_sensor_learn_contracts_imports_liveness_ones():
+    """learn_contracts 把 200 抓包登记为 minimal（存活级），不自动升 high。
+    high 要求 data 为对象，会误判返回数组的列表接口；minimal 只判存活，安全且符合
+    「新增接口默认落 minimal」的分级纪律。"""
     from atlas.contracts import ContractRegistry
     class LearningBridge:
         def call(self, method, params=None):
@@ -46,7 +48,10 @@ def test_sensor_learn_contracts_imports_weak_ones():
     sensor = WebToolboxSensor(LearningBridge(), contracts=registry)
     count = sensor.learn_contracts()
     assert count == 1
-    assert registry.stats()["high"] == 1
+    assert registry.stats().get("minimal") == 1
+    assert registry.stats().get("high") is None          # 不再误升 high
+    # 关键：登记后对返回数组 data 的列表接口不得误判为失败（high 级会抛「data 应为对象」）
+    registry.validate("POST", "/api/test", {"ok": True, "data": [{"paymentTerms": "NET30"}]})
 
 
 def test_sensor_learn_contracts_requires_registry():

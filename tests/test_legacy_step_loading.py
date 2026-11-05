@@ -93,3 +93,91 @@ def test_legacy_adapter_run_pytest_returns_exit_code(tmp_path, monkeypatch):
     assert "test_x.py" in captured["cmd"]
     assert "--headed" in captured["cmd"]
     assert captured["cwd"] == tmp_path.resolve() / "legacy-web"
+
+
+def test_run_pytest_reports_missing_dirs_locatable(tmp_path):
+    """真实漂移：ATLAS_LEGACY_PROJECT 指错 / ATLAS_LEGACY_WEB 与旧版目录名不符
+    （legacy-web vs iservice）。修复前 subprocess.run(cwd=不存在) 抛 OS 级
+    `NotADirectoryError: [WinError 267]`——零配置线索，用户不知道该改哪个键。
+    必须点名缺哪个目录、对应哪个环境变量。"""
+    from atlas.legacy import LegacyAdapter
+    from atlas.config import AtlasConfig
+    config = AtlasConfig(tmp_path)
+    # 根不存在
+    adapter = LegacyAdapter(config, project_root=tmp_path / "no_legacy")
+    with pytest.raises(FileNotFoundError, match="ATLAS_LEGACY_PROJECT"):
+        adapter.run_pytest()
+    # 根存在但 web 子目录漂移
+    root = tmp_path / "legacy"; root.mkdir()
+    adapter2 = LegacyAdapter(config, project_root=root)
+    with pytest.raises(FileNotFoundError, match="ATLAS_LEGACY_WEB"):
+        adapter2.run_pytest()
+    (root / "legacy-web").mkdir()
+    adapter2.check_exec_dir()                       # 目录到位后不误伤
+    assert adapter2.exec_dir == root.resolve() / "legacy-web"
+
+
+def test_cli_legacy_missing_project_rc2_not_traceback(tmp_path, monkeypatch, capsys):
+    """与 overlay/recycle/review 同口径：路径类输入错误 → 一行 stderr + rc 2。
+    修复前 `atlas legacy --dry-run` 对不存在的目录照样打印命令返回 0（假绿预检），
+    非 dry-run 直接裸 traceback。dry-run 文档语义是「只检查路径和命令」，检查必须为真。"""
+    import os
+    from atlas.cli import main
+    monkeypatch.setenv("ATLAS_LEGACY_PROJECT", str(tmp_path / "missing_legacy"))
+    assert main(["--root", str(tmp_path), "legacy", "--dry-run"]) == 2
+    err = capsys.readouterr().err
+    assert "旧项目根不存在" in err and "Traceback" not in err
+    assert main(["--root", str(tmp_path), "legacy"]) == 2   # 非 dry-run 同样友好
+    # 目录到位后 dry-run 恢复 rc 0，且打印的命令与 cwd 同源
+    (tmp_path / "legacy" / "legacy-web").mkdir(parents=True)
+    monkeypatch.setenv("ATLAS_LEGACY_PROJECT", str(tmp_path / "legacy"))
+    assert main(["--root", str(tmp_path), "legacy", "--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert "pytest" in out and f"cwd={tmp_path / 'legacy' / 'legacy-web'}" in out
+
+
+def test_from_module_probe_miss_gets_attributed_import_error(tmp_path):
+    """#119 面A：模块 import lib 但祖先无 lib/+conftest.py（放错目录）——旧实现裸抛
+    ModuleNotFoundError: No module named 'lib'，用户分不清「探测没命中」还是「真缺 lib」。
+    必须点名探测语义与 ATLAS_LEGACY_WEB 线索。兼容面（#115 教训）：不 import lib 的
+    纯本地模块同目录仍合法；坏的是别的模块时原样传播不揽责。"""
+    stray = tmp_path / "stray"
+    stray.mkdir()
+    bad = stray / "mod_lib.py"
+    bad.write_text("from lib.pages import open_doc_list\n\ndef step_1(page, ctx):\n    return 1\n",
+                   encoding="utf-8")
+    with pytest.raises(ImportError, match="旧项目 web 根") as caught:
+        LegacyStep.from_module(bad, 1)
+    assert str(stray) in str(caught.value)          # 探测起点如实入文案
+    assert isinstance(caught.value.__cause__, ModuleNotFoundError)
+
+    plain = stray / "mod_plain.py"                   # 同目录不 import lib——合法，不得翻成错误
+    plain.write_text("def step_1(page, ctx):\n    return 'ok'\n", encoding="utf-8")
+    assert LegacyStep.from_module(plain, 1).name.endswith("step_1")
+
+    other = stray / "mod_other.py"                  # 坏的是别的模块——原样抛不揽责
+    other.write_text("import totally_missing_mod_xyz\n\ndef step_1(page, ctx):\n    return 1\n",
+                     encoding="utf-8")
+    with pytest.raises(ModuleNotFoundError, match="totally_missing_mod_xyz"):
+        LegacyStep.from_module(other, 1)
+
+
+def test_from_module_rejects_non_callable_step_at_construction(tmp_path):
+    """#119 面B：step_N 存在但不可调用（`step_3 = "字符串"`）——旧实现构造期假成功，
+    perform 时才 TypeError，把错误推迟到真实执行链。必须在 from_module 当场点名类型；
+    可调用 step_N 正常放行（对照不误伤）。"""
+    case = tmp_path / "mod_str_step.py"
+    case.write_text("step_3 = '我字符串不是函数'\n", encoding="utf-8")
+    with pytest.raises(TypeError, match="必须是可调用") as caught:
+        LegacyStep.from_module(case, 3)
+    assert "str" in str(caught.value)                # 实际类型入文案，供人定位
+
+    good = tmp_path / "mod_fn_step.py"
+    good.write_text("def step_3(page, ctx):\n    return 7\n", encoding="utf-8")
+    step = LegacyStep.from_module(good, 3)
+
+    class FakeActor:
+        page = "PAGE"
+        ctx = {}
+
+    assert step.perform(FakeActor()) == 7

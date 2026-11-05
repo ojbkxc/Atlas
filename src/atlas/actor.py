@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import Any, Iterable, Type, TypeVar
 from .abilities import BrowseTheWeb, CallApi
-from .core import Ability, Task
+from .core import Ability, Task, write_produces
 
 A = TypeVar("A", bound=Ability)
 
@@ -38,6 +38,5 @@ class Actor:
     def attempts_to(self, *tasks: Task) -> "Actor":
         for task in tasks:
             result = task.perform(self)
-            for key in task.metadata.produces:
-                self.ctx[key] = result[key] if isinstance(result, dict) and key in result else result
+            write_produces(self.ctx, task, result)
         return self

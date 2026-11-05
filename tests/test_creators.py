@@ -2,7 +2,62 @@ import pytest
 from atlas.config import AtlasConfig
 from atlas.creators import make_scripted_creator, require_audit_tag
 from atlas.failures import EnvBlocked
-from atlas.probes import CallableProbe, DataProvider, ScriptedCreator
+from atlas.probes import CallableProbe, DataProvider, ScriptedCreator, find_document_number
+
+
+def test_require_audit_tag_rejects_empty_or_none_document_number():
+    """#117 面1：`{"orderNo": ""}` / `{"orderNo": None}` 被旧实现 `key in result` 放行
+    （键在即算，#102 同族假成功），回收清单落空单号记录、atlas recycle 找不回真实单据。
+    单号判据收敛 find_document_number：必须是「非空标量」。"""
+    with pytest.raises(ValueError, match="单号"):
+        require_audit_tag({"remark": "非人工创建", "orderNo": ""})
+    with pytest.raises(ValueError, match="单号"):
+        require_audit_tag({"remark": "非人工创建", "orderNo": None})
+    with pytest.raises(ValueError, match="单号"):
+        require_audit_tag({"remark": "非人工创建", "orderNo": "   "})  # 纯空白不算单号
+    # 合规形态照旧通过
+    assert require_audit_tag({"remark": "非人工创建", "orderNo": "SP1"})
+
+
+def test_find_document_number_treats_bool_and_composite_as_absent():
+    """#117 单一真相判据：bool→"True" 是假单号（回收按 'True' 找不到单），容器形态不算单号。
+    数字单号按字符串接受。"""
+    assert find_document_number({"orderNo": True}) == ""
+    assert find_document_number({"orderNo": {"x": 1}}) == ""
+    assert find_document_number({"orderNo": 123}) == "123"
+    assert find_document_number({"remark": "x"}) == ""
+    assert find_document_number({"documentNo": "  DOC9 "}) == "DOC9"  # 两侧空白剥除
+
+
+def test_supply_rejects_created_document_without_number(tmp_path):
+    """#117 面1C：supply（生产主路径 find_or_create）过去只查备注不查单号——脚本真实建了单
+    却没回单号时**静默成功**，回收清单落无单号记录，atlas recycle 显示 '?'，真实建出的单
+    永远找不回（回收链静默断，#86 落盘断链同族）。修复后单号闸门与 require_audit_tag 同源。"""
+    probe = CallableProbe("SalesOrder", lambda w: None,
+                          lambda w: {"remark": "测试非人工创建"})  # 有备注、无单号
+    provider = DataProvider(AtlasConfig(tmp_path), [probe], create_quota=5)
+    with pytest.raises(ValueError, match="缺少有效单号"):
+        provider.supply({"entity": "SalesOrder"})
+    # 建单已发生：回收记录必须保留（remark 缺失同策略），供人工按备注/时间追回
+    assert len(provider.quota.created) == 1
+
+
+def test_scripted_creator_where_unserializable_names_path(tmp_path):
+    """#117 面2：where 含 YAML 日期对象 → 旧实现裸 TypeError「Object of type date is not
+    JSON serializable」——不提脚本路径、不提哪个键，用户面对内部序列化报错无从下手
+    （#61 可归因红线）。修复后点名脚本 + 整条键路径 + 类型 + 转换建议。"""
+    import datetime
+    script = tmp_path / "creator.py"
+    script.write_text("import json, sys\njson.load(sys.stdin)\n"
+                      "print('{\"remark\":\"s非人工创建\",\"orderNo\":\"SP1\"}')\n", encoding="utf-8")
+    creator = make_scripted_creator(script)
+    with pytest.raises(TypeError, match="建单脚本") as exc:
+        creator({"where": {"createdAfter": datetime.date(2026, 11, 1)}})
+    message = str(exc.value)
+    assert "createdAfter" in message and "date" in message  # 嵌套路径下钻点名（#61）
+    assert str(script) in message                          # 点名是哪个脚本
+    with pytest.raises(TypeError, match="dates.0"):        # 列表内坏值也下钻
+        creator({"dates": [datetime.date(2026, 1, 1)]})
 
 
 def test_require_audit_tag_rejects_missing_marker():

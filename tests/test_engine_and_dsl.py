@@ -213,6 +213,113 @@ def test_dsl_flow_with_engine_failure_records_fail_class(tmp_path):
     assert record["steps"][0]["fail_class"] == "interaction"
 
 
+def test_dsl_flow_with_engine_keyboard_interrupt_not_recorded_as_failure(tmp_path):
+    """Ctrl-C 不是产品或用例失败：runs.jsonl 记 status=interrupted，不污染 atlas summary
+    的 pass/fail 真相（红线 #7：环境/操作与缺陷分开，与 EnvBlocked 的 env_blocked 终态同理）。
+    旧实现 `except BaseException` 把中断一并记成 failed——人为停掉的跑被计入缺陷。"""
+    config = AtlasConfig(tmp_path, mode="run")
+    registry = TaskRegistry()
+    registry.register("halt", lambda: FunctionalTask(
+        TaskMetadata("demo", "halt"),
+        lambda actor: (_ for _ in ()).throw(KeyboardInterrupt()), "halt"))
+    flow = {"id": "int-flow", "engine": config, "steps": [{"task": "halt"}]}
+    with pytest.raises(KeyboardInterrupt):
+        FlowCompiler(registry).run(flow, Actor())
+    record = json.loads((tmp_path / "reports" / "runs.jsonl").read_text(encoding="utf-8"))
+    assert record["status"] == "interrupted"   # 关键：不是 "failed"
+
+
+def test_dsl_flow_with_engine_systemexit_recorded_as_interrupted(tmp_path):
+    """显式退出（sys.exit）与 Ctrl-C 同归 interrupted：操作者主动停手不是用例失败。"""
+    config = AtlasConfig(tmp_path, mode="run")
+    registry = TaskRegistry()
+    registry.register("bye", lambda: FunctionalTask(
+        TaskMetadata("demo", "bye"),
+        lambda actor: (_ for _ in ()).throw(SystemExit()), "bye"))
+    flow = {"id": "exit-flow", "engine": config, "steps": [{"task": "bye"}]}
+    with pytest.raises(SystemExit):
+        FlowCompiler(registry).run(flow, Actor())
+    record = json.loads((tmp_path / "reports" / "runs.jsonl").read_text(encoding="utf-8"))
+    assert record["status"] == "interrupted"
+
+
+def test_dsl_flow_with_engine_generator_exit_recorded_as_interrupted(tmp_path):
+    """#129 面C：GeneratorExit（生成器侧关闭）与 Ctrl-C/SystemExit 同归 interrupted。
+    dsl 曾内联硬编码 (KeyboardInterrupt, SystemExit)——CONTROL_FLOW（#114）的第 5 处
+    漏网副本（#92 改一漏一），生成器关闭的跑被记成 status=failed 污染缺陷分布。"""
+    config = AtlasConfig(tmp_path, mode="run")
+    registry = TaskRegistry()
+    registry.register("gclose", lambda: FunctionalTask(
+        TaskMetadata("demo", "gclose"),
+        lambda actor: (_ for _ in ()).throw(GeneratorExit()), "gclose"))
+    flow = {"id": "gen-flow", "engine": config, "steps": [{"task": "gclose"}]}
+    with pytest.raises(GeneratorExit):
+        FlowCompiler(registry).run(flow, Actor())
+    record = json.loads((tmp_path / "reports" / "runs.jsonl").read_text(encoding="utf-8"))
+    assert record["status"] == "interrupted"   # 修复前实锤：failed
+
+
+def test_engine_prod_write_block_leaves_step_trace(tmp_path):
+    """#114 面A：生产写拦截必须在 runs.jsonl/results 留痕。
+    旧实现 validate_write 在 recorder.step **外**执行：PermissionError 抛出时 step
+    从未进入——审计者看不出「谁在生产试图跑写步骤被拦」（拦截无痕也是审计链断点，
+    与 #85 中断留痕同红线）。修复后该步骤记成 env_blocked（策略阻挡非代码缺陷，
+    红线 #7），PermissionError 仍原样传播——护栏语义零漂移，只是不再无痕。"""
+    from atlas.recorder import RunRecorder
+    rec = RunRecorder("prod-guard", "prod-hk", tmp_path / "runs.jsonl", "run")
+    engine = ExecutionEngine(AtlasConfig(tmp_path, env="prod-hk"), recorder=rec)
+    calls = {"n": 0}
+    def save(actor):
+        calls["n"] += 1
+        return None
+    task = FunctionalTask(TaskMetadata("demo", "save", read_only=False), save, "save")
+    with pytest.raises(PermissionError):
+        engine.execute(Actor(), task)
+    assert calls["n"] == 0                     # 护栏仍在 perform 之前拦截，副作用没发生
+    assert len(rec.steps) == 1                 # 修复前探针实锤：steps == []（无痕）
+    step = rec.steps[0]
+    assert step["step"] == "save" and "dur_ms" in step
+    assert step["ok"] is False and step["fail_class"] == "env_blocked"
+    assert len(engine.results) == 1            # 修复前 results 也空
+    assert engine.results[0].ok is False and engine.results[0].failure_class == "env_blocked"
+    rec.close("failed")
+    run = json.loads((tmp_path / "runs.jsonl").read_text(encoding="utf-8"))
+    assert any(s.get("step") == "save" and s.get("fail_class") == "env_blocked"
+               for s in run["steps"])          # 真的落盘可审计，不止内存
+
+
+def test_engine_keyboard_interrupt_no_draft_and_step_interrupted(tmp_path):
+    """#114 面B：Ctrl-C 的 step 级定性必须是 interrupted 而非 unknown，且不进待审坑点塔。
+    旧实现两处污染（探针实锤）：recorder 把 KI 记成 fail_class="unknown" 进
+    atlas summary 缺陷分布（冒出一类无法归因的「未知失败」）；engine 失败路径无条件
+    把 KeyboardInterrupt 登记成待审坑点草稿——remedy 无从「修复」中断，纯噪音进塔，
+    违反 #70/#108 终止信号口径。修复后 KI 短路：如实记 interrupted + 原样传播，
+    不走草稿登记/取证截图。SystemExit 同路径（共用 CONTROL_FLOW 单一真相）。"""
+    from atlas.experience import ExperienceJournal
+    from atlas.recorder import RunRecorder
+    journal = ExperienceJournal(tmp_path)
+    rec = RunRecorder("int", "sit", tmp_path / "runs.jsonl", "run")
+    engine = ExecutionEngine(AtlasConfig(tmp_path), recorder=rec, journal=journal)
+    task = FunctionalTask(TaskMetadata("demo", "halt"),
+                          lambda actor: (_ for _ in ()).throw(KeyboardInterrupt()), "halt")
+    with pytest.raises(KeyboardInterrupt):
+        engine.execute(Actor(), task)
+    step = rec.steps[0]
+    assert step["fail_class"] == "interrupted"     # 修复前探针实锤：unknown
+    assert engine.results[0].failure_class == "interrupted"
+    drafts = tmp_path / "experience_drafts.jsonl"  # 修复前探针实锤：['KeyboardInterrupt'] 进塔
+    assert not drafts.exists()
+    # SystemExit 同短路：不登记草稿、step 记 interrupted
+    engine2 = ExecutionEngine(AtlasConfig(tmp_path), recorder=RunRecorder(
+        "exit", "sit", tmp_path / "runs2.jsonl", "run"), journal=journal)
+    task2 = FunctionalTask(TaskMetadata("demo", "bye"),
+                           lambda actor: (_ for _ in ()).throw(SystemExit(1)), "bye")
+    with pytest.raises(SystemExit):
+        engine2.execute(Actor(), task2)
+    assert engine2.recorder.steps[0]["fail_class"] == "interrupted"
+    assert not drafts.exists()
+
+
 def test_examples_yaml_requires_are_parseable():
     """所有线性 DSL examples 的 requires 部分必须能被 DataRequirement 解析。"""
     from pathlib import Path
@@ -336,6 +443,88 @@ def test_dsl_assert_block_handles_float_literals():
         "assert": ["pi >= 3.0", "pi < 3.2", "pi != 3"]}, Actor())
 
 
+def test_dsl_assert_dot_operand_failure_is_named_not_fake_pass():
+    """#113 面A：点路径操作数解析失败不得静默回落成字符串字面量——旧实现两个打错的
+    路径（source_order.ptx != ...ptx2）被当成互不相等的字符串恒真通过：写错的断言
+    比没有断言更危险（声称验证过而什么都没验，假绿）。路径形态必须点名失败。"""
+    registry = TaskRegistry()
+    registry.register("set", lambda: FunctionalTask(
+        TaskMetadata("demo", "set", produces=("real",)),
+        lambda actor: {"real": 1}, "set"))
+    with pytest.raises(AssertionError, match="形如 ctx 路径但无法解析"):
+        FlowCompiler(registry).run({"steps": [{"task": "set"}],
+                                    "assert": ["source_order.ptx != source_order.ptx2"]},
+                                   Actor())
+    # 单词字面量兼容面不漂移：无点 NET30/SO1 仍按字面量比较
+    registry2 = TaskRegistry()
+    registry2.register("pt", lambda: FunctionalTask(
+        TaskMetadata("demo", "pt", produces=("pt",)),
+        lambda actor: {"pt": "NET30"}, "pt"))
+    FlowCompiler(registry2).run({"steps": [{"task": "pt"}],
+                                 "assert": ["pt == NET30"]}, Actor())
+    # 带引号的字面量（含点）可用且按字符串比较：报错口径「改为带引号」必须真能用
+    FlowCompiler(registry2).run({"steps": [{"task": "pt"}],
+                                 "assert": ["pt == 'NET30'"]}, Actor())
+    registry3 = TaskRegistry()
+    registry3.register("dotted", lambda: FunctionalTask(
+        TaskMetadata("demo", "dotted", produces=("x",)),
+        lambda actor: {"x": "A.B"}, "dotted"))
+    FlowCompiler(registry3).run({"steps": [{"task": "dotted"}],
+                                 "assert": ["x == 'A.B'"]}, Actor())
+
+
+def test_dsl_assert_boolean_and_none_literals():
+    """#113 面B：YAML 作者自然写 `ok == true`——旧实现 True 与字符串 'true' 比较，
+    ctx 真为 True 反而断言失败（假阴性：正确断言被拒，人被迫删断言）。
+    true/false/none/null 必须识别为 bool/None 字面量；显式引号仍按字符串。"""
+    registry = TaskRegistry()
+    registry.register("t", lambda: FunctionalTask(
+        TaskMetadata("demo", "t", produces=("ok", "n")),
+        lambda actor: {"ok": True, "n": None}, "t"))
+    FlowCompiler(registry).run({"steps": [{"task": "t"}],
+        "assert": ["ok == true", "n == none", "ok != false"]}, Actor())
+    # 带引号的 'true' 是显式字符串：True != 'true'，不静默相等
+    with pytest.raises(AssertionError, match="不成立"):
+        FlowCompiler(registry).run({"steps": [{"task": "t"}],
+                                    "assert": ["ok == 'true'"]}, Actor())
+
+
+def test_dsl_requires_duplicate_target_named_not_silent_override(tmp_path):
+    """#113 面C：两条 requires 落点同为 'order'（显式 as）——旧实现静默 last-wins：
+    SalesOrder 数据被 PurchaseOrder 整条覆盖，下游读 PO9 以为是 SO1 继续跑
+    （与 #84 多生产者同产出键同红线）。执行前点名两条条目。"""
+    from atlas.probes import CallableProbe, DataProvider
+    probe = CallableProbe("SalesOrder", lambda where: {"orderNo": "SO1"})
+    probe2 = CallableProbe("PurchaseOrder", lambda where: {"orderNo": "PO9"})
+    provider = DataProvider(AtlasConfig(tmp_path), [probe, probe2])
+    registry = TaskRegistry()
+    flow = {"steps": [], "requires": {
+        "order_a": {"entity": "SalesOrder", "strategy": "find_only", "as": "order"},
+        "order_b": {"entity": "PurchaseOrder", "strategy": "find_only", "as": "order"}}}
+    with pytest.raises(ValueError, match="数据落点同为"):
+        FlowCompiler(registry, provider).run(flow, Actor())
+    # 隐式冲突（无 as，条目名不同但……不存在）：条目名互异时键自然互异——
+    # 只有显式 as 同值才撞。合法的双条不同 as 照常供应。
+    good = {"steps": [], "requires": {
+        "order_a": {"entity": "SalesOrder", "strategy": "find_only", "as": "sales"},
+        "order_b": {"entity": "PurchaseOrder", "strategy": "find_only", "as": "po"}}}
+    actor = Actor()
+    FlowCompiler(registry, provider).run(good, actor)
+    assert actor.ctx["sales"]["orderNo"] == "SO1" and actor.ctx["po"]["orderNo"] == "PO9"
+
+
+def test_dsl_validate_flow_rejects_duplicate_supply_target(tmp_path):
+    """#113 面C2：落点冲突是结构错误——atlas compile / run 登录前（validate_flow）
+    必须点名，不能到 provision 执行才暴露（#97「compile 绿=run 不再登录一半炸」口径）。
+    validate_flow 不配 provider 也应拦：纯键形态检查与数据无关。"""
+    registry = TaskRegistry()
+    flow = {"steps": [], "requires": {
+        "a1": {"entity": "SalesOrder", "strategy": "find_only", "as": "order"},
+        "a2": {"entity": "PurchaseOrder", "strategy": "find_only", "as": "order"}}}
+    with pytest.raises(ValueError, match="数据落点同为"):
+        FlowCompiler(registry).validate_flow(flow)
+
+
 def test_call_endpoint_metadata_is_correct():
     """CallEndpoint 的元数据必须反映 API 通道与产出键。"""
     task = CallEndpoint("/api/test", method="GET", save_as="result")
@@ -346,7 +535,7 @@ def test_call_endpoint_metadata_is_correct():
 
 
 def test_call_endpoint_perform_calls_api_request(monkeypatch):
-    """CallEndpoint.perform 把 method/path/body 传给 actor.api.request。"""
+    """CallEndpoint.perform 把 method/path/body/headers 传给 actor.api.request。"""
     from atlas.abilities import CallApi
     task = CallEndpoint("/api/test", method="POST", body={"k": "v"}, save_as="result")
     actor = Actor(abilities=[CallApi("http://test")])
@@ -356,8 +545,26 @@ def test_call_endpoint_perform_calls_api_request(monkeypatch):
         return {"ok": True, "data": {"passed": True}}
     monkeypatch.setattr(CallApi, "request", mock_request)
     result = task.perform(actor)
-    assert result["ok"] is True
-    assert calls[0] == ("POST", "/api/test", {"body": {"k": "v"}})
+    # 契约自兑现：produces 声明 save_as，perform 必须返回 {save_as: 响应}——
+    # write_produces 据此严格校验，元数据与实际产出不再靠引擎兜底猜测。
+    assert result["result"] == {"ok": True, "data": {"passed": True}}
+    # 无 headers 时透传 None，交给 requests 用会话默认头
+    assert calls[0] == ("POST", "/api/test", {"body": {"k": "v"}, "headers": None})
+
+
+def test_call_endpoint_threads_headers_to_request(monkeypatch):
+    """ICS 后端缺 isc-app 业务头即 BUG-920：CallEndpoint 必须把 per-step headers 传到 request。"""
+    from atlas.abilities import CallApi
+    from atlas.tasks import CallEndpoint
+    task = CallEndpoint("/web/legacy-web-mdm/x", method="POST", headers={"isc-app": "iservice"})
+    actor = Actor(abilities=[CallApi("http://test")])
+    calls = []
+    def mock_request(self, method, path, **kw):
+        calls.append(kw)
+        return {"ok": True}
+    monkeypatch.setattr(CallApi, "request", mock_request)
+    task.perform(actor)
+    assert calls[0]["headers"] == {"isc-app": "iservice"}
 
 
 def test_ui_action_perform_calls_action_with_page_and_ctx():

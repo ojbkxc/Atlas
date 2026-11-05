@@ -12,6 +12,7 @@ from pathlib import Path
 
 from .composition import compose_for_goal
 from .core import Task
+from .failures import CONTROL_FLOW, exception_message
 
 
 class RiskLevel(str, Enum):
@@ -54,11 +55,12 @@ class Decision:
     approved: bool
     reason: str = ""
     rejected: list[str] = field(default_factory=list)
+    executed: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict:
         return {"goal": self.goal, "tasks": self.tasks, "risk": self.risk,
                 "approved": self.approved, "reason": self.reason,
-                "rejected": self.rejected}
+                "rejected": self.rejected, "executed": self.executed}
 
 
 class ApprovalRequired(PermissionError):
@@ -98,13 +100,42 @@ class AtlasAgent:
                                 reason=f"风险 {risk.value} 超过自动阈值 {self.max_auto_risk.value}，需人工批准")
             self._record(decision)
             raise ApprovalRequired(decision.reason)
-        for task in ordered:
-            if engine:
-                engine.execute(actor, task)
-            else:
-                actor.attempts_to(task)
+        # 半途失败/Ctrl-C 也必须留痕：模块自述「所有决策都落盘，便于事后追责」，
+        # 而审批门已放行意味着已执行的写 Task 真实改过系统——journal 无痕等于追责断链。
+        completed: list[str] = []
+        try:
+            for task in ordered:
+                if engine:
+                    engine.execute(actor, task)
+                else:
+                    actor.attempts_to(task)
+                completed.append(task.name)
+        except BaseException as exc:   # 记录后原样重抛：留痕绝不吞异常、不顶真因
+            failed = ordered[len(completed)].name
+            # #129 面A：中断判据收敛 failures.CONTROL_FLOW 单一真相（#114 声明 engine/
+            # healing/recorder 同源，agent 是漏改的第 4 处——GeneratorExit 是生成器侧的
+            # 终止信号，旧三元组硬编码把它记成「执行失败」，终态口径与 classify_failure
+            # (GeneratorExit)=interrupted 自相矛盾，#92 改一漏一必漂移）。
+            outcome = "interrupted" if isinstance(exc, CONTROL_FLOW) else "执行失败"
+            # #129 面B：异常文本走 failures.exception_message 单一真相——旧实现手拼
+            # f"{type(exc).__name__}: {exc}"，业务异常 __str__ 自身崩（#126 面A 真实可达）
+            # 时在 except 块里当场炸：①顶掉用例真因（#89 定性器先于被定性对象死）；
+            # ②整条留痕随赋值一起丢失——已执行写 Task 的真实副作用从此无痕（#85 红线，
+            # 比「journal 写失败」更糟：连内存 decisions 都没 append）。
+            decision = Decision(goal, [t.name for t in ordered], risk.value, True,
+                                reason=f"{outcome}，止步于 {failed}：{exception_message(exc)}",
+                                executed=list(completed))
+            try:
+                self._record(decision)
+            except Exception:
+                pass   # 留痕写失败不得顶掉执行真因；内存 decisions 仍保留
+            raise
         decision = Decision(goal, [t.name for t in ordered], risk.value, True,
-                            reason="auto" if self.can_auto_run(risk) else "human_approved")
+                            reason="auto" if self.can_auto_run(risk) else "human_approved",
+                            # #110：成功路径同样落执行事实——旧实现 executed 留空，journal 行
+                            # 与「一个都没跑」同形（tasks 是计划不是执行），读痕人无从确认哪些写
+                            # Task 真实发生过；#85「已执行写 Task 必须可追责」对成功路径同样成立。
+                            executed=list(completed))
         self._record(decision)
         return decision
 
@@ -119,12 +150,21 @@ class AtlasAgent:
                            "intent": t.metadata.intent} for t in ordered]}
 
     def _record(self, decision: Decision) -> None:
-        self.decisions.append(decision)
+        self.decisions.append(decision)   # 内存留痕先行：落盘失败不丢记录
         if not self.journal:
             return
-        self.journal.parent.mkdir(parents=True, exist_ok=True)
-        with self.journal.open("a", encoding="utf-8") as stream:
-            stream.write(json.dumps(decision.as_dict(), ensure_ascii=False) + "\n")
+        # #110：落盘尽力而为——三个调用点（审批拒绝/执行失败/成功返回）都不得让坏盘顶掉
+        # 业务语义。旧实现 #85 只护了失败路径（caller 包 try），成功路径与审批门前裸调：
+        # ① 成功路径任务已全部真跑（写副作用已发生），mkdir/open 错误把 Decision 返回翻成
+        #    FileExistsError——成功信号被基础设施故障掩埋，caller 拿不到 executed 清单；
+        # ② 审批门前 raise ApprovalRequired 之前的 _record 崩，rc3 决策信号被顶成裸错误。
+        # 只兜 OSError（盘/路径类故障）；非 OSError 是真 bug 不静默吞。
+        try:
+            self.journal.parent.mkdir(parents=True, exist_ok=True)
+            with self.journal.open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps(decision.as_dict(), ensure_ascii=False) + "\n")
+        except OSError:
+            pass
 
 
 __all__ = ["ApprovalRequired", "AtlasAgent", "Decision", "RiskLevel", "classify_risk"]

@@ -52,10 +52,20 @@ def test_contract_with_empty_path_skips_validation():
 
 
 def test_contract_unknown_type_is_rejected():
-    """core 级契约的 required 类型必须已知。"""
-    c = Contract("数据", path="/d", level="core", required={"field": "bogus_type"})
+    """core 级契约的 required 类型必须已知——构造期当场点名（含路径），
+    不留到 validate()：私有契约 JSON 是人手编辑的，类型值写成 ["string"]（JSON 合法）
+    或路径键写成 tuple 时，旧实现到建真实响应才 unhashable TypeError / AttributeError，
+    定性器先于被诊断报文死。提前到构造期让 DemoPlugin 按「文件写坏」回退包内默认。"""
     with pytest.raises(ValueError, match="未知类型"):
-        c.validate({"ok": True, "data": {"resultCode": "BUG-000", "field": "x"}})
+        Contract("数据", path="/d", level="core", required={"field": "bogus_type"})
+    with pytest.raises(ValueError, match="未知类型.*items"):
+        Contract("列表", path="/l", level="core", required={"items": ["string"]})   # JSON 合法的手误
+    with pytest.raises(ValueError, match="未知类型"):
+        Contract("对象", path="/o", level="core", required={"x": {"type": "string"}})
+    with pytest.raises(ValueError, match="非空字符串"):
+        Contract("键坏", path="/k", level="core", required={("a", "b"): "string"})
+    with pytest.raises(ValueError, match="非空字符串"):
+        Contract("键空白", path="/k", level="core", required={"  ": "string"})
 
 
 def test_registry_validate_noop_without_matching_contract():
@@ -64,13 +74,36 @@ def test_registry_validate_noop_without_matching_contract():
     reg.validate("POST", "/unknown", {"ok": False})
 
 
-def test_registry_add_replaces_existing_contract():
-    """add 同 method+path 的契约会覆盖旧的。"""
+def test_registry_add_rejects_conflicting_definition_same_key():
+    """#128：同 (method, path) 不同定义旧实现 dict last-wins 静默覆盖——本测此前钉的就是
+    缺陷形态本身（minimal 被 core 顶掉恰好「变强」，反序则强校验被弱校验遮蔽，
+    「冒充覆盖率却永不生效」正是 --validate 自述红线 #7/#12，与 #84 多生产者同键同红线）。
+    现冲突显式 ValueError 点名两条；等值重复仍放行——toolbox.learn_contracts 轮询去重
+    依赖同键覆盖语义（#102 净增计数），拒绝它=把正常路径翻成错误（#115 教训）。
+    旧断言 `level == "core"`（静默择强）随缺陷一并更正。"""
     c1 = Contract("a", path="/a", level="minimal")
-    c2 = Contract("a", path="/a", level="core")
     reg = ContractRegistry([c1])
-    reg.add(c2)
-    assert reg.contracts[("POST", "/a")].level == "core"
+    with pytest.raises(ValueError, match="同键但定义不同"):
+        reg.add(Contract("a", path="/a", level="core"))
+    # 等值重复幂等放行（learn_contracts 对轮询同路径逐条 add 的真实形态）
+    reg.add(Contract("a", path="/a", level="minimal"))
+    reg.add(Contract("a", path="/a", level="minimal"))
+    assert len(reg.contracts) == 1
+    assert reg.contracts[("POST", "/a")].level == "minimal"
+
+
+def test_contract_file_conflicting_rows_rejected(tmp_path):
+    """#128：契约文件（人手编辑）复制行忘改=同键两条不同定义，旧实现 last-wins 静默择一，
+    校验强度取决于条目顺序。load 现点名两条定义；ValueError 在 DemoPlugin.contracts 捕获
+    的坏文件回退链里——私有 core.json 有冲突行不再「静默用弱版跑真实校验」，而是回退
+    包内默认并在 atlas contracts 可见（与 #74/#95 损坏回退同链路，探针 /tmp/probe128b 面B）。"""
+    import json as _json
+    c = tmp_path / "core.json"
+    c.write_text(_json.dumps({"contracts": [
+        {"name": "强", "path": "/x", "level": "core", "required": {"a": "string"}},
+        {"name": "弱", "path": "/x", "level": "high"}]}), encoding="utf-8")
+    with pytest.raises(ValueError, match="同键但定义不同"):
+        ContractRegistry.load(c)
 
 
 def test_core_contract_validates_array_type():
@@ -118,6 +151,46 @@ def test_registry_stats_reports_levels():
 def test_unknown_level_is_rejected():
     with pytest.raises(ValueError, match="未知契约等级"):
         Contract("x", path="/x", level="bogus")
+
+
+def test_contract_load_shape_errors_are_pointable(tmp_path):
+    """契约文件是人手编辑的资产：JSON 合法但形态写坏（顶层数组忘包一层、条目是字符串、
+    键拼错）旧实现裸崩 AttributeError/TypeError，且不在 DemoPlugin 捕获的解析异常里，
+    直接顶掉整条契约链。必须转成可定位 ValueError——点名文件、条目序号与实际形态。"""
+    import json as _json
+    # 顶层是数组（忘写 {"contracts": [...]} 外层）
+    p = tmp_path / "core.json"
+    p.write_text(_json.dumps([{"name": "a", "path": "/a"}]), encoding="utf-8")
+    with pytest.raises(ValueError, match="顶层必须是映射"):
+        ContractRegistry.load(p)
+    # contracts 不是列表
+    p.write_text(_json.dumps({"contracts": {"name": "a"}}), encoding="utf-8")
+    with pytest.raises(ValueError, match="contracts 必须是列表"):
+        ContractRegistry.load(p)
+    # 某一条目是字符串
+    p.write_text(_json.dumps({"contracts": ["oops"]}), encoding="utf-8")
+    with pytest.raises(ValueError, match="第 0 条必须是映射"):
+        ContractRegistry.load(p)
+    # 键拼错（level_ ）：补条目定位而不是裸 unexpected keyword argument
+    p.write_text(_json.dumps({"contracts": [{"name": "a", "path": "/a", "level_": "core"}]}),
+                 encoding="utf-8")
+    with pytest.raises(ValueError, match="第 0 条定义错误"):
+        ContractRegistry.load(p)
+
+
+def test_corrupt_private_contract_falls_back_not_kills_chain(tmp_path, monkeypatch):
+    """端到端：私有目录契约文件「结构合法但契约定义坏」（required 类型值被写成数组）时，
+    旧实现 TypeError 穿过 plugin 捕获范围，整个契约子系统连包内回退一起死——真实 run 的
+    断言层被一个手误连坐。现按 #73 损坏降级策略回退包内默认。"""
+    import json as _json
+    priv = tmp_path / "kb"; (priv / "contracts").mkdir(parents=True)
+    (priv / "contracts" / "core.json").write_text(_json.dumps({"contracts": [
+        {"name": "real", "path": "/real", "level": "core", "required": {"items": ["string"]}}]}),
+        encoding="utf-8")
+    monkeypatch.setenv("ATLAS_KNOWLEDGE_DIR", str(priv))
+    from atlas.plugins.demo.plugin import DemoPlugin
+    reg = DemoPlugin().contracts()                      # 不应抛
+    assert reg.stats().get("core") == 1                 # 包内虚构默认仍在守门
 
 
 def test_build_payload_forces_audit_tag():

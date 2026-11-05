@@ -15,3 +15,12 @@ artifacts/
 *.png
 *.storage_state.json
 .DS_Store
+# 私有业务知识库（真实 BU 坐标/账号/内部系统信息，只留在受控磁盘，不入库）
+/knowledge/
+# 迁移产物（真实账号/内网域名/客户号，与 knowledge/ 同级敏感，只留在受控磁盘）
+/flows/iservice/
+/docs/migration-from-ui-auto-test.md
+/docs/legacy-adapter-setup.md
+/docs/knowledge-migration.md
+/docs/case-migration-mapping.md
+/docs/migration-verification.md

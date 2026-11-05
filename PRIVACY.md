@@ -31,7 +31,12 @@ Atlas 运行记录默认只保存用例名、环境、步骤名、耗时与失�
 - 离职/换公司或向外部开源前，移除私有插件和内部知识，不要以“知识数据化”为由带走前公司的机密。
 - 仓库自带的 `plugins/demo/knowledge` 是虚构化的示例数据；真实内部系统的行为与缺陷经验属于公司资产，必须放在私有插件里，不得提交。
 - `knowledge/session.json` 只是 Demo 测试账号名/OU/division 的默认值（无密码）；密码仍只来自 `.env`。真实业务账号与组织编码不得写入仓库。
+- 对接真实业务时的会话值（`ATLAS_SESSION_ACCOUNT/OU/DIVISION/LANGUAGE`）与项目映射键（`ATLAS_ENV_PREFIX`、`ATLAS_LEGACY_WEB` 等）都只写本机 `.env`，仓库只保留虚构默认；`atlas explore` 的 trace 可能含真实 URL/界面文案，按运行产物同等对待，不提交。
 - 新坑草稿必须经人工审核，剔除客户编号、账号、Cookie、个人信息后再共享。
+
+- 私有知识目录（`ATLAS_KNOWLEDGE_DIR`）与 BU overlay 文件（`atlas overlay` 的输入及批准后的
+  `bu_overlays.json`）承载真实内部坐标与选择器：只放本机/受控盘，不得提交、不得进备份共享；
+  `--template`/mapping 文件、`review_decisions.jsonl` 含真实任务名与坐标值，外发前同样脱敏。
 
 ## 数据创建与清理
 

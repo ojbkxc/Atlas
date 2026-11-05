@@ -16,6 +16,14 @@ class DataRequirement:
 
     @classmethod
     def from_dict(cls, raw: dict) -> "DataRequirement":
+        # YAML 数据供给块的用户输入边界：requires 写成字符串会被逐字符当成「未知字段」
+        # 报错（方向完全误导），写成 null 直接 TypeError——与 state_machine.from_dict(#77)
+        # 同口径先验形态。entity 缺失是裸 KeyError，必须点名是哪个键。
+        if not isinstance(raw, dict):
+            raise ValueError(f"数据供给必须是映射，收到 {type(raw).__name__}：{raw!r}")
+        entity = raw.get("entity")
+        if not isinstance(entity, str) or not entity.strip():
+            raise ValueError(f"数据供给缺少 entity（非空字符串），收到：{entity!r}")
         known = {"entity", "where", "strategy", "as", "on_env_blocked"}
         unknown = set(raw) - known
         if unknown:
@@ -26,7 +34,7 @@ class DataRequirement:
         policy = raw.get("on_env_blocked", "stop")
         if policy not in {"skip", "stop"}:
             raise ValueError("on_env_blocked 只支持 skip/stop")
-        return cls(entity=raw["entity"], where=raw.get("where", {}), strategy=strategy,
+        return cls(entity=entity, where=raw.get("where", {}), strategy=strategy,
                    as_=raw.get("as", ""))
 
 @dataclass
@@ -34,6 +42,29 @@ class ProbeResult:
     entity: str
     data: dict[str, Any]
     action: str
+
+# 建单结果里可作「单号」的键（回收链靠它定位真实单据）。
+DOCUMENT_NUMBER_KEYS = ("orderNo", "documentNo", "quotationNo", "returnNo")
+
+def find_document_number(result: dict) -> str:
+    """取第一个「非空」单号；缺失/空串/纯空白/None/复合形态返回 ""。
+    #117 单一真相：`require_audit_tag`（creators.py）与 `DataProvider.supply`（本文件）
+    过去各写一份单号判据且都不严——require 用 `key in result`（`{"orderNo": ""}`、
+    `{"orderNo": None}` 也算「有单号」放行），supply 干脆不查单号。生产主路径
+    find_or_create 走 supply：脚本真实建了单却不回单号时，supply 静默返回成功、
+    回收清单落 {"remark": ...} 无单号，atlas recycle 显示 orderNo '?'——真实建出的单
+    永远找不回（回收链静默断，与 #86 落盘断链、#102 静默成功同族）。键名集合也归一处。"""
+    for key in DOCUMENT_NUMBER_KEYS:
+        value = result.get(key)
+        if isinstance(value, str):
+            if value.strip():
+                return value.strip()
+        elif value is not None and not isinstance(value, (dict, list, set, tuple, bool)):
+            # 数字单号等标量按字符串接受；bool/容器不算单号（True→"True" 是假单号）。
+            text = str(value).strip()
+            if text:
+                return text
+    return ""
 
 class CreateQuota:
     def __init__(self, limit: int = 3):
@@ -64,9 +95,24 @@ class CreateQuota:
         path.parent.mkdir(parents=True, exist_ok=True)
         records = []
         if path.exists():
-            for line in path.read_text(encoding="utf-8").splitlines():
-                if line.strip():
-                    records.append(json.loads(line))
+            # #132：与 reporting/#112 同防线——上次运行中断可把尾行腰斩在多字节字符上，
+            # 旧 read_text 裸 UnicodeDecodeError：读崩=合并写回不执行，**本次新造的
+            # 单号随崩溃一起丢**（#86 回收闭环被一条历史坏字节掏空，比列不出更糟——
+            # 单据已真实产生却再无人知道单号）。replace 读入，残行落既有跳过分支。
+            try:
+                raw = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                raw = path.read_text(encoding="utf-8", errors="replace")
+            for line in raw.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    parsed = json.loads(line)
+                except json.JSONDecodeError:
+                    continue   # 残行不顶掉整份回收清单：一条写坏的历史记录不该让本次造单信息也存不下去
+                if isinstance(parsed, dict):
+                    records.append(parsed)
         records.extend(self.created)
         with path.open("w", encoding="utf-8") as stream:
             for item in records:
@@ -150,9 +196,25 @@ class DataProvider:
         # 配额必须在调用建单脚本**之前**检查，否则超额时已经真实建了一单。
         self.quota.reserve(requirement.entity, {"where": requirement.where})
         created = probe.create(requirement.where)
+        # 建单刚发生就先验形态：裸 creator（不包 ScriptedCreator 的直传函数）返回非 dict 时，
+        # 旧实现要到 remark 检查处 created.get 才 AttributeError——根因（返回值形态）被
+        # 伪装成字符串崩溃。提到 record_document 之前：脏形态不进配额记录，错误点名实际
+        # 类型与值。诚实边界：若脚本真实建了单却返回坏形态，单号无从捕获、回收链本就
+        # 断在脚本侧——这正是必须拒绝坏 creator 的原因，报错里给出原值供人工追回。
+        if not isinstance(created, dict):
+            raise TypeError(f"{requirement.entity} create 必须返回 dict（至少含 remark 与单号），"
+                            f"收到 {type(created).__name__}：{created!r}")
         self.quota.record_document(requirement.entity, created)
         remark = str(created.get("remark", ""))
         if "非人工创建" not in remark:
             # 建单已发生，配额记录保留，便于按单号回收。
             raise ValueError(f"{requirement.entity} create 结果缺少「非人工创建」备注：{created!r}")
+        # #117 面1C：单号闸门必须与 require_audit_tag 同源（find_document_number）——
+        # 过去 supply 只查备注不查单号：脚本真实建了单但没回单号时静默成功，回收清单
+        # 落无单号记录，atlas recycle 显示 '?'，真实建出的单永远找不回（回收链静默断）。
+        # 建单已发生 → 记录保留、错误给出原值供人工按备注/时间追回（与 remark 缺失同策略）。
+        if not find_document_number(created):
+            raise ValueError(
+                f"{requirement.entity} create 结果缺少有效单号"
+                f"（需 {'/'.join(DOCUMENT_NUMBER_KEYS)} 之一非空，回收链依赖它）：{created!r}")
         return ProbeResult(requirement.entity, created, "create")
