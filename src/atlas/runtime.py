@@ -104,7 +104,7 @@ class DemoRuntime:
             # #121 面B：白名单是 Demo 业务资产，定义收敛 DemoPlugin.allowed_api_operations
             # 单一真相（旧实现硬编码在引擎装配行——换业务要改 runtime.py，违反 AGENTS 红线 11；
             # 插件消费者 tasks.py 读 api.atlas_allowed_operations 的语义不变）。
-            self.demo_api.atlas_allowed_operations = DemoPlugin.allowed_api_operations
+            self.demo_api.atlas_allowed_operations = resolve_plugin().allowed_api_operations
             self.provider = make_demo_provider(self.config, self.demo_api, self.division_code)
             self.provider.quota.limit = self.create_quota
             plugin = resolve_plugin()
