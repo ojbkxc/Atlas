@@ -1,10 +1,11 @@
 """声明式数据条件与 find_or_create，复用已有数据优先于造数。"""
 from __future__ import annotations
 import os
+import sys
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Callable
-from .config import AtlasConfig
+from .config import AtlasConfig, PROD_WRITE_WARNING
 from . import delivery
 from .failures import EnvBlocked
 
@@ -222,8 +223,14 @@ class DataProvider:
             if requirement.strategy == "find_only":
                 raise EnvBlocked(f"环境缺少符合条件的 {requirement.entity}：{requirement.where}；"
                                  "find_only 禁止造数，请准备主数据或调整条件")
-        if self.config.is_production:
+        if self.config.is_production and not getattr(self.config, "allow_prod_write", False):
             raise PermissionError("生产环境禁止 create，请改用 find_only")
+        if getattr(self.config, "prod_write_allowed", False):
+            # 显式放行生产写（ATLAS_ALLOW_PROD_WRITE=1）：与 engine 写护栏同一判据位
+            # （config.prod_write_allowed），警告文案同一常量（#92）。诚实边界：create 供数
+            # 不是 runs.jsonl 的 step，故此处只有 stderr 警告；run 记录的留痕由 flow 里的
+            # 写 step（engine.validate_write 路径）承担。
+            print(PROD_WRITE_WARNING, file=sys.stderr, flush=True)
         # C12（design_c12 §3.4）：幂等关联把手在**占额之前**算——reserve 之后 create 若抛，
         # 台账行已带 token，回收清单即证据。「同条件同 token」是下次 find/人工追单的把手。
         # C12-F（评审撞序裁决）：canonical 失败让位 creators #61 的「哪个键什么类型」点名——

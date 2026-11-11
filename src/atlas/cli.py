@@ -186,7 +186,10 @@ def _parser() -> argparse.ArgumentParser:
     review.add_argument("--reason", default="", help="驳回原因；配 --allow-unverified 批准时必填（留痕依据）")
     review.add_argument("--allow-unverified", action="store_true",
                         help="证据三元组缺失时人工显式豁免批准（C2 override 通道，必须配 --reason；"
-                             "批准行与决策留痕双记豁免标记，批量 --apply 无此通道）")
+                             "只在 --require-evidence 生效时才有意义）")
+    review.add_argument("--require-evidence", action="store_true",
+                        help="启用 C2 证据晋级闸：可批准 kind 缺 evidence.verification 四元组时拒绝"
+                             "批准（默认**不**强制——重构波把该闸降级为显式 opt-in；批量的 --apply 同受此开关约束）")
     review.add_argument("--kind", default="",
                         choices=["", "pitfall", "selector_candidate", "trace_step", "bu_overlay",
                                  "flow_candidate"],
@@ -1061,7 +1064,8 @@ def _review(args, config, plugin) -> int:
             result = queue.approve(plugin.knowledge(), args.approve, remedy=remedy,
                                    component=args.component, element=args.element,
                                    allow_unverified=args.allow_unverified,
-                                   override_reason=args.reason)
+                                   override_reason=args.reason,
+                                   require_evidence=args.require_evidence)
         except (KeyError, ValueError, PermissionError) as exc:
             # PermissionError=#135 只读库拒绝：未设 ATLAS_KNOWLEDGE_DIR 时批准不得写包内资产，
             # 友好点名配置项而非裸 traceback（rc2 口径 #79/#80；写路径无半成品状态——
@@ -1129,7 +1133,8 @@ def _review(args, config, plugin) -> int:
                 continue
             decisions.append(obj)
         try:
-            result = queue.apply(plugin.knowledge(), decisions)
+            result = queue.apply(plugin.knowledge(), decisions,
+                                 require_evidence=args.require_evidence)
         except PermissionError as exc:
             # #135 只读库：未设 ATLAS_KNOWLEDGE_DIR 时批量批准的闸门在**首条落盘前**抛
             # （save_* 先于队列改写），零行写回、无半途状态——点名配置缺失 rc2 而非裸

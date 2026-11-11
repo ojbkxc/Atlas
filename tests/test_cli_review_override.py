@@ -1,7 +1,8 @@
 """C2 协调补丁的 **接线面**（design-plan §3：补丁 1 落 engine.py、补丁 2 落 cli.py，两文件 W1 归 impl_report）。
 
-- 补丁 2（CLI）：`review --allow-unverified` 存在且真透传——闸默认「不允许」时缺三元组一律
-  rc 2 带指路文案；人显式豁免必须配 `--reason`（留痕），批量 `--apply` 通道**有意**不透传。
+- 补丁 2（CLI）：`review --require-evidence` 存在且真透传——闸开时缺三元组一律
+  rc 2 带指路文案；人显式豁免必须配 `--reason`（留痕），批量 `--apply` 同受该开关约束。
+  重构波松绑：该闸**默认不生效**（`--require-evidence` 是显式 opt-in），下面的拦测一律带上它。
 - 补丁 1（engine）：失败路径登记的草稿自带 `evidence.verification`，且这份自动三元组**必须过
   review 的晋级闸**——评审判定「engine 来源草稿不死锁」的前提就是这一条，所以它得有测。
 
@@ -52,16 +53,39 @@ def test_parser_accepts_allow_unverified_flag(tmp_path):
     assert args.allow_unverified is True and args.reason == "依据"
 
 
+def test_parser_accepts_require_evidence_flag(tmp_path):
+    """C2 松绑：`--require-evidence` 显式 opt-in 开关必须真存在且默认关。"""
+    from atlas.cli import _parser
+    default = _parser().parse_args(["review", "--approve", "abc"])
+    assert default.require_evidence is False          # 默认不强制（松绑后的默认）
+    on = _parser().parse_args(["review", "--approve", "abc", "--require-evidence"])
+    assert on.require_evidence is True
+
+
 def test_cli_blocks_unverified_draft_with_guidance(tmp_path, monkeypatch, capsys):
     from atlas.cli import main
     draft_id = _seed_unverified(tmp_path)
     _stub_cli(tmp_path, monkeypatch)
     rc = main(["--root", str(tmp_path), "review", "--approve", draft_id,
-               "--remedy", "点保存前先等 .app-main 出现"])
+               "--remedy", "点保存前先等 .app-main 出现", "--require-evidence"])
     assert rc == 2
     err = capsys.readouterr().err
     assert "--allow-unverified" in err and "--reason" in err, "拦截必须指路，不是死锁"
     assert ReviewQueue(tmp_path / "reports").stats()["pending"] == 1
+
+
+def test_cli_default_relaxes_evidence_gate(tmp_path, monkeypatch, capsys):
+    """松绑后的默认：不带 --require-evidence 时，缺三元组的草稿**照常批准**（rc 0）。
+    这是有意的行为变更——想要旧的硬保证必须显式 `--require-evidence`。"""
+    from atlas.cli import main
+    draft_id = _seed_unverified(tmp_path)
+    kb = _stub_cli(tmp_path, monkeypatch)
+    rc = main(["--root", str(tmp_path), "review", "--approve", draft_id,
+               "--remedy", "点保存前先等 .app-main 出现"])
+    assert rc == 0, capsys.readouterr().err
+    assert ReviewQueue(tmp_path / "reports").stats()["approved"] == 1
+    decisions = (tmp_path / "reports" / "review_decisions.jsonl").read_text(encoding="utf-8")
+    assert "unverified_override" not in decisions, "默认放行不算 override，不该打豁免标"
 
 
 def test_cli_override_approves_and_marks_both_records(tmp_path, monkeypatch, capsys):
@@ -69,7 +93,7 @@ def test_cli_override_approves_and_marks_both_records(tmp_path, monkeypatch, cap
     draft_id = _seed_unverified(tmp_path)
     kb = _stub_cli(tmp_path, monkeypatch)
     rc = main(["--root", str(tmp_path), "review", "--approve", draft_id,
-               "--remedy", "点保存前先等 .app-main 出现",
+               "--remedy", "点保存前先等 .app-main 出现", "--require-evidence",
                "--allow-unverified", "--reason", "真机已复现，三元组在工单附件里"])
     assert rc == 0, "override 是人的显式决定，必须可用（gap6 §7 拍板：不死锁）"
     out = json.loads(capsys.readouterr().out)
@@ -88,13 +112,14 @@ def test_cli_override_without_reason_is_rc2(tmp_path, monkeypatch, capsys):
     draft_id = _seed_unverified(tmp_path)
     _stub_cli(tmp_path, monkeypatch)
     rc = main(["--root", str(tmp_path), "review", "--approve", draft_id,
-               "--remedy", "x", "--allow-unverified"])
+               "--remedy", "x", "--require-evidence", "--allow-unverified"])
     assert rc == 2 and "必须留原因" in capsys.readouterr().err
     assert ReviewQueue(tmp_path / "reports").stats()["pending"] == 1, "半批准状态不得存在"
 
 
 def test_batch_apply_channel_has_no_override_route(tmp_path, monkeypatch, capsys):
-    """批量通道有意不给豁免：决策模板里没有 --allow-unverified 的透传位（design_c2 §7）。"""
+    """批量通道有意不给豁免：决策模板里没有 --allow-unverified 的透传位（design_c2 §7），
+    且批量同受 `--require-evidence` 约束——砸进决策行的 allow_unverified 字段不被透传。"""
     from atlas.cli import main
     draft_id = _seed_unverified(tmp_path)
     _stub_cli(tmp_path, monkeypatch)
@@ -102,7 +127,7 @@ def test_batch_apply_channel_has_no_override_route(tmp_path, monkeypatch, capsys
     decision.write_text(json.dumps({"id": draft_id, "remedy": "等 .app-main",
                                    "allow_unverified": True,
                                    "override_reason": "想旁路"}) + "\n", encoding="utf-8")
-    rc = main(["--root", str(tmp_path), "review", "--apply", str(decision)])
+    rc = main(["--root", str(tmp_path), "review", "--apply", str(decision), "--require-evidence"])
     assert rc == 2
     captured = capsys.readouterr()
     assert draft_id[:6] in captured.out + captured.err, "失败行必须点名，不是静默跳过"

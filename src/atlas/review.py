@@ -245,12 +245,18 @@ class ReviewQueue:
         name = str(row.get("name") or "").strip()
         return {"role": role, **({"name": name} if name else {})}
 
-    def apply(self, knowledge, decisions: list[dict]) -> dict:
+    def apply(self, knowledge, decisions: list[dict], *,
+              require_evidence: bool = False) -> dict:
         """人填好模板后的批量执行：仍逐条走 approve 分发、逐条留痕；单行失败不拦其余。
 
         #109：人编辑决策文件时把整行改成 JSON 数组/null 是「合法 JSON 但非映射」——
         旧实现 `row.get` 裸 AttributeError 顶掉整批：前面已批准的写回不回滚，后面合法行全部不跑，
         CLI 拿不到 failed 清单（rc2 口径失效）。与 #94/#95/#97 同红线：非对象形态点名拒绝，不裸崩。
+
+        C2 松绑：`require_evidence` 透传给每条 `approve`——默认 False（闸不生效，与单条
+        默认一致）。批量通道仍**不**透传 allow_unverified（决策模板无此旋钮，有意）：
+        要旧硬保证就由 CLI 传 `--require-evidence`；批量放行 unverified 从不等于没闸，
+        只是「默认不强制」这个更宽的语义现在覆盖批量入口。
         """
         result = {"applied": 0, "failed": []}
         for row in decisions:
@@ -262,7 +268,8 @@ class ReviewQueue:
                 self.approve(knowledge, ref,
                              remedy=self._row_selector(row),
                              component=row.get("component", ""),
-                             element=row.get("element", ""))
+                             element=row.get("element", ""),
+                             require_evidence=require_evidence)
                 result["applied"] += 1
             except (KeyError, ValueError) as exc:
                 result["failed"].append({"id": ref, "error": str(exc)})
@@ -272,17 +279,20 @@ class ReviewQueue:
                 element: str = "", trigger: str = "", symptom: str = "",
                 root_cause: str = "", scope: list[str] | None = None,
                 source: str = "review", allow_unverified: bool = False,
-                override_reason: str = "") -> dict:
+                override_reason: str = "", require_evidence: bool = False) -> dict:
         """批准入口按 kind 分发：选择器候选进组件库，坐标差异进 overlay 库，
         坑点进知识，trace 步骤拒之塔外。
 
-        C2 证据闸（design_c2 §3.1，唯一强制点）：三个可批准 kind 必须携带完备的
-        evidence.verification 三元组才可晋级——缺者 unverified：不删除、照常列出、
-        可 reject 留原因，只拦「批准」这一个动作（红线 #7 硬化：没格式就不晋级）。
-        人可显式 override（allow_unverified + 必须带原因），批准行与决策留痕双记两键
-        并 stderr 警示——绝不死锁（gap6 §7 拍板），但机器永不自动放行（红线 #13）。
-        --apply 批量不经 override 通道（决策模板无此旋钮，有意）：override 必须是
-        单条显式决定，批量放行 unverified 等于没闸。
+        C2 证据闸（design_c2 §3.1；重构波松绑）：**改为显式 opt-in**——
+        `require_evidence=True` 时，四个可批准 kind 必须携带完备的
+        evidence.verification 四元组才可晋级（缺者 unverified：不删除、照常列出、
+        可 reject 留原因，只拦「批准」这一个动作，红线 #7 硬化：没格式就不晋级）；
+        人可显式 override（allow_unverified + 必须带原因）双留痕并 stderr 警示。
+
+        **默认（require_evidence=False）不再强制**：缺证据的草稿照常批准，且**不打**
+        override 标（没开闸就谈不上「豁免」）。这是本轮**有意的行为变更**（松绑），
+        风险已写进 AGENTS/CLAUDE——闸本体（`verification_problems` + override 机制）
+        保留未删，只是默认不生效；CI/人想要旧硬保证就传 `--require-evidence`。
         """
         row = self.resolve(ref)
         kind = row.get("kind", "pitfall")
@@ -296,14 +306,14 @@ class ReviewQueue:
             raise ValueError("boundary_review 是边界漂移分类决策：不自动写知识。"
                              "请人工改判 docs/ownership/atlas-boundaries.json 条目或 decision_log 后重跑分类")
         problems: list[str] = []
-        if kind in GATED_KINDS:
+        if kind in GATED_KINDS and require_evidence:
             problems = verification_problems(_verification_of(row))
             if problems:
                 if not allow_unverified:
                     raise ValueError(
                         f"缺少证据三元组（{'; '.join(problems)}），该项 unverified 不可晋级；"
-                        '确需人工批准：atlas review --approve <id> --allow-unverified '
-                        '--reason "<依据>"')
+                        '确需人工批准：atlas review --approve <id> --require-evidence '
+                        '--allow-unverified --reason "<依据>"')
                 if not override_reason.strip():
                     raise ValueError("override 必须留原因：--reason \"<凭什么豁免证据三元组>\""
                                      "——无痕迹的 override 等于没闸（红线 #13）")

@@ -214,18 +214,36 @@ def test_reapprove_same_name_overwrites_single_entry(tmp_path):
 
 
 def test_unverified_flow_candidate_blocked_with_guidance(tmp_path):
+    """C2 松绑（本轮有意变更默认）后，旧硬保证搬到**显式开闸**上：`require_evidence=True`
+    时缺三元组仍一律拒且消息点名 `--require-evidence`/`--allow-unverified` 指引。"""
     kb = KnowledgeBase(tmp_path / "kb")
     queue, draft_id = _seed_flow_candidate(tmp_path, verified=False)
-    with pytest.raises(ValueError, match="--allow-unverified"):
-        queue.approve(kb, draft_id, remedy="")
+    with pytest.raises(ValueError) as ei:
+        queue.approve(kb, draft_id, remedy="", require_evidence=True)
+    msg = str(ei.value)
+    assert "--allow-unverified" in msg and "--require-evidence" in msg, "拦批准要给指路，不是死锁"
     assert queue.stats()["pending"] == 1, "拦批准不删草稿：照常列出、可 reject"
 
 
+def test_unverified_flow_candidate_default_now_approves(tmp_path):
+    """反向对照：松绑后的默认（不开闸）同一草稿**能**批准，且**不打** override 标
+    ——证明「默认不强制」是真的，不是靠不写标记蒙过去。"""
+    kb = KnowledgeBase(tmp_path / "kb")
+    queue, draft_id = _seed_flow_candidate(tmp_path, verified=False)
+    queue.approve(kb, draft_id, remedy="")                     # 不传 require_evidence
+    row = next(r for r in queue.rows() if r["id"] == draft_id)
+    assert row["status"] == "approved"
+    assert "approved_despite_unverified" not in row            # 默认放行≠override
+    decisions = (tmp_path / "reports" / "review_decisions.jsonl").read_text(encoding="utf-8")
+    assert "unverified_override" not in decisions
+
+
 def test_unverified_override_still_requires_reason(tmp_path):
+    """开闸（require_evidence=True）时 override 仍必须留原因——旧闸语义逐字保留。"""
     kb = KnowledgeBase(tmp_path / "kb")
     queue, draft_id = _seed_flow_candidate(tmp_path, verified=False)
     with pytest.raises(ValueError, match="原因"):
-        queue.approve(kb, draft_id, remedy="", allow_unverified=True)
+        queue.approve(kb, draft_id, remedy="", allow_unverified=True, require_evidence=True)
 
 
 def test_readonly_knowledge_rejects_task_library_write(tmp_path):

@@ -1,8 +1,12 @@
-"""C2 证据式验收三元组（design_c2）：新晋级草稿必须带「复现命令/退出码/断言数/显式结论行」。
+"""C2 证据式验收三元组（design_c2）：新晋级草稿应带「复现命令/退出码/断言数/显式结论行」。
 
-钉死四件事：缺三元组不可 approve；可显式 override 但必须留痕（绝不死锁，红线 #7 是
-硬化不是绕毁）；存量已批准条目向后兼容不翻错；三元组透传进决策留痕。
-闸只查完备与形态，**不要求 verdict 必须绿**——坑点草稿记 fail 合法（证明失败真实复现过）。
+钉死四件事：**闸开时（require_evidence=True）**缺三元组不可 approve；闸开时可显式 override
+但必须留痕（绝不死锁，红线 #7 是硬化不是绕毁）；存量已批准条目向后兼容不翻错；三元组透传
+进决策留痕。闸只查完备与形态，**不要求 verdict 必须绿**——坑点草稿记 fail 合法（证明失败真实复现过）。
+
+重构波松绑：闸**降级为显式 opt-in**——`approve(require_evidence=False)`（默认）不强制，
+缺证据照常批准（见 test_gate_default_is_opt_in_approves_without_evidence）；闸本体保留未删，
+旧硬保证改由 `require_evidence=True` / CLI `--require-evidence` 取回（本文件各拦测已加该开关）。
 """
 import json
 import pytest
@@ -96,17 +100,31 @@ def test_is_verified_consistent_with_problems():
 
 @pytest.mark.parametrize("kind", ["pitfall", "selector_candidate", "bu_overlay"])
 def test_gate_blocks_unverified_for_all_three_kinds(tmp_path, kind):
+    """闸开（require_evidence=True）时缺三元组一律拦——闸本体保留未删，重构波只把它降级为 opt-in。"""
     _seed(tmp_path, f"g-{kind}", kind=kind, verified=False,
           evidence={"other_bu": "BU-B"} if kind == "bu_overlay" else None)
     queue = ReviewQueue(tmp_path)
     with pytest.raises(ValueError) as ei:
         queue.approve(_kb(tmp_path), f"g-{kind}", remedy="修复",
-                      component="c", element="e")
+                      component="c", element="e", require_evidence=True)
     msg = str(ei.value)
     assert "unverified 不可晋级" in msg
     assert "--allow-unverified" in msg and "--reason" in msg   # 指路而非死锁
     assert queue.pending()                                     # 不可批准 ≠ 删除：照常可见
     assert queue.stats()["approved"] == 0                      # 一条都没进去
+
+
+def test_gate_default_is_opt_in_approves_without_evidence(tmp_path, capsys):
+    """重构波松绑：默认（require_evidence=False）**不再强制**——缺三元组的草稿照常批准，
+    且**不打** override 标（没开闸就谈不上「豁免」）。这是有意的行为变更，风险见 AGENTS/CLAUDE。
+    逆变面（旧默认）由 test_gate_blocks_unverified_for_all_three_kinds 用 require_evidence=True 钉住。"""
+    _seed(tmp_path, "relax1", verified=False)
+    queue = ReviewQueue(tmp_path)
+    queue.approve(_kb(tmp_path), "relax1", remedy="修复")     # 不传 require_evidence
+    row = next(r for r in queue.rows() if r["id"] == "relax1")
+    assert row["status"] == "approved"
+    assert "approved_despite_unverified" not in row            # 默认放行≠override
+    assert capsys.readouterr().err == ""                       # 无 override 警示噪音
 
 
 def test_verified_triplet_approves_normally_no_marks(tmp_path, capsys):
@@ -127,7 +145,8 @@ def test_override_approves_with_full_trace(tmp_path, capsys):
     _seed(tmp_path, "ov1", verified=False)
     queue = ReviewQueue(tmp_path)
     queue.approve(_kb(tmp_path), "ov1", remedy="修复",
-                  allow_unverified=True, override_reason="真机已复现确认，三元组在工单附件")
+                  allow_unverified=True, override_reason="真机已复现确认，三元组在工单附件",
+                  require_evidence=True)
     row = next(r for r in queue.rows() if r["id"] == "ov1")
     assert row["status"] == "approved" and row["approved_despite_unverified"] is True
     # 三元组/override 透传进决策留痕（--reason 原文入库）
@@ -147,7 +166,8 @@ def test_override_without_reason_is_refused(tmp_path, bad_reason):
     queue = ReviewQueue(tmp_path)
     with pytest.raises(ValueError, match="必须留原因"):
         queue.approve(_kb(tmp_path), "ov2", remedy="修复",
-                      allow_unverified=True, override_reason=bad_reason)
+                      allow_unverified=True, override_reason=bad_reason,
+                      require_evidence=True)
     assert queue.stats()["pending"] == 1 and queue.stats()["approved"] == 0
 
 
@@ -203,12 +223,12 @@ def test_apply_batch_names_unverified_and_cannot_be_backdoored(tmp_path):
     _seed(tmp_path, "b-bad", verified=False)
     queue = ReviewQueue(tmp_path)
     kb = _kb(tmp_path)
-    # 决策模板没有 --allow-unverified 通道（有意）：批量放行 unverified 等于没闸。
+    # 决策模板没有 --allow-unverified 通道（有意）：闸开时批量放行 unverified 仍走不通。
     # 就算人往决策 JSON 里塞同名字段，apply 也不透传——override 必须单条显式决定。
     result = queue.apply(kb, [
         {"id": "b-ok", "remedy": "修复一"},
         {"id": "b-bad", "remedy": "修复二", "allow_unverified": True, "override_reason": "旁路"},
-    ])
+    ], require_evidence=True)
     assert result["applied"] == 1
     failed = {f["id"]: f["error"] for f in result["failed"]}
     assert "b-bad" in failed and "--allow-unverified" in failed["b-bad"]
@@ -323,7 +343,7 @@ def test_override_works_for_every_gated_kind(tmp_path, kind, capsys):
     queue = ReviewQueue(tmp_path)
     queue.approve(_kb(tmp_path), f"k-{kind}", remedy="真值/选择器/修复",
                   component="c", element="e", allow_unverified=True,
-                  override_reason="人审点名豁免")
+                  override_reason="人审点名豁免", require_evidence=True)
     rows_path = tmp_path / "experience_drafts.jsonl"
     on_disk = [json.loads(l) for l in rows_path.read_text(encoding="utf-8").splitlines() if l.strip()]
     row = next(r for r in on_disk if r["id"] == f"k-{kind}")

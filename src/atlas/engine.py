@@ -1,12 +1,13 @@
 from __future__ import annotations
 import os
+import sys
 import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 from . import delivery, waits
 from .actor import Actor
-from .config import AtlasConfig
+from .config import AtlasConfig, PROD_WRITE_WARNING
 from .contracts import ContractRegistry
 from .core import Channel, Task, write_produces
 from .abilities import CallApi
@@ -191,6 +192,14 @@ class ExecutionEngine:
                 # （与 #85 中断留痕同红线）。classify 把「生产环境禁止」归 env_blocked：策略阻挡，
                 # 不是代码缺陷（红线 #7：环境/操作与缺陷分开），summary 缺陷分布里如实可见。
                 if not task.metadata.read_only:
+                    # 重构波松绑：ATLAS_ALLOW_PROD_WRITE=1 显式放行生产写。放行不是静默的——
+                    # stderr 打一行 ASCII 警告（cp936 可编），并把「这一步在生产被显式放行」
+                    # 写进本 step record（可审计）。默认关时 `prod_write_allowed` 为假，
+                    # 下面 validate_write 照旧抛 PermissionError，runs.jsonl 形态逐字节不变。
+                    if self.config.prod_write_allowed:
+                        print(PROD_WRITE_WARNING, file=sys.stderr, flush=True)
+                        if isinstance(record, dict):
+                            record["prod_write_allowed"] = True
                     self.config.validate_write(str(actor.ctx.get("remark", "非人工创建")))
                 result = self._perform(actor, task)
                 degraded_cursor = self._flush_degradations(actor, record, degraded_cursor)

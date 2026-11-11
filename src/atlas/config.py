@@ -2,9 +2,17 @@
 from __future__ import annotations
 import os
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
+
+# 生产写护栏的显式放行开关（重构波松绑：默认关，行为与放行前逐字节一致）。
+# 打开时调用方**必须**打这一行 ASCII 警告并把该决定写进 runs.jsonl（可审计）——
+# 不得做成静默生效的隐式默认（AGENTS §1 #2 的放松不是「默认允许」，是「显式 opt-in」）。
+PROD_WRITE_ENV_KEY = "ATLAS_ALLOW_PROD_WRITE"
+PROD_WRITE_WARNING = ("WARN: ATLAS_ALLOW_PROD_WRITE=1 已放行生产环境写操作"
+                      "（默认应为关；请核对 runs.jsonl 留痕）")
 
 # 键名后缀是引擎的环境知识；前缀是「对接哪个业务项目」的开关。
 # 默认 DEMO_ 对应仓库自带的虚构示例；指向真实项目时用 ATLAS_ENV_PREFIX 覆盖
@@ -81,6 +89,23 @@ def _int_env(key: str, default: int, *, minimum: int = 0) -> int:
         raise ValueError(f"{key} 不能小于 {minimum}，收到 {value}")
     return value
 
+def _flag_env(key: str) -> bool:
+    """布尔开关（显式 opt-in）的单一读取点：**只认字面 `'1'` 为开**。
+
+    缺省/空白 → 关；其它任何值（`yess`/`true`/`on`/`0`/`yes`…）→ 关且 WARN。
+    坏值绝不静默生效：开关类配置写错是「看着像开其实没开」的假绿入口——若坏值当开，
+    生产写这种不可逆动作会被一个拼错的环境变量悄悄放行；若坏值当关却不吭声，人又
+    以为已开。两种都坏，所以「按关处理 + 点名」是唯一诚实落点（#79/#80 口径）。
+    """
+    raw = os.environ.get(key)
+    if raw is None or not raw.strip():
+        return False
+    if raw.strip() == "1":
+        return True
+    print(f"WARN: {key}={raw!r} 不是合法开关值（只认 '1'），按关处理", file=sys.stderr)
+    return False
+
+
 def check_legacy_paths(root: Path, web: str) -> None:
     """旧项目根/web 子目录存在性预检——判据与消息的单一真相。
 
@@ -143,6 +168,23 @@ class AtlasConfig:
     @property
     def is_production(self) -> bool:
         return self.env.startswith("prod-")
+
+    @property
+    def allow_prod_write(self) -> bool:
+        """`ATLAS_ALLOW_PROD_WRITE=1`：显式放行生产环境写操作（默认关）。
+
+        重构波松绑：原 `validate_write` 对 `prod-*` 无条件拒绝，无任何放行通道。
+        现降级为显式 env 开关——**默认关时行为与放行前逐字节一致**（红线 #2 的默认
+        保护不松动）；打开才放行，且调用方（engine）须打 ASCII 警告并把该事实写进
+        runs.jsonl（可审计）。开关值写坏一律按关处理（见 `_flag_env`），不静默生效。"""
+        return _flag_env(PROD_WRITE_ENV_KEY)
+
+    @property
+    def prod_write_allowed(self) -> bool:
+        """「生产环境 ∧ 显式放行」——写护栏与其审计留痕的**唯一判据位**（#92）。
+
+        engine 据此打警告 + 留痕、`validate_write` 据此决定是否抛——同一判据不留第二份。"""
+        return self.is_production and self.allow_prod_write
 
     @property
     def artifacts_dir(self) -> Path:
@@ -230,10 +272,14 @@ class AtlasConfig:
         return key, password or ""
 
     def validate_write(self, remark: str = "") -> None:
-        if self.is_production:
+        # 生产禁写的放松是**显式 opt-in**（ATLAS_ALLOW_PROD_WRITE=1）：默认仍拒绝，
+        # 行为与放行前逐字节一致。放行时的警告与 runs.jsonl 留痕由调用方（engine）负责
+        # ——本方法只做「抛 or 不抛」的判据，写盘/终端副作用不在这里（config 无 recorder）。
+        if self.is_production and not self.allow_prod_write:
             raise PermissionError("生产环境禁止建单、保存、提交、删除等写操作")
         # 无条件要求备注标记：原 `if remark and ...` 让空备注绕过——把 ctx["remark"]
         # 置空即可跳过「非人工创建」护栏。自动单据必须带标记，空/缺备注本身即违规。
+        # 放行生产写**不**豁免此标记（红线 #3 与 #2 独立，松绑 #2 不牵连 #3）。
         if "非人工创建" not in remark:
             raise ValueError("自动创建业务单据的备注必须包含「非人工创建」（空备注不允许）")
 

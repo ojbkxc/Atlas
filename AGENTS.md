@@ -13,9 +13,15 @@ Atlas 是可携带的 UI/API 测试自动化平台，不是某个公司的专用
 ## 1. Never（硬性禁止）
 
 1. **禁止硬编码凭据或真实 `.env` 入库**。沿用 `DEMO_*` 键名，密码只能从环境读取。
-2. **禁止生产写操作**。`prod-*` 的建单、保存、提交、删除由引擎拒绝；不要加绕过开关。
+2. **禁止生产写操作（默认）**。`prod-*` 的建单、保存、提交、删除**默认**由引擎拒绝。
+   重构波把唯一放行通道收敛为显式 env 开关 `ATLAS_ALLOW_PROD_WRITE=1`——**默认关时行为与
+   放行前逐字节一致**；打开时 engine 打一行 ASCII 警告并把 `prod_write_allowed` 写进
+   runs.jsonl（可审计），绝不静默生效；开关值写坏（如 `=yess`）一律按关处理。放行**不**豁免
+   #3 的「非人工创建」标记（松绑 #2 不牵连 #3）。
 3. **禁止自动创建无「非人工创建」备注的单据**；create 要受配额限制并保留可回收信息。写操作门 `validate_write` **无条件要求备注含标记**，空/缺备注本身即违规（不得用 `remark=""` 绕过）。
 4. **禁止静默修改 `legacy-suite` 或 `legacy-api` 原仓库**。它们通过适配器复用，当前 Atlas 的实现不得向原仓库写文件。
+   （重构波口径「产物层不强制」：该约束在 **Atlas 层**兑现——`export-pytest`/`--compat` 产物只写 Atlas 侧 `-o` 目录、
+   旧 lib 只读复用；生成的产物**不**独立重验此点，由接线的人保证 `-o` 不落在旧仓内。）
 5. **禁止把 toolbox 当执行底座**。它是感知器官；不能用其替代 Python+Playwright 兼容层。
 6. **禁止步骤内数据兜底**：换客户、循环试备件、降数量、抄历史单都不允许。数据缺失用 `EnvBlocked` 明确终止。
 7. **禁止为变绿而放宽断言、吞异常、把失败改 SKIP**。环境限制、产品缺陷、代码缺陷必须分开。
@@ -90,6 +96,9 @@ PYTHONPATH=src python -m atlas doctor
 - 删 `plan_ctx.json` 后 TC2~TC17 会因缺少 `_tc1_ok` 直接 SKIP；分批回归必须先跑 TC1。
 - 知识写回先草稿后人审；agent 的错误分类经人纠正后才可以成为新 pitfall。
 - 知识晋级要证据：可批准 kind 的草稿必须带完备 `evidence.verification`（command/exit_code/assertions/verdict），缺者只拦「批准」这一个动作，不删除、不静默放行；人工豁免必须单条显式给理由并双留痕，批量通道无豁免。判据唯一实现是 `review.verification_problems`——healing 的提案构造期复用它做形态校验，`allure-analyze` 侧只**产**三元组不另设判定，强制点始终只有 `review.approve` 入口一处（#92/#13）。
+  **重构波松绑**：该闸降级为**显式 opt-in**——传 `review --require-evidence`（或 `approve(require_evidence=True)`）才强制；
+  默认**不**强制（缺证据草稿照常批准，**本轮有意的行为变更**，风险自担）。闸本体（`verification_problems` + override 机制）
+  保留未删，旧硬保证由该开关取回；强制点仍只有 `review.approve` 入口一处（#92/#13）。
 - 跑绿固化（落库线）走同一条晋级路：flow 级 `harvest: true`（或 `atlas run --harvest`，编译期只收布尔）且整条 `passed` 才产 `flow_candidate` 草稿——失败/中断/env_blocked/waiting 一律不固化；成功三元组（`verdict="pass"`）与失败三元组共用 `engine._verification` 一把刀，verdict/exit_code 由真实终态派生（红线 #7 双向：没绿不许装绿，绿了也不许装红）。固化是**尽力而为**：写盘失败只 WARN，绝不把已通过的 run 翻成失败。公共任务库写路径唯一 = review 塔批准（`KnowledgeBase.save_task_entry`，私有 `task_library.json`，按名唯一、同名再批准=更新；steps 为空=假资产点名拒绝）；`atlas library` 只读。id 按 flow 内容摘要派生：同 flow 重跑只增 seen 刷新证据，不堆重复审核负担（红线 #9/#10/#12）。
 - 定位描述判据**单一实现**在 `locators.py`（gap13）：组件库 `selectors` 两形态——CSS 字符串（存量，逐字节兼容）或结构化描述 `{"role":..,"name":..}`/`{"label":..}`/`{"testid":..}`。解析/校验/canonical 文本/`→locator` 全在本模块；`knowledge.save_component_selector`、`review.approve_to_selector`、`SelectorRegistry.resolve`、`autopilot` 的 click/fill、`emit_pytest` 页对象一律从它派生，不得各写一份形态判断（#92）。**落盘形态必须是能再 parse 回来的用户形态**（CSS 恒为字符串、结构化不带内部 `kind` 标签）；坏形态在执行/写库/生成三处一律点名，绝不静默把映射当 CSS 字面量用。ARIA 优先是**组件库人审内容**决定的，引擎与生成器都不猜；`waits.py` 的框架结构类（`.el-table`/`.el-loading-mask`）仍是 CSS——判据对象不同，不为统一而改。
 - 新增外部接口要可适配、可离线测试，不复制整套公司项目到 Atlas。
