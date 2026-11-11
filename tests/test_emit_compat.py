@@ -19,6 +19,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -237,6 +238,26 @@ def test_compat_combo_gate_single_point():
     assert "未知 --compat" in unknown and "legacy-suite" in unknown
 
 
+def _handwritten_compat_combo(text: str) -> bool:
+    """入口体内**手抄 compat×fast 组合判断**的检出（收紧到原意，lead 2026-11-11 裁决）。
+
+    旧判据是裸子串 `assert "not fast" not in body`——它**误伤**任何含 `not fast` 的无关
+    判据（真实案例：T3 的 `parallel > 1 and not fast`，语义与 compat 无关却触发假阳性）。
+    收紧为只认真正要防的形态：**同一行**里字面 compat 值与 fast **同现**（组合判断），
+    而非「compat 出现」本身——合法的 `if compat == "legacy-suite":`（纯路由，无 fast）
+    不误伤。保护强度不降：真手抄 `compat == "legacy-suite" and not fast` 仍被抓到（见正向对照）。
+    """
+    compat_literal = re.compile(
+        r"""compat\s*==\s*["'](?:legacy-suite|none)["']|["'](?:legacy-suite|none)["']\s*==\s*compat""")
+    for ln in text.splitlines():
+        if compat_literal.search(ln) and re.search(r"\bfast\b", ln):
+            return True
+        # 组合形态兜底：compat 与 fast 取反同现（手抄组合判断的另一种写法）
+        if "compat" in ln and "not fast" in ln:
+            return True
+    return False
+
+
 def test_compat_combo_problem_source_single_point():
     """「判据只一份」的源码面：cli.py 的 _compat_gate 若自带第二份组合字面，此测点名——
     现读两边源码，确认 generator 面只 import 共享函数，不复制 if 内容。"""
@@ -244,7 +265,14 @@ def test_compat_combo_problem_source_single_point():
     assert "compat_combo_problem" in src            # 生成器面=调用共享判据
     body = src.split("def emit_pytest_package", 1)[1].split("\ndef ", 1)[0]
     # 生成器入口体内不得出现手抄的组合字面判断（`compat == "legacy-suite" and not fast` 类）
-    assert "not fast" not in body.replace("compat_combo_problem", "")
+    assert not _handwritten_compat_combo(body.replace("compat_combo_problem", ""))
+    # 正向对照（保护强度不降）：真手抄组合形态仍被同一判据抓到
+    assert _handwritten_compat_combo('if compat == "legacy-suite" and not fast:\n    pass\n')
+    assert _handwritten_compat_combo('if "legacy-suite" == compat and fast:\n    pass\n')
+    assert _handwritten_compat_combo("if compat and not fast:\n    pass\n")
+    # 负向对照：无关的 `and not fast`（如 T3 parallel 判据）与合法纯路由不误伤
+    assert not _handwritten_compat_combo('if parallel > 1 and not fast:\n    raise X\n')
+    assert not _handwritten_compat_combo('if compat == "legacy-suite":\n    return y\n')
 
 
 def test_compat_routing_rejects_before_mkdir(tmp_path):

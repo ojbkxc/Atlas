@@ -1148,7 +1148,7 @@ def emit_pytest_package(*, out_dir: Path, endpoints: list[Endpoint] | None = Non
                         base_url: str = "", global_headers: dict | None = None,
                         components: dict | None = None, naming: str = "resp_{n}_{slug}",
                         force: bool = False, fast: bool = False,
-                        compat: str = "none") -> list[str]:
+                        compat: str = "none", parallel: int = 0) -> list[str]:
     """写出一份可独立运行的 pytest 回归代码包（只生成不执行），返回写入的文件路径。
 
     产物：``test_<id>.py`` ＋ ``atlas_pages.py``（有组件库时）＋ ``_atlas_support.py``
@@ -1169,6 +1169,16 @@ def emit_pytest_package(*, out_dir: Path, endpoints: list[Endpoint] | None = Non
     _combo = compat_combo_problem(compat, fast)
     if _combo:
         raise PytestEmitError(_combo)
+    # 并行分片参数（T3）：N<=1=单进程；N>1 仅快模式（产物分片依赖快包底座与 xdist）——拒绝
+    # 发生在任何写盘之前（out_dir 不得创建，与 F-9 闸同纪律）。
+    try:
+        parallel = int(parallel)
+    except (TypeError, ValueError):
+        raise PytestEmitError(f"--parallel 需整数：{parallel!r}（0/1=单进程，>1 需 pytest-xdist）")
+    if parallel < 0:
+        raise PytestEmitError(f"--parallel={parallel} 不合法：0/1=单进程，>1 需 pytest-xdist")
+    if parallel > 1 and not fast:
+        raise PytestEmitError("--parallel>1 仅快模式（--fast）支持：产物分片依赖快包底座")
     if compat == "legacy-suite":
         from .emit_compat import emit_compat_package
         return emit_compat_package(out_dir=out_dir, flow=flow, flow_id=flow_id,
@@ -1216,7 +1226,7 @@ def emit_pytest_package(*, out_dir: Path, endpoints: list[Endpoint] | None = Non
 
     readme_path = out_dir / "README.md"
     readme_path.write_text(_build_readme(flow_id, specs, bool(comps_map),
-                                         fast=fast),
+                                         fast=fast, parallel=parallel),
                            encoding="utf-8")
     written.append(str(readme_path))
 
@@ -1232,7 +1242,7 @@ def emit_pytest_package(*, out_dir: Path, endpoints: list[Endpoint] | None = Non
 
 
 def _build_readme(flow_id: str, specs: list[StepSpec], has_pages: bool,
-                  *, fast: bool = False) -> str:
+                  *, fast: bool = False, parallel: int = 0) -> str:
     n_api = sum(1 for s in specs if s.is_api)
     n_ui = len(specs) - n_api
     n_write = sum(1 for s in specs if s.is_write)
@@ -1301,5 +1311,18 @@ def _build_readme(flow_id: str, specs: list[StepSpec], has_pages: bool,
             "  或 `legacy_page_call` 只读委托旧套件（位置/函数名来自配置，勿在产物硬编码业务字面量）。",
             "- 红线警示：只生成不执行（#9）；断言不放宽（#7，`TODO(人审)` 不转恒真）；",
             "  生产禁写第二层仍由 Atlas engine 兜底，本产物 README 不豁免人工确认。",
+        ]
+    if fast and parallel > 1:
+        lines += [
+            "",
+            f"## 并行分片（--parallel {parallel}，T3）",
+            "",
+            f"- 运行：`ATLAS_FAST_PARALLEL={parallel} pytest -n {parallel} -q`。",
+            "- 依赖：**pytest-xdist**（`pip install pytest-xdist`）——底座在 `pytest_configure` 校验；",
+            "  声明 `ATLAS_FAST_PARALLEL>1` 却缺 xdist 会**点名报错**，绝不静默单进程（缺依赖不降级）。",
+            "- 代价与边界：`sole_page` 是 module scope——每个 worker 首次触达某模块即各自 launch+login，",
+            f"  故 {parallel} worker ≈ 最多 {parallel} 只浏览器/{parallel} 次登录（内存与句柄线性上升）；",
+            "  跨批 `plan_ctx` 在并行下**不可靠**（worker 无固定顺序、同一文件并发读写）——",
+            "  仅适用于彼此独立的批次；有前置依赖的批次请单进程跑。",
         ]
     return "\n".join(lines) + "\n"

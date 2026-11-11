@@ -77,6 +77,10 @@ def _parser() -> argparse.ArgumentParser:
                                    help="兼容输出形态：--compat legacy-suite 产出旧仓可直接运行的快包"
                                         "（不 import atlas，gap11）；必须与 --fast 同用，"
                                         "none=现行形态")
+    export_pytest_cmd.add_argument("--parallel", type=int, default=0,
+                                   help="并行分片 worker 数（T3；0/1=单进程默认）。>1 须配 --fast，"
+                                        "产物 README 记并行用法；运行需 pytest-xdist，"
+                                        "缺依赖运行期点名报错不静默降级")
     flow.add_argument("flow", type=Path)
     flow.add_argument("--account", default=None, help="缺省取业务插件 session 默认账号")
     flow.add_argument("--ou", default=None, help="缺省取业务插件 session 默认 OU")
@@ -1293,7 +1297,8 @@ def _export_pytest(args) -> int:
         compat_kw = ({"compat": args.compat}
                      if getattr(args, "compat", "none") != "none" else {})
         written = emit_pytest_package(out_dir=out_dir, flow=flow,
-                                      force=args.force, fast=args.fast, **compat_kw)
+                                      force=args.force, fast=args.fast,
+                                      parallel=getattr(args, "parallel", 0), **compat_kw)
     except (OSError, ValueError, KeyError, RuntimeError, yaml.YAMLError) as exc:
         return _user_error(exc)
     print(json.dumps({"flow": str(args.flow), "out_dir": str(out_dir),

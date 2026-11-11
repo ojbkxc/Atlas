@@ -212,6 +212,50 @@ def attach_denied_by_prod(env) -> bool:
     return bool(_attach_endpoint(env)) and _is_production(env)
 
 
+# ── 并行分片（T3）：ATLAS_FAST_PARALLEL 运行期旋钮 + 缺依赖点名（绝不静默降级）──────
+# 产物默认单进程（不引新依赖）；>1 才需 pytest-xdist。判据单点在本模块，conftest 只调不复制。
+# 边界（写清「怎么坏」）：xdist 按**用例**分发，本底座 sole_page 是 module scope——每个
+# worker 首次触达某模块即各自 launch+login 一次，故 N worker ≈ 最多 N 只浏览器/N 次登录；
+# 跨批 plan_ctx 在并行下不可靠（worker 无固定顺序、同一文件并发读写），并行只适用于
+# **彼此独立**的批次（详见产物 README 的并行段）。
+
+def parallel_workers(env) -> int:
+    """env → 请求的 worker 数（1=单进程）。ATLAS_FAST_PARALLEL 缺省/空白 → 1；
+    非整数 / <=0 → EnvBlocked 点名键（不静默当单进程跑——那正是「静默降级」本身）。"""
+    env = env or {}
+    raw = str(env.get("ATLAS_FAST_PARALLEL", "") or "").strip()
+    if not raw:
+        return 1
+    try:
+        workers = int(raw)
+    except ValueError:
+        raise EnvBlocked(
+            f"ATLAS_FAST_PARALLEL={raw!r} 非整数：留空/1=单进程，>1 需 pytest-xdist")
+    if workers < 1:
+        raise EnvBlocked(f"ATLAS_FAST_PARALLEL={workers} 须为正整数（1=单进程）")
+    return workers
+
+
+def xdist_available() -> bool:
+    """pytest-xdist 是否可导入（并发诉求的**真实依赖**）。用 __import__ 不引 import 语句
+    （产物 import 面保持 stdlib+pytest+playwright；#92 不留死依赖）。异常一律当不可用。"""
+    try:
+        __import__("xdist")
+        return True
+    except Exception:
+        return False
+
+
+def parallel_setup_problem(workers: int, *, xdist_available: bool) -> str:
+    """返回空串（可继续）或点名文案：workers>1 缺 xdist → 报错点名 pip install（不降级）。"""
+    if workers <= 1:
+        return ""
+    if not xdist_available:
+        return (f"缺依赖：ATLAS_FAST_PARALLEL={workers} 需 pytest-xdist——运行 "
+                "`pip install pytest-xdist`（不静默降级为单进程）")
+    return ""
+
+
 def _exception_text(exc: BaseException) -> str:
     """异常定性文本：类型名+消息；坏 __str__ 回落类型名（定性器不得先于被定性对象死，#89）。"""
     try:
@@ -287,6 +331,55 @@ def current_page():
     return _CURRENT_PAGE[0]
 
 
+# ---------------------------------------------------------------------------
+# 失败腿 trace 归档（T4）：ATLAS_FAST_TRACE=="1" 才启用；默认关=零开销（红线 #8 同族）
+# ---------------------------------------------------------------------------
+# ⚠ 凭据红线（如实标注，不声称安全）：Playwright trace.zip（screenshots+snapshots）会带进
+# **网络请求/响应体与头**，且动作元数据记录 fill()/press() 的**输入值**——登录链路把密码
+# 经 fill/网络 POST 送出时，明文可能落进 trace.zip。Playwright 无内置脱敏。
+#   规避：①生产/含真实凭据的运行保持 ATLAS_FAST_TRACE 关闭（默认即关）；
+#        ②trace.zip 视同敏感取证物（落 reports/traces/，gitignore 内，勿提交/外发）；
+#        ③需要分享时先人工审阅再裁剪。sources=False 只是不打包脚本源码，**不**擦网络载荷。
+TRACES_DIR_NAME = "traces"
+
+
+def trace_enabled(env) -> bool:
+    """ATLAS_FAST_TRACE=="1" 才启用——默认关使「成功腿零开销」字面成立（连 start 都不调）。"""
+    env = env or {}
+    return str(env.get("ATLAS_FAST_TRACE", "") or "").strip() == "1"
+
+
+def trace_path(runs_path, run_id) -> Path:
+    """trace.zip 落点：<runs 同目录>/traces/<run_id>.zip（与截图 artifacts 同族、gitignore 内）。"""
+    return Path(runs_path).parent / TRACES_DIR_NAME / f"{run_id}.zip"
+
+
+def start_tracing(page) -> bool:
+    """尽力而为启动 Playwright tracing（截图+DOM 快照;sources=False 不带脚本源码）。
+    无 page / 无 tracing API / 抛错 → False（零涟漪：取证自身失败绝不改变用例判定，session.py 纪律）。"""
+    if page is None:
+        return False
+    try:
+        page.context.tracing.start(screenshots=True, snapshots=True, sources=False)
+        return True
+    except Exception:
+        return False
+
+
+def stop_tracing(page, path=None) -> bool:
+    """停止 tracing；path 非空则落盘 trace.zip（否则丢弃缓冲区=成功腿不产文件）。失败静默 False。"""
+    if page is None:
+        return False
+    try:
+        if path:
+            page.context.tracing.stop(path=str(path))
+        else:
+            page.context.tracing.stop()
+        return True
+    except Exception:
+        return False
+
+
 def default_runs_path() -> Path:
     """产物默认 runs.jsonl = <底座文件所在目录>/reports/runs.jsonl（C.1 钉死路径）。"""
     return Path(__file__).resolve().parent / "reports" / "runs.jsonl"
@@ -328,10 +421,16 @@ class RunWriter:
         self.steps: list = []
         self._closed = False
         self._lock = threading.Lock()
+        self.trace = None   # 失败腿 trace.zip 绝对路径（T4）；None=不写键（成功腿/未启用）
 
     @property
     def closed(self) -> bool:
         return self._closed
+
+    def set_trace(self, path) -> None:
+        """登记失败腿 trace.zip 路径（T4，尽力而为）：仅当 tracing 真启动且落盘成功才调。
+        只写**路径**进 runs.jsonl——不回写内容（凭据面见 trace_enabled 段注释）。"""
+        self.trace = str(path)
 
     @contextmanager
     def step(self, name, op: str = "action"):
@@ -384,6 +483,8 @@ class RunWriter:
                       "mode": self.mode, "status": status, "started_at": self.started_at,
                       "finished_at": datetime.now(timezone.utc).isoformat(),
                       "steps": list(self.steps)}
+            if self.trace:
+                record["trace"] = self.trace  # T4：失败腿取证路径（只写路径，见 set_trace）
             if reason:
                 record["reason"] = str(reason)[:REASON_MAX_LEN]  # 非空才写键（缺省形态=存量）
             # default 兜底永不抛（#126 面B）：坏字段可以有噪音，不能丢整轮证据。
@@ -487,30 +588,87 @@ def wait_for_url_change(page, timeout_ms: int = 10000) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 启动参数组（F2，锁步 session.py 六项 + 旧套件同款无头默认）
+# 浏览器矩阵（T5）：ATLAS_BROWSER_CHANNEL + ATLAS_BROWSER_EXECUTABLE
+# 判据单点：本模块是取值域/家族映射的唯一实现位；引擎侧 config.py 用**同名键**
+# `ATLAS_BROWSER_CHANNEL`（锁步测钉「键名同源」）。默认**不同**是有意取舍：产物默认
+# chromium（自带、离线可跑，红线 #12「骨架可脱离 Atlas 运行」），引擎默认 chrome（复用
+# 系统 Chrome）——两义都写在这里，别拿一边的默认去「对齐」另一边。
 # ---------------------------------------------------------------------------
 
+BROWSER_CHANNELS = ("chromium", "chrome", "firefox", "webkit")
+DEFAULT_BROWSER_CHANNEL = "chromium"
+
+# 无头启动禁用参数组（锁步 session.py:26-27 六项 + 旧套件同款）
 _LAUNCH_DISABLE_ARGS = ("--disable-gpu", "--disable-dev-shm-usage", "--disable-crash-reporter",
                         "--disable-breakpad", "--no-first-run", "--disable-extensions")
 
+# 通道 → playwright 浏览器**家族属性**名：chrome 是 chromium 家族的 channel="chrome"
+# （复用系统 Chrome），不是另一只浏览器对象。
+_CHANNEL_FAMILY = {"chromium": "chromium", "chrome": "chromium",
+                   "firefox": "firefox", "webkit": "webkit"}
 
-def launch_kwargs(headless: bool) -> dict:
-    """chromium.launch 参数组。无头默认：slow_mo=0 + 六项禁用参数（固定 viewport 在
+
+def browser_channel(env) -> str:
+    """env → 归一化通道名（唯一判据位）。缺省/空白 → chromium（产物默认，自带可跑）；
+    未知值 → EnvBlocked 点名通道名与可选值（不猜、不静默回退到 chromium 掩盖拼写错误）。"""
+    env = env or {}
+    raw = str(env.get("ATLAS_BROWSER_CHANNEL", "") or "").strip().lower()
+    if not raw:
+        return DEFAULT_BROWSER_CHANNEL
+    if raw not in BROWSER_CHANNELS:
+        raise EnvBlocked(
+            f"未知 ATLAS_BROWSER_CHANNEL={raw!r}：可选 {'/'.join(BROWSER_CHANNELS)}"
+            f"（默认 {DEFAULT_BROWSER_CHANNEL}）")
+    return raw
+
+
+def browser_family(channel: str) -> str:
+    """通道名 → playwright 浏览器家族属性（chromium/firefox/webkit）。conftest 据此选
+    launch 对象；未知通道原样返回（browser_channel 已在入口拦，不在此二次猜）。"""
+    return _CHANNEL_FAMILY.get(channel, channel)
+
+
+def missing_browser_hint(exc: BaseException, channel: str) -> str:
+    """Playwright「缺浏览器可执行」错误 → 点名 `python -m playwright install` 指引；否则空串。
+
+    只认 Playwright 缺包文案两形态（"Executable doesn't exist" / "playwright install"）；
+    端口占用/权限/沙箱等**真实启动故障原样传播**——不给真故障套「缺浏览器」的皮（#102/#105
+    假归因同族），也不静默降级去 launch 别的浏览器。"""
+    text = _exception_text(exc)
+    if "playwright install" in text or "Executable doesn't exist" in text:
+        family = browser_family(channel)
+        return (f"缺浏览器可执行：{channel}（{family}）未安装——运行 "
+                f"`python -m playwright install {family}`，"
+                "或设 ATLAS_BROWSER_EXECUTABLE 指向系统浏览器（Linux CI 先例）")
+    return ""
+
+
+def launch_kwargs(headless: bool, env=None) -> dict:
+    """浏览器 launch 参数组。无头默认：slow_mo=0 + 六项禁用参数（固定 viewport 在
     new_context 侧，见 conftest）；有头：slow_mo=300 + --start-maximized。
 
     CDP_DEBUG=1 且有头时追加 --remote-debugging-port（冻场调试逃生舱，对齐 session.py:31-32）；
-    ATLAS_BROWSER_EXECUTABLE 系统浏览器优先（Linux CI 下载不到 Playwright 自带包的先例）。"""
+    ATLAS_BROWSER_EXECUTABLE 系统浏览器优先（Linux CI 下载不到 Playwright 自带包的先例）——
+    显式 executable 时 channel 置 None（两者同传会被 Playwright 拒）。
+    channel 键：chromium/其它家族 → None（chromium 走自带）；chrome → "chrome"（系统 Chrome 通道）。
+    `env=None` 落 os.environ（存量调用逐字兼容 #115）；conftest 传快照 dict 供同判据面。"""
+    env = os.environ if env is None else env
     headless = bool(headless)
     args = list(_LAUNCH_DISABLE_ARGS)
     if not headless:
         args.append("--start-maximized")
-        if os.environ.get("CDP_DEBUG") == "1":
-            args.append("--remote-debugging-port=" + os.environ.get("CDP_PORT", "9222"))
+        if env.get("CDP_DEBUG") == "1":
+            args.append("--remote-debugging-port=" + env.get("CDP_PORT", "9222"))
     kwargs = {"headless": headless, "slow_mo": 0 if headless else 300, "args": args}
-    executable = os.environ.get("ATLAS_BROWSER_EXECUTABLE", "").strip()
+    executable = str(env.get("ATLAS_BROWSER_EXECUTABLE", "") or "").strip()
+    channel = browser_channel(env)
     if executable:
         kwargs["executable_path"] = executable
+        kwargs["channel"] = None
+    else:
+        kwargs["channel"] = "chrome" if channel == "chrome" else None
     return kwargs
+
 
 
 # ---------------------------------------------------------------------------
@@ -657,8 +815,10 @@ Gap9 快模式 conftest（产物侧，不 import atlas 包；依赖栈 = pytest 
 运行期 env 旋钮（全量以 _atlas_fast.ENV_KEYS 为准，唯一清单+自证测见 emit_fast）：
 CASE_TIMEOUT / ATLAS_FAST_ENV / ATLAS_FAST_LOGIN_INDICATOR / ATLAS_FAST_ACCOUNT(→DEMO_USERNAME) /
 ATLAS_FAST_PASSWORD(→DEMO_PASSWORD) / ATLAS_FAST_ALLOW_WRITES / ATLAS_RUNS_DIR /
-ATLAS_BROWSER_EXECUTABLE / CDP_DEBUG / CDP_PORT / ATLAS_FAST_BASE_URL(→ATLAS_BASE_URL) /
-ATLAS_FAST_CDP / ATLAS_FAST_INTERACTIVE / ATLAS_FAST_ATTACH_MATCH。
+ATLAS_BROWSER_EXECUTABLE / ATLAS_BROWSER_CHANNEL(T5 浏览器矩阵) / CDP_DEBUG / CDP_PORT /
+ATLAS_FAST_BASE_URL(→ATLAS_BASE_URL) / ATLAS_FAST_CDP / ATLAS_FAST_INTERACTIVE /
+ATLAS_FAST_ATTACH_MATCH / ATLAS_FAST_PARALLEL(T3 分片，>1 需 pytest-xdist) /
+ATLAS_FAST_TRACE(T4 失败腿 trace.zip，默认关=零开销；含凭据面,见 _atlas_fast.trace_enabled 注)。
 
 F-11 留白（本波**不实现**，别顺手加）：产物不做「page.evaluate(fetch(...)) 发 API」通道——
 那条路绕过 abilities.py 的 auth_expired 判据与净化刀，要接须先落判据再落代码。
@@ -673,9 +833,12 @@ from pathlib import Path
 import pytest
 
 from _atlas_fast import (FLOW_STATUS_TIMEOUT, EnvBlocked, NotWired, RunWriter,
-                         attach_denied_by_prod, classify_fail_class, framework_reason,
-                         launch_kwargs, load_plan_ctx, save_plan_ctx, session_channel,
-                         set_current_page)
+                         attach_denied_by_prod, browser_channel, browser_family,
+                         classify_fail_class, current_page, framework_reason,
+                         launch_kwargs, load_plan_ctx, missing_browser_hint,
+                         parallel_setup_problem, parallel_workers, save_plan_ctx,
+                         session_channel, set_current_page, start_tracing, stop_tracing,
+                         trace_enabled, trace_path, xdist_available)
 
 HERE = Path(__file__).resolve().parent
 RUNS_PATH = HERE / "reports" / "runs.jsonl"
@@ -701,6 +864,15 @@ def pytest_configure(config):
     playwright_plugin = config.pluginmanager.getplugin("playwright")
     if playwright_plugin is not None:
         config.pluginmanager.unregister(playwright_plugin)
+    # 并行分片依赖闸（T3，判据单点在 _atlas_fast）：声明了 ATLAS_FAST_PARALLEL>1 却缺
+    # pytest-xdist → 点名报错，绝不静默单进程（缺依赖不降级）。坏旋钮值同样点名退出。
+    try:
+        workers = parallel_workers(dict(os.environ))
+    except EnvBlocked as exc:
+        raise pytest.UsageError(str(exc)) from exc
+    problem = parallel_setup_problem(workers, xdist_available=xdist_available())
+    if problem:
+        raise pytest.UsageError(problem)
 
 
 def _headless_decision(config) -> bool:
@@ -773,7 +945,11 @@ def sole_page(request):
     CDP 在场 + prod- 前缀 → 落 launch + WARN ATTACH-DISALLOWED-IN-PROD（B-3.4，不给强制开关）。
     playwright 缺席 → EnvBlocked（UI 腿依赖栈=pytest+playwright；缺席记环境阻塞行，
     绝不在 collection 期 import 崩整场，也不假绿）。半启动失败尽力清理不泄漏驱动进程
-    （#111 纪律），原始真因原样传播。"""
+    （#111 纪律），原始真因原样传播。
+    浏览器矩阵（T5）：launch 家族由 _atlas_fast.browser_channel/browser_family 单点判定
+    （默认 chromium；chrome→系统 Chrome channel；firefox/webkit 各自 launch 对象），
+    判据先行于驱动 start——坏通道值在此点名；缺浏览器可执行 → EnvBlocked 点名
+    `python -m playwright install`（真实启动故障原样传播，不套「缺浏览器」的皮）。"""
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
@@ -789,6 +965,9 @@ def sole_page(request):
               "prod- 前缀，本次改为自起浏览器并用 env 凭据登录"
               "（attach 恒禁生产，不给强制开关）")
     attached = channel == "attach"
+    # 浏览器家族判据先行（T5）：坏通道值在驱动 start 之前点名（判据先于被判定对象）。
+    browser_ch = browser_channel(env_snapshot)
+    browser_fam = browser_family(browser_ch)
     pw = sync_playwright().start()
     browser = None
     context = None
@@ -796,6 +975,7 @@ def sole_page(request):
     try:
         if attached:
             # attach：只借用人已打开的目标页；不 new_context/new_page 造东西（那是人的浏览器）
+            # CDP 是 Chromium 家族专有——attach 通道恒走 chromium（与 browser_fam 解耦，不猜）。
             browser = pw.chromium.connect_over_cdp(
                 env_snapshot.get("ATLAS_FAST_CDP", "").strip())
             match_value = os.environ.get("ATLAS_FAST_ATTACH_MATCH", "").strip()
@@ -806,12 +986,18 @@ def sole_page(request):
             page = _attach_pick_page(browser, match_value)
             context = page.context
         else:
-            browser = pw.chromium.launch(**launch_kwargs(headless))
+            kwargs = launch_kwargs(headless, env_snapshot)
+            if browser_fam == "firefox":
+                browser = pw.firefox.launch(**kwargs)
+            elif browser_fam == "webkit":
+                browser = pw.webkit.launch(**kwargs)
+            else:
+                browser = pw.chromium.launch(**kwargs)
             context = browser.new_context(
                 viewport={"width": 1920, "height": 1080} if headless else None,
                 accept_downloads=True)
             page = context.new_page()
-    except BaseException:
+    except BaseException as exc:
         # launch 通道自己开的才关；attach 半途失败时没开过任何东西（browser 是借的，只断连）
         if not attached:
             for obj in (context, browser):
@@ -824,6 +1010,10 @@ def sole_page(request):
             pw.stop()
         except Exception:
             pass
+        # 缺浏览器可执行（T5）→ 点名 python -m playwright install；其余启动故障原样传播（#102）。
+        hint = missing_browser_hint(exc, browser_ch)
+        if hint:
+            raise EnvBlocked(hint) from exc
         raise
     set_current_page(page)
     yield page
@@ -967,12 +1157,29 @@ def _watchdog_timeout_reason(limit: float) -> str:
 
 @pytest.fixture(autouse=True)
 def _fast_runlog(request):
-    """一 test 一行 runs.jsonl（Atlas 兼容 schema，`atlas allure` 直接可吃，F7）。"""
+    """一 test 一行 runs.jsonl（Atlas 兼容 schema，`atlas allure` 直接可吃，F7）。
+
+    trace 归档（T4）：仅 ATLAS_FAST_TRACE=="1" 才 start_tracing——默认关使**成功腿零开销**
+    （连 start 都不调，红线 #8 同族）；失败腿 stop_tracing(path=trace.zip) 落盘并把**路径**
+    写进运行行；成功腿 stop(discard) 不产文件。凭据面见 _atlas_fast.trace_enabled 段注释
+    （trace.zip 可能含网络载荷/fill 输入值——生产默认关、落 gitignore 内、勿外发）。"""
     case = f"{request.node.path.stem}::{request.node.originalname or request.node.name}"
     env = os.environ.get("ATLAS_FAST_ENV", "").strip() or "local"
     writer = RunWriter(case, env, path=RUNS_PATH)
+    tracing = start_tracing(current_page()) if trace_enabled(os.environ) else False
     yield writer
     status, reason = _runlog_status_reason(getattr(request.node, "_fast_excinfos", ()))
+    if tracing:
+        if status != "passed":
+            tpath = trace_path(RUNS_PATH, writer.run_id)
+            try:
+                tpath.parent.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                pass
+            if stop_tracing(current_page(), tpath):
+                writer.set_trace(tpath.resolve())
+        else:
+            stop_tracing(current_page())   # 成功腿丢弃缓冲区：不产文件、不写路径
     try:
         # close 幂等：看门狗已写 timeout 行时这里是 no-op——超时不许翻绿（F6③）
         writer.close(status, reason=reason)
@@ -1065,6 +1272,9 @@ ENV_KEYS = {
     "ATLAS_FAST_CDP": None,        # F-11 attach 端点：None=缺省走 launch；置位≠attach（需在场闸）
     "ATLAS_FAST_INTERACTIVE": "0",  # B-3 在场声明闸：=="1" 才允许 attach（session_channel 单点）
     "ATLAS_FAST_ATTACH_MATCH": None,  # attach 选页 URL 子串（点名匹配，无 pages[0] 兜底）
+    "ATLAS_BROWSER_CHANNEL": None,  # T5 浏览器矩阵：chromium/chrome/firefox/webkit（缺省 chromium）
+    "ATLAS_FAST_PARALLEL": None,    # T3 分片：>1 需 pytest-xdist（缺依赖点名，绝不静默降级）
+    "ATLAS_FAST_TRACE": "0",        # T4 trace：=="1" 才失败腿落 trace.zip（默认关=成功腿零开销）
 }
 
 

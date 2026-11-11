@@ -25,6 +25,7 @@ import importlib.util
 import json
 import re
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -141,6 +142,7 @@ def test_public_surface_matches_contract():
     assert FAST_FIXTURE_NAMES == ("sole_page", "page", "context", "browser", "get_page",
                                   "plan_ctx", "_case_watchdog", "_fast_runlog", "_write_gate")
     # C.1 原九键 + F-15 补 BASE_URL/CDP/CDP_PORT + gap9b :122 补 INTERACTIVE/ATTACH_MATCH
+    # + 重构波 T3/T4/T5 补 PARALLEL/TRACE/BROWSER_CHANNEL
     assert ENV_KEYS == {
         "CASE_TIMEOUT": "600", "ATLAS_FAST_ENV": "local",
         "ATLAS_FAST_LOGIN_INDICATOR": None, "ATLAS_FAST_ACCOUNT": "DEMO_USERNAME",
@@ -148,7 +150,12 @@ def test_public_surface_matches_contract():
         "ATLAS_RUNS_DIR": None, "ATLAS_BROWSER_EXECUTABLE": None,
         "CDP_DEBUG": "0", "CDP_PORT": "9222",
         "ATLAS_FAST_BASE_URL": None, "ATLAS_FAST_CDP": None,
-        "ATLAS_FAST_INTERACTIVE": "0", "ATLAS_FAST_ATTACH_MATCH": None}
+        "ATLAS_FAST_INTERACTIVE": "0", "ATLAS_FAST_ATTACH_MATCH": None,
+        "ATLAS_BROWSER_CHANNEL": None, "ATLAS_FAST_PARALLEL": None,
+        "ATLAS_FAST_TRACE": "0"}
+    assert ENV_KEYS["ATLAS_BROWSER_CHANNEL"] is None      # T5 缺省=chromium（无字面默认）
+    assert ENV_KEYS["ATLAS_FAST_PARALLEL"] is None        # T3 缺省=单进程
+    assert ENV_KEYS["ATLAS_FAST_TRACE"] == "0"            # T4 缺省关=成功腿零开销
     assert ENV_KEYS["ATLAS_FAST_LOGIN_INDICATOR"] is None   # 无默认（红线 #11）
     assert ENV_KEYS["ATLAS_FAST_CDP"] is None               # 缺省=launch 通道（B-3）
     assert ENV_KEYS["ATLAS_FAST_INTERACTIVE"] == "0"        # 在场闸缺省关（:122 明文）
@@ -1653,3 +1660,282 @@ def test_allure_roundtrip_no_greenwashing(tmp_path, monkeypatch, request):
     step_att = [s.get("attachments") for r in results.values() for s in r["steps"]]
     atts = [a for sa in step_att for a in sa]
     assert len(atts) == 2 and all(a["type"] == "image/png" for a in atts)
+
+
+# ===========================================================================
+# 重构波 T3 并行分片（ATLAS_FAST_PARALLEL + --parallel N）
+# ===========================================================================
+
+
+def test_parallel_workers_parsing(tmp_path, monkeypatch, request):
+    """T3 开关解析：缺省/空白/1=单进程；>1=worker 数；非整数/<=0 点名（不静默当单进程）。"""
+    support, _ = _load_artifact(tmp_path, monkeypatch, request)
+    assert support.parallel_workers({}) == 1
+    assert support.parallel_workers({"ATLAS_FAST_PARALLEL": ""}) == 1
+    assert support.parallel_workers({"ATLAS_FAST_PARALLEL": "1"}) == 1
+    assert support.parallel_workers({"ATLAS_FAST_PARALLEL": " 4 "}) == 4
+    with pytest.raises(support.EnvBlocked, match="ATLAS_FAST_PARALLEL"):
+        support.parallel_workers({"ATLAS_FAST_PARALLEL": "abc"})
+    with pytest.raises(support.EnvBlocked, match="正整数"):
+        support.parallel_workers({"ATLAS_FAST_PARALLEL": "0"})
+    with pytest.raises(support.EnvBlocked, match="正整数"):
+        support.parallel_workers({"ATLAS_FAST_PARALLEL": "-3"})
+
+
+def test_parallel_setup_problem_missing_xdist_named(tmp_path, monkeypatch, request):
+    """T3 缺依赖点名：单进程不触发；>1 缺 xdist 给 pip install 指引（不静默降级）。"""
+    support, _ = _load_artifact(tmp_path, monkeypatch, request)
+    assert support.parallel_setup_problem(1, xdist_available=False) == ""
+    assert support.parallel_setup_problem(0, xdist_available=False) == ""
+    assert support.parallel_setup_problem(4, xdist_available=True) == ""
+    problem = support.parallel_setup_problem(4, xdist_available=False)
+    assert "pytest-xdist" in problem and "pip install pytest-xdist" in problem
+    assert "不静默降级" in problem
+
+
+def test_conftest_parallel_gate_raises_usage_error(tmp_path, monkeypatch, request):
+    """T3 行为面：声明 >1 且缺 xdist → pytest_configure 抛 UsageError（fail-loud 点名）。"""
+    support, conftest = _load_artifact(tmp_path, monkeypatch, request)
+    monkeypatch.setitem(sys.modules, "xdist", None)   # __import__("xdist") → ImportError
+    monkeypatch.setenv("ATLAS_FAST_PARALLEL", "4")
+
+    class _PM:
+        def getplugin(self, name):
+            return None
+
+        def unregister(self, plugin):
+            pass
+
+    class _Cfg:
+        pluginmanager = _PM()
+
+    with pytest.raises(pytest.UsageError, match="pytest-xdist"):
+        conftest.pytest_configure(_Cfg())
+    # 正向对照：单进程（未设旋钮）不抛
+    monkeypatch.delenv("ATLAS_FAST_PARALLEL", raising=False)
+    conftest.pytest_configure(_Cfg())
+    # 坏值也点名（非整数）
+    monkeypatch.setenv("ATLAS_FAST_PARALLEL", "abc")
+    with pytest.raises(pytest.UsageError, match="ATLAS_FAST_PARALLEL"):
+        conftest.pytest_configure(_Cfg())
+
+
+_PARALLEL_FLOW = {"id": "par", "steps": [
+    {"id": "s1", "task": "api_call", "method": "GET", "path": "/api/x",
+     "save_as": "r1", "read_only": True}], "assert": ["r1.ok == true"]}
+
+
+def test_emit_pytest_package_parallel_readme_and_gate(tmp_path):
+    """T3 生成期：parallel>1 写 README 并行段（用法/依赖/代价边界）；闸拒绝先于写盘。"""
+    from atlas.generator.emit_pytest import PytestEmitError, emit_pytest_package
+    out = tmp_path / "def"
+    emit_pytest_package(out_dir=out, flow=_PARALLEL_FLOW, fast=True)
+    assert "并行分片" not in (out / "README.md").read_text(encoding="utf-8")
+    out2 = tmp_path / "par"
+    emit_pytest_package(out_dir=out2, flow=_PARALLEL_FLOW, fast=True, parallel=4)
+    readme = (out2 / "README.md").read_text(encoding="utf-8")
+    assert "并行分片" in readme and "ATLAS_FAST_PARALLEL=4" in readme
+    assert "pytest-xdist" in readme and "pytest -n 4" in readme
+    assert "plan_ctx" in readme          # 边界写清（并行下跨批前置不可靠）
+    with pytest.raises(PytestEmitError):
+        emit_pytest_package(out_dir=tmp_path / "slow", flow=_PARALLEL_FLOW, parallel=2)
+    with pytest.raises(PytestEmitError):
+        emit_pytest_package(out_dir=tmp_path / "neg", flow=_PARALLEL_FLOW, fast=True, parallel=-1)
+    assert not (tmp_path / "slow").exists() and not (tmp_path / "neg").exists()
+
+
+def test_cli_export_pytest_parallel(tmp_path):
+    """T3 CLI：--parallel 透传；>1 非快模式 rc2 且不建目录。"""
+    import yaml
+    from atlas.cli import main
+    p = tmp_path / "flow.yaml"
+    p.write_text(yaml.safe_dump(_PARALLEL_FLOW), encoding="utf-8")
+    out = tmp_path / "pkg"
+    assert main(["export-pytest", str(p), "-o", str(out), "--fast", "--parallel", "4"]) == 0
+    assert "ATLAS_FAST_PARALLEL=4" in (out / "README.md").read_text(encoding="utf-8")
+    out2 = tmp_path / "pkg2"
+    assert main(["export-pytest", str(p), "-o", str(out2), "--parallel", "4"]) == 2
+    assert not out2.exists()
+
+
+# ===========================================================================
+# 重构波 T4 失败腿 trace 归档（ATLAS_FAST_TRACE，成功腿零开销）
+# ===========================================================================
+
+
+class _TracingPage:
+    """假 page：context.tracing 记 start/stop；stop(path=) 落字节（零浏览器零 socket）。"""
+
+    def __init__(self):
+        self.calls = []
+        self.context = types.SimpleNamespace(tracing=self)
+
+    def start(self, **kw):
+        self.calls.append(("start", kw))
+
+    def stop(self, path=None):
+        self.calls.append(("stop", path))
+        if path:
+            Path(path).write_bytes(b"zip-bytes")
+
+
+def test_trace_enabled_parsing_and_path(tmp_path, monkeypatch, request):
+    support, _ = _load_artifact(tmp_path, monkeypatch, request)
+    assert support.trace_enabled({}) is False
+    assert support.trace_enabled({"ATLAS_FAST_TRACE": "0"}) is False
+    assert support.trace_enabled({"ATLAS_FAST_TRACE": "1"}) is True
+    assert support.trace_enabled({"ATLAS_FAST_TRACE": "true"}) is False   # 只认 "1"，不猜
+    tp = support.trace_path("/x/reports/runs.jsonl", "abc123")
+    assert tp.parent.name == support.TRACES_DIR_NAME and tp.name == "abc123.zip"
+
+
+def test_trace_zero_overhead_when_disabled(tmp_path, monkeypatch, request):
+    """默认关=成功腿零开销：连 start 都不调；运行行不写 trace 键。"""
+    support, conftest = _load_artifact(tmp_path, monkeypatch, request)
+    monkeypatch.delenv("ATLAS_FAST_TRACE", raising=False)
+    monkeypatch.delenv("ATLAS_RUNS_DIR", raising=False)
+    page = _TracingPage()
+    support.set_current_page(page)
+    try:
+        runlog = _fixture_fn(conftest._fast_runlog)
+        gen = runlog(_fake_request(node=_fake_node()))
+        next(gen)
+        with pytest.raises(StopIteration):
+            next(gen)
+    finally:
+        support.set_current_page(None)
+    assert page.calls == []                            # 零 tracing 调用
+    line = json.loads(conftest.RUNS_PATH.read_text(encoding="utf-8").splitlines()[-1])
+    assert "trace" not in line
+
+
+def test_trace_failure_leg_writes_zip_path(tmp_path, monkeypatch, request):
+    """开启后失败腿：start→stop(path) 落 trace.zip，**路径**写进 runs.jsonl（绝对）。"""
+    support, conftest = _load_artifact(tmp_path, monkeypatch, request)
+    monkeypatch.setenv("ATLAS_FAST_TRACE", "1")
+    monkeypatch.delenv("ATLAS_RUNS_DIR", raising=False)
+    page = _TracingPage()
+    support.set_current_page(page)
+    try:
+        node = _fake_node()
+        node._fast_excinfos.append(("call", AssertionError("boom")))
+        runlog = _fixture_fn(conftest._fast_runlog)
+        gen = runlog(_fake_request(node=node))
+        next(gen)
+        with pytest.raises(StopIteration):
+            next(gen)
+    finally:
+        support.set_current_page(None)
+    line = json.loads(conftest.RUNS_PATH.read_text(encoding="utf-8").splitlines()[-1])
+    assert line["status"] == "failed"
+    assert line["trace"].endswith(".zip")
+    trace = Path(line["trace"])
+    assert trace.is_absolute() and trace.exists()
+    assert trace.parent.name == support.TRACES_DIR_NAME
+    assert [c[0] for c in page.calls] == ["start", "stop"]
+    assert page.calls[1][1] is not None                # stop 带 path=落盘
+
+
+def test_trace_success_leg_no_file(tmp_path, monkeypatch, request):
+    """开启后成功腿：start+stop 但 stop 不带 path（丢弃），无 zip、无 trace 键。"""
+    support, conftest = _load_artifact(tmp_path, monkeypatch, request)
+    monkeypatch.setenv("ATLAS_FAST_TRACE", "1")
+    monkeypatch.delenv("ATLAS_RUNS_DIR", raising=False)
+    page = _TracingPage()
+    support.set_current_page(page)
+    try:
+        runlog = _fixture_fn(conftest._fast_runlog)
+        gen = runlog(_fake_request(node=_fake_node()))
+        next(gen)
+        with pytest.raises(StopIteration):
+            next(gen)
+    finally:
+        support.set_current_page(None)
+    assert [c[0] for c in page.calls] == ["start", "stop"]
+    assert page.calls[1][1] is None
+    line = json.loads(conftest.RUNS_PATH.read_text(encoding="utf-8").splitlines()[-1])
+    assert line["status"] == "passed" and "trace" not in line
+    traces_dir = conftest.RUNS_PATH.parent / support.TRACES_DIR_NAME
+    assert not traces_dir.exists() or not list(traces_dir.glob("*.zip"))
+
+
+def test_trace_without_page_is_noop(tmp_path, monkeypatch, request):
+    """开启但无页面（纯 API 腿）：start_tracing(None)=False，不崩、不写 trace 键。"""
+    support, conftest = _load_artifact(tmp_path, monkeypatch, request)
+    monkeypatch.setenv("ATLAS_FAST_TRACE", "1")
+    monkeypatch.delenv("ATLAS_RUNS_DIR", raising=False)
+    support.set_current_page(None)
+    runlog = _fixture_fn(conftest._fast_runlog)
+    gen = runlog(_fake_request(node=_fake_node()))
+    next(gen)
+    with pytest.raises(StopIteration):
+        next(gen)
+    line = json.loads(conftest.RUNS_PATH.read_text(encoding="utf-8").splitlines()[-1])
+    assert "trace" not in line
+
+
+def test_trace_credential_risk_is_documented():
+    """凭据红线**如实标注**（不声称安全）：模板含风险注释 + 规避指引 + 只写路径。"""
+    assert "凭据红线" in SUPPORT_SRC
+    assert "trace.zip" in SUPPORT_SRC
+    assert "fill" in SUPPORT_SRC and "明文可能落进 trace.zip" in SUPPORT_SRC
+    assert "ATLAS_FAST_TRACE 关闭" in SUPPORT_SRC
+    # 运行行只写**路径**（不回写内容）
+    assert "self.trace = str(path)" in SUPPORT_SRC
+    assert 'record["trace"] = self.trace' in SUPPORT_SRC
+
+
+# ===========================================================================
+# 重构波 T5 浏览器矩阵（ATLAS_BROWSER_CHANNEL + ATLAS_BROWSER_EXECUTABLE）
+# ===========================================================================
+
+
+def test_browser_channel_matrix_and_unknown_named(tmp_path, monkeypatch, request):
+    support, _ = _load_artifact(tmp_path, monkeypatch, request)
+    assert support.browser_channel({}) == "chromium"                 # 默认 chromium
+    assert support.browser_channel({"ATLAS_BROWSER_CHANNEL": "chromium"}) == "chromium"
+    assert support.browser_channel({"ATLAS_BROWSER_CHANNEL": " Chrome "}) == "chrome"  # 归一化
+    assert support.browser_channel({"ATLAS_BROWSER_CHANNEL": "firefox"}) == "firefox"
+    assert support.browser_channel({"ATLAS_BROWSER_CHANNEL": "webkit"}) == "webkit"
+    with pytest.raises(support.EnvBlocked, match="ATLAS_BROWSER_CHANNEL"):
+        support.browser_channel({"ATLAS_BROWSER_CHANNEL": "safari"})   # 未知点名，不静默回退
+    # 家族映射：chrome ⊂ chromium 家族（channel=chrome），firefox/webkit 各自
+    assert support.browser_family("chromium") == "chromium"
+    assert support.browser_family("chrome") == "chromium"
+    assert support.browser_family("firefox") == "firefox"
+    assert support.browser_family("webkit") == "webkit"
+    assert support.DEFAULT_BROWSER_CHANNEL == "chromium"
+
+
+def test_missing_browser_hint_names_playwright_install(tmp_path, monkeypatch, request):
+    support, _ = _load_artifact(tmp_path, monkeypatch, request)
+    hint = support.missing_browser_hint(
+        RuntimeError("Executable doesn't exist at /x/firefox ... python -m playwright install"),
+        "firefox")
+    assert "playwright install firefox" in hint and "ATLAS_BROWSER_EXECUTABLE" in hint
+    # 正向对照：非缺浏览器错误（端口占用/超时）不套「缺浏览器」的皮
+    assert support.missing_browser_hint(RuntimeError("Address already in use"), "chrome") == ""
+    assert support.missing_browser_hint(TimeoutError("boom"), "chromium") == ""
+    assert "webkit" in support.missing_browser_hint(RuntimeError("playwright install"), "webkit")
+
+
+def test_launch_kwargs_channel_matrix(tmp_path, monkeypatch, request):
+    support, _ = _load_artifact(tmp_path, monkeypatch, request)
+    monkeypatch.delenv("ATLAS_BROWSER_EXECUTABLE", raising=False)
+    assert support.launch_kwargs(True, {})["channel"] is None                 # chromium 自带
+    assert support.launch_kwargs(True, {"ATLAS_BROWSER_CHANNEL": "chrome"})["channel"] == "chrome"
+    assert support.launch_kwargs(True, {"ATLAS_BROWSER_CHANNEL": "firefox"})["channel"] is None
+    kw = support.launch_kwargs(True, {"ATLAS_BROWSER_CHANNEL": "chrome",
+                                      "ATLAS_BROWSER_EXECUTABLE": "/usr/bin/chrome"})
+    assert kw["executable_path"] == "/usr/bin/chrome" and kw["channel"] is None
+
+
+def test_conftest_browser_launch_wiring():
+    """结构面：按家族选 launch 对象；缺浏览器 hint 已接线；chromium launch 位唯一。"""
+    for frag in ("browser_channel(env_snapshot)", "browser_family(browser_ch",
+                 "pw.firefox.launch(", "pw.webkit.launch("):
+        assert frag in CONFTEST_SRC, frag
+    assert CONFTEST_SRC.count("pw.chromium.launch(") == 1     # 单浏览器权威（xcheck 同尺）
+    assert "missing_browser_hint(exc, browser_ch)" in CONFTEST_SRC
+    assert (CONFTEST_SRC.index("browser_channel(env_snapshot)")
+            < CONFTEST_SRC.index("sync_playwright().start()"))   # 判据先于驱动 start
