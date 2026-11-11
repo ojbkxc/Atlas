@@ -628,6 +628,70 @@ def test_fast_pages_two_honest_legs_and_login():
     assert "未接线或未配置" not in src  # 禁 or 混合文案（F-7）
 
 
+def test_fast_login_message_drops_base_url_and_zeroes_frame_locals():
+    """红线②（L-HOST）静态面：fast 版 login 骨架的「登录未接线」消息**不再拼 base_url**——
+    真内网域名会经 framework_reason 落 runs.jsonl 的 run 级 reason；同时（L-PW）三个 raise
+    分支都包在 try/finally 内，finally 把 password/base_url 归零。"""
+    _stubbed_emit_fast()
+    src = emit_pages_module(_FAST_COMPS, fast=True)
+    body = src[src.index("def login("):src.index("__all__")]
+    # L-HOST：消息末尾到「后补真操作）」为止，无 base_url 拼接、无「；入口 」分隔
+    assert "登录未接线：atlas_pages.login（登录表单/提交按钮元素须人审接入组件库后补真操作）" in src
+    _msg_line = next(l for l in body.splitlines() if "登录未接线" in l)
+    assert "base_url" not in _msg_line and "repr(" not in _msg_line and "入口" not in _msg_line
+    assert "repr(str(base_url))" not in body
+    assert "；入口 " not in body
+    # L-PW：三处 raise 全在 try 内，finally 归零
+    assert "try:" in body and "finally:" in body
+    assert body.index("finally:") > body.index("NotWired(")   # raise 都在 finally 之前
+    assert body.count("EnvBlocked(") == 2 and body.count("NotWired(") == 1
+    assert "password = None" in body and "base_url = None" in body
+
+
+@pytest.mark.parametrize("env_indicator,expect_exc", [
+    (None, "EnvBlocked"),          # 缺指示器 → 第二个 EnvBlocked 分支
+    ("#login-ok", "NotWired"),     # 指示器在场 → 落到 NotWired（未接线）分支
+])
+def test_fast_login_no_host_no_credential_in_traceback(tmp_path, monkeypatch,
+                                                       env_indicator, expect_exc):
+    """红线②（L-HOST+L-PW）行为面：真执行 fast 版 login——① 不含内网主机的消息；
+    ② 本机 pytest 9 默认打印抛出帧 f_locals，故 login 帧的 password/base_url 必须已归零
+    （否则明文凭据进 stdout）。account 非秘密不在归零面内。"""
+    af = _load_real_fast_base(tmp_path)
+    monkeypatch.setitem(sys.modules, "_atlas_fast", af)
+    if env_indicator is None:
+        monkeypatch.delenv("ATLAS_FAST_LOGIN_INDICATOR", raising=False)
+    else:
+        monkeypatch.setenv("ATLAS_FAST_LOGIN_INDICATOR", env_indicator)
+    pages = _load_pages(tmp_path, _FAST_COMPS, fast=True)
+
+    host = "https://internal-sensitive-host.example.internal"
+    secret = "SUPER-SECRET-PW"
+    exc_type = getattr(pages, expect_exc)
+    with pytest.raises(exc_type) as ei:
+        pages.login(None, base_url=host, account="u", password=secret)
+
+    # ① 消息面：无主机名/协议（L-HOST），且未接线分支点名「登录未接线」
+    msg = str(ei.value)
+    assert host not in msg and "http" not in msg and "internal-sensitive-host" not in msg
+    if expect_exc == "NotWired":
+        assert "登录未接线" in msg
+
+    # ② 帧面：唯一 login 帧的 f_locals 已归零，秘密/主机不出现在其 repr 中
+    login_frames = []
+    tb = ei.value.__traceback__
+    while tb is not None:
+        if tb.tb_frame.f_code.co_name == "login":
+            login_frames.append(tb.tb_frame.f_locals)
+        tb = tb.tb_next
+    assert login_frames, "traceback 应含 login 帧（pytest 9 会打印它的 f_locals）"
+    for floc in login_frames:
+        assert floc.get("password") is None
+        assert floc.get("base_url") is None
+        rendered = repr(floc)
+        assert secret not in rendered and "internal-sensitive-host" not in rendered
+
+
 def test_fast_pages_bad_shape_still_safe():
     """坏形态/空库的 fast 版也不裸崩（与 SelectorRegistry 同纪律）。"""
     _stubbed_emit_fast()
