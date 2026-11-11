@@ -1,0 +1,51 @@
+{
+  "policy": "分级而非全量：core 做完整字段类型校验，high 只查通用规则（resultCode 存在），minimal 只判存活。数百条接口不逐条写强 schema。路径为相对路径（无 host）——真实环境域名走 ISERVICE_URL_* env，不入库。result_code 取实测成功码 ISC-000。",
+  "contracts": [
+    {
+      "name": "客户付款条件",
+      "method": "POST",
+      "path": "/web/legacy-web-mdm/orgCustomerInfo/findEntireCustDetails",
+      "level": "core",
+      "result_code": "ISC-000",
+      "required": {
+        "collectPayments": "array"
+      }
+    },
+    {
+      "name": "销售订单列表",
+      "method": "POST",
+      "path": "/web/iservice-spm/saleOrder/selectByOrderNoPage",
+      "level": "high"
+    },
+    {
+      "name": "销售订单提交",
+      "method": "POST",
+      "path": "/web/iservice-spm/saleOrder/submitOrder",
+      "level": "high"
+    },
+    {
+      "name": "销售退货单列表",
+      "method": "POST",
+      "path": "/web/iservice-spm/saleOrderReturn/listQuickCode",
+      "level": "high"
+    },
+    {
+      "name": "可用库存查询",
+      "method": "POST",
+      "path": "/web/iservice-spm/inventory/selectAvailAndStorageTotal",
+      "level": "high"
+    },
+    {
+      "name": "服务请求查询",
+      "method": "POST",
+      "path": "/web/iservice-spm/serviceOrder/queryServiceOrder",
+      "level": "high"
+    },
+    {
+      "name": "LOV 字典",
+      "method": "POST",
+      "path": "/web/isc-api/lov/getByTypes",
+      "level": "minimal"
+    }
+  ]
+}

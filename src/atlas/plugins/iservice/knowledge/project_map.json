@@ -1,0 +1,39 @@
+{
+  "project": "iService (ICS 智能客户服务系统)",
+  "stack": [
+    "Vue 2",
+    "Element UI",
+    "qiankun 微前端",
+    "hash 路由",
+    "Python 3.13 + Playwright(sync) + pytest"
+  ],
+  "channels": {
+    "ui": "Playwright",
+    "api": "页面内 fetch / HAR 契约"
+  },
+  "suites": {
+    "sit_cvt_regression": "SIT 18 条（销售订单/变更单/退货单/报价单/工单下推）",
+    "uat_eu_regression": "UAT 5 条（备件列表/产品列表/建单/CCM-SR 导出/建单提交）",
+    "prod_am_regression": "美洲生产 3 条只读回归",
+    "prod_hk_regression": "香港生产 4 条只读回归"
+  },
+  "entrypoints": {
+    "runner": "iservice/lib/runner.py",
+    "login": "iservice/lib/login.py",
+    "pages": "iservice/lib/pages.py",
+    "fixtures": "iservice/conftest.py"
+  },
+  "invariants": [
+    "引擎不含业务；业务知识在知识库与插件",
+    "必填字段优先真实 UI，直写 Vue 模型不刷新校验状态",
+    "断言优先读 Vue 组件状态（vm.data / $data）而非爬 DOM 文本",
+    "单浏览器：一个 module 一个 chromium，用例不自己 launch()",
+    "登录只发生在 conftest.get_page → lib/login.do_login",
+    "所有环境强制 English US，菜单/标签正则中英兼容",
+    "脚本创建的单据备注必须含「非人工创建」",
+    "生产环境只读，禁止建单/保存/提交/删除",
+    "禁止硬编码凭据；密码只来自 .env 的 ISERVICE_* 键",
+    "禁止数据兜底/替换凑绿；环境限制明确 SKIP 并写清根因"
+  ],
+  "_note": "iService 工程画像。entrypoints 为旧仓相对路径；真实域名/账号不入库。"
+}

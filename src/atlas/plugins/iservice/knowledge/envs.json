@@ -1,0 +1,12 @@
+{
+  "environments": {
+    "sit": {"url_key": "ISERVICE_URL_SIT", "write": "allowed_with_guards", "sso_captcha": false},
+    "uat-eu": {"url_key": "ISERVICE_URL_UAT_EU", "write": "ask_first", "sso_captcha": "unverified"},
+    "uat-amer": {"url_key": "ISERVICE_URL_UAT_AMER", "write": "ask_first", "sso_captcha": "unverified"},
+    "uat-hk": {"url_key": "ISERVICE_URL_UAT_HK", "write": "ask_first", "sso_captcha": "unverified"},
+    "prod-eu": {"url_key": "ISERVICE_URL_PROD_EU", "write": "forbidden", "sso_captcha": "unverified"},
+    "prod-amer": {"url_key": "ISERVICE_URL_PROD_AMER", "write": "forbidden", "sso_captcha": "unverified"},
+    "prod-hk": {"url_key": "ISERVICE_URL_PROD_HK", "write": "forbidden", "sso_captcha": "unverified"}
+  },
+  "_note": "只登记 url_key（env 键名）；真实域名走 ISERVICE_URL_* env，不入库（内网域名属私有信息）。write 策略：SIT 允许带护栏写入，UAT ask_first，生产一律 forbidden（AGENTS 红线 #7 生产只读）。sso_captcha：仅 SIT 实测无验证码；其余 unverified。"
+}

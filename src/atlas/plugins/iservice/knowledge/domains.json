@@ -1,0 +1,53 @@
+{
+  "domains": {
+    "sales_order": {
+      "doc_list": "#/spm/views/bu/sales/saleOrderManagement/spm_sale_order",
+      "add": "#/saleOrderManagement/saleOrderAdd",
+      "default_payment_term": "afterSalesPrimaryFlag=Y",
+      "fallback": "primaryFlag=Y",
+      "requirement": "PaymentTerm 区分售前售后（MR2026102017757）",
+      "route": "hash 路由单页应用，无业务 iframe"
+    },
+    "so_change": {
+      "doc_list": "#/saleOrderManagement/soChange",
+      "add": "#/saleOrderRefundManage/saleOrderChangeAdd",
+      "edit": "#/saleOrderRefundManage/saleOrderChangeEdit/{sc_no}?orderId={id}",
+      "draft_status": 1001,
+      "pt_write_back": "审批通过后回写原单",
+      "row_flag": "保存必须置行级 uploadFlag='Y'"
+    },
+    "sales_return": {
+      "doc_list": "#/saleOrderManagement/saleOrderReturn",
+      "add": "#/saleOrderRefundManage/saleOrderRefundAdd",
+      "edit": "#/saleOrderRefundManage/saleOrderRefundEdit/{rm_no}?orderId={id}",
+      "source_order_status": [1003, 1006],
+      "return_reason_required": true,
+      "default_warehouse": "RETRN_RM",
+      "editable_status": 1001
+    },
+    "quotation": {
+      "add": "#/saleQutedManagement/saleQutedAdd",
+      "edit": "#/saleQutedManagement/saleQutedEdit",
+      "number_in_url_query": "quotationNo",
+      "list_query_collapsed": "查询区默认只有 Creation Date / SN"
+    },
+    "spare_part": {
+      "list": "#/tsp/views/parts/list?name=sparePartList",
+      "detail": "#/tsp/views/parts/detail/{id}?_partId=...&ouId=...",
+      "modules": "Technical Support > Spare Part",
+      "iframe": "无业务 iframe（hash 路由）",
+      "default_rows": 15
+    },
+    "product": {
+      "list": "#/tsp/views/product/list",
+      "detail": "#/tsp/views/productDetails/{id},{ouCode}?_productId={pid}",
+      "modules": "Technical Support > Product",
+      "iframe": "无业务 iframe（hash 路由）"
+    },
+    "service_request": {
+      "modules": "Contact Center > Request Management > Service Request",
+      "export": "Export List 弹框 + 刷新轮询 Status"
+    }
+  },
+  "_note": "iService 业务域路由（hash 路由相对路径，无 host）。取自 knowledge/ui-auto-test/domains.json；未含真实 BU/账号。"
+}

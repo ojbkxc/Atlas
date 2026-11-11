@@ -1,0 +1,170 @@
+{
+  "components": {
+    "login": {
+      "selectors": {
+        "username": "#username",
+        "password": "#password",
+        "agree": "input[name='private_url_a']",
+        "login_button": "button.login-button:visible",
+        "logged_in": ".app-topbar-obj.el-dropdown-selfdefine"
+      },
+      "models": {},
+      "notes": "iService SSO 登录页。语言不稳定（中文「登录」/英文「Log In」），禁止按角色名定位登录按钮——页面有 5 个同名 login-button（5 个页签），须 :visible 过滤；轮询 ≤45s 等「已登录指示器或登录表单」任一出现；SIT 无验证码（UAT/PROD unverified）；已登录短路避免冗余 goto。"
+    },
+    "ou_switch": {
+      "selectors": {
+        "entry": ".app-topbar-obj.el-dropdown-selfdefine",
+        "menu": ".el-dropdown-menu:visible",
+        "ou_trigger": ".el-dropdown-menu:visible li.el-dropdown-menu__item >> nth=2",
+        "ou_list": ".el-popover.mypopper:visible .item",
+        "current_marker": ".el-popover.mypopper:visible .item i.fa-check-circle-o"
+      },
+      "models": {},
+      "notes": "OU 下拉第 3 项 li 文本是旧标签、不刷新——禁止用它判断当前 OU；用勾选图标 fa-check-circle-o + 蓝色 rgb(53,150,255) 判定；切 OU 后自动 switch_to_lang(English US)；已在目标 OU 则跳过（幂等）。"
+    },
+    "navigation_menu": {
+      "selectors": {
+        "top_submenu": "li.el-submenu",
+        "popup": ".el-menu--vertical.app-menu-popper .el-menu--popup",
+        "item": "li.el-menu-item",
+        "menu_spare_parts": {"role": "menuitem", "name": "Spare Parts"},
+        "menu_sales_return": {"role": "menuitem", "name": "Sales Return"},
+        "menu_so_change": {"role": "menuitem", "name": "SO Change Request"},
+        "menu_inventory_adjustment": {"role": "menuitem", "name": "Inventory Adjustment"}
+      },
+      "models": {},
+      "notes": "顶栏导航：一级菜单项有无障碍名（aria snapshot 实测 menuitem「Spare Parts / Sales Return / SO Change Request / Inventory Adjustment」），故用结构化 role+name 直取；但其展开/hover 的二级 li 仍须纯 JS 驱动（hover/click/wait_for(visible) 全因 not stable 超时），用 rect.width>0 过滤隐藏副本；弹出式子菜单项 liCount=0，子项渲染在 body 下；reload 后语言可能重置，文本正则中英兼容。"
+    },
+    "query_form": {
+      "selectors": {
+        "form_item": ".el-form-item",
+        "label": ".el-form-item__label",
+        "input": "input.el-input__inner",
+        "search_icon_button": "button:has(i.icon-search)",
+        "search_text_button": "button.el-button--primary.el-button--mini"
+      },
+      "models": {},
+      "notes": "label 必须 :text-is 精确匹配（子串互相包含的 label 很常见，如 'Third Party Spare Parts Code' 含 'Spare Parts Code'）；18px 图标按钮原生 click not stable，用 JS click + rect.width>0；Product List 是文本按钮 Search（另有 Reset 勿混）。"
+    },
+    "result_table": {
+      "selectors": {
+        "table": ".el-table",
+        "header_cell": "th .cell",
+        "body_row": ".el-table__body-wrapper tbody tr",
+        "code_link_button": "button.el-button--text",
+        "code_link_anchor": "a.el-link.el-link--primary > span.el-link--inner"
+      },
+      "models": {
+        "rows": "vm.data"
+      },
+      "notes": "表头 textContent 被筛选列下拉污染；页面 32+ 个 .el-table，业务回查走组件 vm.data 按单号精确匹配；表头映射只用于简单页，且需去 * 前缀；Spare Part List 与 Product List 的编码链接形态不同。"
+    },
+    "detail_fields": {
+      "selectors": {
+        "form_item": ".el-form-item",
+        "label": ".el-form-item__label",
+        "value": "input.el-input__inner"
+      },
+      "models": {},
+      "notes": "详情字段异步加载：先 wait_for_function 等值匹配期望再断言（el-select 字段初始为选项索引 '0'，仅判非空不够）；近似 label 必须 :text-is；同 label 多实例取 .first。"
+    },
+    "payment_terms": {
+      "selectors": {
+        "trigger": ".el-form-item input.el-input__inner",
+        "dropdown": ".el-select-dropdown",
+        "option": ".el-select-dropdown__item"
+      },
+      "models": {
+        "ui_model": "amountHeader.myform.paymentTerms",
+        "save_model": "OrderHeader.saleOrderForm.paymentTerms"
+      },
+      "notes": "PT 下拉 append 到 body，必须全局找且按 rect.width>0 && display!=='none' 过滤；选项要真实 locator.click()（Element UI 只认真实指针事件，可先打 data-pt-opt 标记）；双模型不同步——改选后显式同步保存源并断言 headerPT==目标值；选完 Escape 关闭。"
+    },
+    "customer_selection": {
+      "selectors": {
+        "dialog_title": ".el-dialog__title:has-text('Customer Selection')",
+        "search": ".el-dialog__wrapper:visible button:has(i.isicon--search)",
+        "code_input": ".el-dialog__wrapper:visible input.el-input__inner",
+        "confirm": ".el-dialog:visible .el-button--primary"
+      },
+      "models": {
+        "row_key": "vendorCorpNumber"
+      },
+      "notes": "按 vendorCorpNumber 精确命中并断言，禁止盲选第一行；弹窗表单懒渲染，填值需轮询 15×2s；关闭后 wrapper 仍在 DOM，禁用「第一个可见 .el-dialog__wrapper」定位其它弹窗。"
+    },
+    "warehouse_select": {
+      "selectors": {
+        "dialog_title": ".el-dialog__title:has-text('Warehouse Select')",
+        "row": ".el-dialog:visible .el-table__body-wrapper tbody tr",
+        "confirm": ".el-dialog:visible .el-button--primary"
+      },
+      "models": {},
+      "notes": "表格无 checkbox，单击行选中；Warehouse 是必填校验字段，三份模型全写也无效，必须走真实弹窗。MACH 行内 WH Code 实测：Confirm 不回填，须双击目标行才写回；页面两个 .el-dialog__wrapper 叠加（旧 mask 残留），先按 display!=='none' 且 innerText 含 'Warehouse Select' 过滤可见实例再定位行。"
+    },
+    "spare_part_dialog": {
+      "selectors": {
+        "dialog": ".spare_parts_selection_dialog",
+        "search": ".spare_parts_selection_dialog button:has(i.el-icon-search), .spare_parts_selection_dialog i[class*=search]",
+        "table": ".spare_parts_selection_dialog .el-table",
+        "confirm": ".spare_parts_selection_dialog .el-button--primary"
+      },
+      "models": {
+        "rows": "vm.data",
+        "selection": "toggleRowSelection"
+      },
+      "notes": "弹窗无 el-dialog__title，必须按 .spare_parts_selection_dialog 类名定位；DOM 有行但 vm.data 为空是异步未同步；勾选用 toggleRowSelection + setCurrentRow；Confirm 后轮询 tableDataList 回填。"
+    },
+    "source_order_modal": {
+      "selectors": {
+        "dialog_title": ".el-dialog__title:has-text('Sales Order Detail')",
+        "tables": ".el-dialog:visible .el-table",
+        "so_no_label": ".el-form-item__label",
+        "confirm": ".el-dialog:visible .el-button--primary"
+      },
+      "models": {
+        "host_component": "order-select-modal",
+        "selection_models": ["newSelectedAll", "selectedAll", "selectedRow"]
+      },
+      "notes": "必须同时勾销售单头与 Selected Parts 明细分表；只 toggleRowSelection 不回传父组件会 Confirm 无反应；来源单查询 label 是 SO No.；退货单来源单只列状态 1003/1006。"
+    },
+    "sales_order_header": {
+      "selectors": {
+        "new_button": "button:has(i.isicon--Label-Newlyadded)",
+        "save": "button.el-button--primary:has-text('Save')",
+        "extend_tab": ".el-tabs__item:has-text('Extend')",
+        "so_no_label": ".el-form-item__label"
+      },
+      "models": {
+        "required_models": [
+          "OrderHeader.saleOrderForm",
+          "OrderHeader.resetSaleOrderForm",
+          "orderDetailComponent.headerObj",
+          "amountHeader.myform"
+        ],
+        "sales_person": ["customerSalemanName", "customerSalemanCode"],
+        "fallback_sales_person": "amountHeader.defaultSalesPersonObj"
+      },
+      "notes": "必填字段（Warehouse/Sales Person）走真实 UI，直写模型不刷新校验状态；Save 前必须点 Extend tab 挂载 otherHeader；保存后等 .el-loading-mask 消失并断言成功码 + 单号。"
+    },
+    "return_reason": {
+      "selectors": {
+        "return_tab": ".el-tabs__item:has-text('Return')",
+        "cell_select": ".el-table .el-select"
+      },
+      "models": {
+        "options": "returnReasonList"
+      },
+      "notes": "退货明细 Return Reason 必填，行模型无对应字段，必须真实 UI 填写；缺失报 SPMM-443。"
+    },
+    "ccm_export": {
+      "selectors": {
+        "trigger": ".el-dropdown .el-dropdown-selfdefine",
+        "trigger_icon": "i.icon-daochu",
+        "menu_item": ".el-dropdown-menu li.el-dropdown-menu__item",
+        "refresh": "i.el-icon-refresh, i[class*=refresh]"
+      },
+      "models": {},
+      "notes": "Export 触发器按图标定位不用文本；选项文案 EU/HK 不同，用 aliases + 大小写不敏感包含兜底；刷新按钮点击 closest('button')；Status 终态大小写不敏感；表头列名用 startsWith。"
+    }
+  }
+}
