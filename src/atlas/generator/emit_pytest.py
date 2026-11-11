@@ -194,6 +194,29 @@ def _specs_from_endpoints(endpoints: list[Endpoint], *, global_headers: dict | N
 _FLOW_OK_RE = re.compile(r"^\s*(\w+)\.ok\s*==\s*true\s*$")
 _FLOW_RC_RE = re.compile(r'^\s*(\w+)\.data\.resultCode\s*==\s*["\'](.+?)["\']\s*$')
 
+# 导出器「无渲染分支」的核心 Task 名单（**判据单点**，#92 只此一处；红线 #11：这是**框架**
+# 词汇、非业务名——与既有的 `api_call` 字面量同类）。为什么恰是这两个：导出器只有两条渲染腿——
+# ① API 腿只认 `api_call` 的 method/path 形态；② UI 腿只认声明位（page_object/legacy_pages）或
+# auto-wire。`assert_api`（API 断言）与 `demo_api`（DemoApi 调用）都是 Channel.API 的核心 Task，
+# 其 step 形态是 operation/args[/expect]，两条腿都吃不下——**且补 UI 声明位也救不了**（它们是
+# API 语义、不是 UI 动作）。故必须点名真因，绝不伪装成「缺声明位」（那会让人花时间补声明位却
+# 仍 rc2，归因漂移）。真正支持它们渲染=新增渲染分支，属功能扩展（T11 已知缺口，留给用户拍板）。
+_UNRENDERABLE_TASKS = {
+    "assert_api": "API 断言 Task（operation/args/expect），导出器没有断言渲染分支",
+    "demo_api": "DemoApi 调用 Task（operation/args），导出器 API 腿只认 api_call 的 method/path",
+}
+
+
+def _reject_unrenderable_task(task: str, index: int, slug: str) -> None:
+    """无渲染分支的核心 Task → 点名真因 + 替代路径（**判据单点**，全导出入口共用一处）。"""
+    why = _UNRENDERABLE_TASKS.get(task)
+    if why is None:
+        return
+    raise PytestEmitError(
+        f"导出器暂不支持该 Task：第 {index} 步「{slug}」(task={task}) 无法渲染为 pytest 产物——"
+        f"{why}。替代路径：改用 api_call 承载该 HTTP 调用、断言写 flow 级 `assert:`；补 "
+        f"page_object/legacy_pages 无效（该步是 API 语义，不是 UI 动作）。")
+
 
 def _flow_asserts(flow: dict, save_as: str) -> list[AssertSpec]:
     """把 flow 级 assert 文本按 save_as 归属到该步（能解析的转真断言，其余留 TODO）。"""
@@ -236,11 +259,14 @@ def _specs_from_flow(flow: dict, *, naming: str = "resp_{n}_{slug}") -> list[Ste
     for i, step in enumerate(flow.get("steps") or [], 1):
         task = str(step.get("task") or "")
         save_as = str(step.get("save_as") or "")
-        is_api = task == "api_call"
         intent = str(step.get("intent") or step.get("id") or task or f"step_{i}")
+        slug = _ident_slug(step.get("id") or intent, fallback=f"step_{i}")
+        # 无渲染分支的核心 Task（assert_api/demo_api）点名真因——**不**伪装成「缺声明位」（#16）。
+        _reject_unrenderable_task(task, i, slug)
+        is_api = task == "api_call"
         specs.append(StepSpec(
             index=i,
-            slug=_ident_slug(step.get("id") or intent, fallback=f"step_{i}"),
+            slug=slug,
             intent=intent,
             task=task,
             method=str(step.get("method") or ""),
