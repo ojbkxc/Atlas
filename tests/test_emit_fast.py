@@ -152,10 +152,11 @@ def test_public_surface_matches_contract():
         "ATLAS_FAST_BASE_URL": None, "ATLAS_FAST_CDP": None,
         "ATLAS_FAST_INTERACTIVE": "0", "ATLAS_FAST_ATTACH_MATCH": None,
         "ATLAS_BROWSER_CHANNEL": None, "ATLAS_FAST_PARALLEL": None,
-        "ATLAS_FAST_TRACE": "0"}
+        "ATLAS_FAST_TRACE": "0", "ATLAS_FAST_TRACE_ACCEPT_SECRETS": "0"}
     assert ENV_KEYS["ATLAS_BROWSER_CHANNEL"] is None      # T5 缺省=chromium（无字面默认）
     assert ENV_KEYS["ATLAS_FAST_PARALLEL"] is None        # T3 缺省=单进程
     assert ENV_KEYS["ATLAS_FAST_TRACE"] == "0"            # T4 缺省关=成功腿零开销
+    assert ENV_KEYS["ATLAS_FAST_TRACE_ACCEPT_SECRETS"] == "0"   # T4 红线#2 第二确认键缺省关
     assert ENV_KEYS["ATLAS_FAST_LOGIN_INDICATOR"] is None   # 无默认（红线 #11）
     assert ENV_KEYS["ATLAS_FAST_CDP"] is None               # 缺省=launch 通道（B-3）
     assert ENV_KEYS["ATLAS_FAST_INTERACTIVE"] == "0"        # 在场闸缺省关（:122 明文）
@@ -1780,19 +1781,36 @@ class _TracingPage:
 
 
 def test_trace_enabled_parsing_and_path(tmp_path, monkeypatch, request):
+    """红线 #2 双确认：仅 TRACE=1 **不足以**开；需 TRACE=1 ∧ ACCEPT_SECRETS=1。坏值按关。"""
     support, _ = _load_artifact(tmp_path, monkeypatch, request)
     assert support.trace_enabled({}) is False
-    assert support.trace_enabled({"ATLAS_FAST_TRACE": "0"}) is False
-    assert support.trace_enabled({"ATLAS_FAST_TRACE": "1"}) is True
-    assert support.trace_enabled({"ATLAS_FAST_TRACE": "true"}) is False   # 只认 "1"，不猜
+    assert support.trace_enabled({"ATLAS_FAST_TRACE": "1"}) is False                 # 缺第二键→不开
+    assert support.trace_enabled({"ATLAS_FAST_TRACE": "1",
+                                  "ATLAS_FAST_TRACE_ACCEPT_SECRETS": "1"}) is True
+    # 坏值一律按关（精确 "1"，不 strip/不折叠）——凭据面从宽=事故
+    for bad in ("true", "yess", "1 ", " 1", "TRUE"):
+        assert support.trace_enabled({"ATLAS_FAST_TRACE": bad,
+                                      "ATLAS_FAST_TRACE_ACCEPT_SECRETS": "1"}) is False, bad
+        assert support.trace_enabled({"ATLAS_FAST_TRACE": "1",
+                                      "ATLAS_FAST_TRACE_ACCEPT_SECRETS": bad}) is False, bad
+    # trace_ack_required / WARN：TRACE=1 缺确认 → 需要告警，文案带 ASCII 前缀与第二键名
+    assert support.trace_ack_required({"ATLAS_FAST_TRACE": "1"}) is True
+    assert support.trace_ack_required({"ATLAS_FAST_TRACE": "1",
+                                       "ATLAS_FAST_TRACE_ACCEPT_SECRETS": "1"}) is False
+    assert support.trace_ack_required({}) is False
+    warn = support.trace_ack_warning({"ATLAS_FAST_TRACE": "1"})
+    assert warn.startswith("WARN: TRACE-ACK-REQUIRED")
+    assert "ATLAS_FAST_TRACE_ACCEPT_SECRETS" in warn and "密码" in warn
+    assert support.trace_ack_warning({}) == ""
     tp = support.trace_path("/x/reports/runs.jsonl", "abc123")
     assert tp.parent.name == support.TRACES_DIR_NAME and tp.name == "abc123.zip"
 
 
 def test_trace_zero_overhead_when_disabled(tmp_path, monkeypatch, request):
-    """默认关=成功腿零开销：连 start 都不调；运行行不写 trace 键。"""
+    """默认关（两键都空）=成功腿零开销：连 start 都不调；运行行不写 trace 键。"""
     support, conftest = _load_artifact(tmp_path, monkeypatch, request)
     monkeypatch.delenv("ATLAS_FAST_TRACE", raising=False)
+    monkeypatch.delenv("ATLAS_FAST_TRACE_ACCEPT_SECRETS", raising=False)
     monkeypatch.delenv("ATLAS_RUNS_DIR", raising=False)
     page = _TracingPage()
     support.set_current_page(page)
@@ -1806,13 +1824,58 @@ def test_trace_zero_overhead_when_disabled(tmp_path, monkeypatch, request):
         support.set_current_page(None)
     assert page.calls == []                            # 零 tracing 调用
     line = json.loads(conftest.RUNS_PATH.read_text(encoding="utf-8").splitlines()[-1])
-    assert "trace" not in line
+    assert "trace" not in line and "trace_secrets_ack" not in line
+
+
+def test_trace_single_key_not_enough(tmp_path, monkeypatch, request):
+    """红线 #2：只给 TRACE=1 → 仍**无** trace.zip、零 start_tracing；pytest_configure 喊 WARN。"""
+    support, conftest = _load_artifact(tmp_path, monkeypatch, request)
+    monkeypatch.setenv("ATLAS_FAST_TRACE", "1")
+    monkeypatch.delenv("ATLAS_FAST_TRACE_ACCEPT_SECRETS", raising=False)
+    monkeypatch.delenv("ATLAS_RUNS_DIR", raising=False)
+
+    def _Cfg():
+        class _PM:
+            def getplugin(self, n):
+                return None
+
+            def unregister(self, p):
+                pass
+
+        class _C:
+            pluginmanager = _PM()
+        return _C()
+
+    import contextlib
+    import io
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        conftest.pytest_configure(_Cfg())
+    assert "WARN: TRACE-ACK-REQUIRED" in buf.getvalue()      # 会话级点名 WARN
+    assert "ATLAS_FAST_TRACE_ACCEPT_SECRETS" in buf.getvalue()
+
+    page = _TracingPage()
+    support.set_current_page(page)
+    try:
+        node = _fake_node()
+        node._fast_excinfos.append(("call", AssertionError("boom")))  # 失败腿也不给 zip
+        runlog = _fixture_fn(conftest._fast_runlog)
+        gen = runlog(_fake_request(node=node))
+        next(gen)
+        with pytest.raises(StopIteration):
+            next(gen)
+    finally:
+        support.set_current_page(None)
+    assert page.calls == []                                  # 第二键缺失 → 零 tracing
+    line = json.loads(conftest.RUNS_PATH.read_text(encoding="utf-8").splitlines()[-1])
+    assert "trace" not in line and "trace_secrets_ack" not in line
 
 
 def test_trace_failure_leg_writes_zip_path(tmp_path, monkeypatch, request):
-    """开启后失败腿：start→stop(path) 落 trace.zip，**路径**写进 runs.jsonl（绝对）。"""
+    """双确认齐 + 失败腿：start→stop(path) 落 trace.zip，路径+可审计标记写进 runs.jsonl。"""
     support, conftest = _load_artifact(tmp_path, monkeypatch, request)
     monkeypatch.setenv("ATLAS_FAST_TRACE", "1")
+    monkeypatch.setenv("ATLAS_FAST_TRACE_ACCEPT_SECRETS", "1")
     monkeypatch.delenv("ATLAS_RUNS_DIR", raising=False)
     page = _TracingPage()
     support.set_current_page(page)
@@ -1832,14 +1895,16 @@ def test_trace_failure_leg_writes_zip_path(tmp_path, monkeypatch, request):
     trace = Path(line["trace"])
     assert trace.is_absolute() and trace.exists()
     assert trace.parent.name == support.TRACES_DIR_NAME
+    assert line["trace_secrets_ack"] is True                 # 红线 #2 可审计标记
     assert [c[0] for c in page.calls] == ["start", "stop"]
-    assert page.calls[1][1] is not None                # stop 带 path=落盘
+    assert page.calls[1][1] is not None
 
 
 def test_trace_success_leg_no_file(tmp_path, monkeypatch, request):
-    """开启后成功腿：start+stop 但 stop 不带 path（丢弃），无 zip、无 trace 键。"""
+    """双确认齐 + 成功腿：start+stop 但 stop 不带 path（丢弃），无 zip、无 trace 键。"""
     support, conftest = _load_artifact(tmp_path, monkeypatch, request)
     monkeypatch.setenv("ATLAS_FAST_TRACE", "1")
+    monkeypatch.setenv("ATLAS_FAST_TRACE_ACCEPT_SECRETS", "1")
     monkeypatch.delenv("ATLAS_RUNS_DIR", raising=False)
     page = _TracingPage()
     support.set_current_page(page)
@@ -1860,9 +1925,10 @@ def test_trace_success_leg_no_file(tmp_path, monkeypatch, request):
 
 
 def test_trace_without_page_is_noop(tmp_path, monkeypatch, request):
-    """开启但无页面（纯 API 腿）：start_tracing(None)=False，不崩、不写 trace 键。"""
+    """双确认齐但无页面（纯 API 腿）：start_tracing(None)=False，不崩、不写 trace 键。"""
     support, conftest = _load_artifact(tmp_path, monkeypatch, request)
     monkeypatch.setenv("ATLAS_FAST_TRACE", "1")
+    monkeypatch.setenv("ATLAS_FAST_TRACE_ACCEPT_SECRETS", "1")
     monkeypatch.delenv("ATLAS_RUNS_DIR", raising=False)
     support.set_current_page(None)
     runlog = _fixture_fn(conftest._fast_runlog)
@@ -1875,14 +1941,16 @@ def test_trace_without_page_is_noop(tmp_path, monkeypatch, request):
 
 
 def test_trace_credential_risk_is_documented():
-    """凭据红线**如实标注**（不声称安全）：模板含风险注释 + 规避指引 + 只写路径。"""
+    """凭据红线**如实标注** + 双确认硬化（不声称安全）：模板含风险注释/规避/只写路径/审计标记。"""
     assert "凭据红线" in SUPPORT_SRC
     assert "trace.zip" in SUPPORT_SRC
     assert "fill" in SUPPORT_SRC and "明文可能落进 trace.zip" in SUPPORT_SRC
-    assert "ATLAS_FAST_TRACE 关闭" in SUPPORT_SRC
-    # 运行行只写**路径**（不回写内容）
+    assert "ATLAS_FAST_TRACE_ACCEPT_SECRETS" in SUPPORT_SRC   # 第二确认键
+    assert "TRACE-ACK-REQUIRED" in SUPPORT_SRC               # 点名 WARN 前缀（ASCII/X4）
+    # 运行行只写**路径** + 双确认审计标记（不回写内容）
     assert "self.trace = str(path)" in SUPPORT_SRC
     assert 'record["trace"] = self.trace' in SUPPORT_SRC
+    assert 'record["trace_secrets_ack"] = True' in SUPPORT_SRC
 
 
 # ===========================================================================

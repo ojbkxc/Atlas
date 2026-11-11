@@ -334,19 +334,47 @@ def current_page():
 # ---------------------------------------------------------------------------
 # 失败腿 trace 归档（T4）：ATLAS_FAST_TRACE=="1" 才启用；默认关=零开销（红线 #8 同族）
 # ---------------------------------------------------------------------------
-# ⚠ 凭据红线（如实标注，不声称安全）：Playwright trace.zip（screenshots+snapshots）会带进
-# **网络请求/响应体与头**，且动作元数据记录 fill()/press() 的**输入值**——登录链路把密码
-# 经 fill/网络 POST 送出时，明文可能落进 trace.zip。Playwright 无内置脱敏。
-#   规避：①生产/含真实凭据的运行保持 ATLAS_FAST_TRACE 关闭（默认即关）；
-#        ②trace.zip 视同敏感取证物（落 reports/traces/，gitignore 内，勿提交/外发）；
-#        ③需要分享时先人工审阅再裁剪。sources=False 只是不打包脚本源码，**不**擦网络载荷。
+# ⚠ 凭据红线（如实标注 + 最小硬化，不写假脱敏）：Playwright trace.zip（screenshots+snapshots）会
+# 带进**网络请求/响应体与头**，且动作元数据记录 fill()/press() 的**输入值**——登录链路把密码
+# 经 fill/网络 POST 送出时，明文可能落进 trace.zip。Playwright 无内置脱敏。故**双确认**才开：
+# 仅 ATLAS_FAST_TRACE=1 **不足以**（缺第二键 → trace 不开 + 点名 WARN），还需
+# ATLAS_FAST_TRACE_ACCEPT_SECRETS=1（人显式承认「会有密码落 zip，我自己保管」）。
+#   规避：①不设两键（默认即关，成功腿连 start 都不调=零开销）；②trace.zip 视同敏感取证物
+#        （落 reports/traces/，gitignore 内，勿提交/外发）；③分享前人工审阅裁剪。
+#        sources=False 只是不打包脚本源码，**不**擦网络载荷。
 TRACES_DIR_NAME = "traces"
+TRACE_ACK_WARN_PREFIX = "WARN: TRACE-ACK-REQUIRED"
 
 
 def trace_enabled(env) -> bool:
-    """ATLAS_FAST_TRACE=="1" 才启用——默认关使「成功腿零开销」字面成立（连 start 都不调）。"""
+    """**双确认**才启用 trace：ATLAS_FAST_TRACE=="1" ∧ ATLAS_FAST_TRACE_ACCEPT_SECRETS=="1"。
+
+    缺任一 → False（红线 #2 凭据不落盘：默认关使「成功腿零开销」字面成立——连 start 都不调）。
+    只认**精确 "1"**（不 strip、不大小写折叠）：`"1 "`/`"yess"` 等坏值一律**按关**处理，
+    绝不静默生效（凭据面从宽=事故）。"""
     env = env or {}
-    return str(env.get("ATLAS_FAST_TRACE", "") or "").strip() == "1"
+    armed = str(env.get("ATLAS_FAST_TRACE", "") or "") == "1"
+    acked = str(env.get("ATLAS_FAST_TRACE_ACCEPT_SECRETS", "") or "") == "1"
+    return armed and acked
+
+
+def trace_ack_required(env) -> bool:
+    """ATLAS_FAST_TRACE=1 但**缺** ACCEPT_SECRETS 确认 → True（trace 不开，由 conftest 喊 WARN）。"""
+    env = env or {}
+    armed = str(env.get("ATLAS_FAST_TRACE", "") or "") == "1"
+    acked = str(env.get("ATLAS_FAST_TRACE_ACCEPT_SECRETS", "") or "") == "1"
+    return armed and not acked
+
+
+def trace_ack_warning(env) -> str:
+    """缺第二确认键时的点名 WARN（X4：ASCII 前缀可 cp936）；无需告警则空串。"""
+    if not trace_ack_required(env):
+        return ""
+    return (f"{TRACE_ACK_WARN_PREFIX}: ATLAS_FAST_TRACE=1 会把网络载荷/fill 输入值（含密码）"
+            "写进 trace.zip，本波红线 #2 禁止——trace 未开启。确要取证请显式设 "
+            "ATLAS_FAST_TRACE_ACCEPT_SECRETS=1（=承认 zip 含密码）；开启后 zip 落 "
+            "reports/traces/（gitignore 内），**勿外发/勿入库**，事后审计见运行行 "
+            "trace_secrets_ack=true")
 
 
 def trace_path(runs_path, run_id) -> Path:
@@ -422,6 +450,7 @@ class RunWriter:
         self._closed = False
         self._lock = threading.Lock()
         self.trace = None   # 失败腿 trace.zip 绝对路径（T4）；None=不写键（成功腿/未启用）
+        self.trace_secrets_ack = None   # 双确认取证的可审计标记（红线 #2）：True 才写键
 
     @property
     def closed(self) -> bool:
@@ -431,6 +460,10 @@ class RunWriter:
         """登记失败腿 trace.zip 路径（T4，尽力而为）：仅当 tracing 真启动且落盘成功才调。
         只写**路径**进 runs.jsonl——不回写内容（凭据面见 trace_enabled 段注释）。"""
         self.trace = str(path)
+
+    def set_trace_secrets_ack(self, value=True) -> None:
+        """双确认取证的可审计标记（红线 #2）：让事后审计看得出「这份 trace 是有人明知故犯取的」。"""
+        self.trace_secrets_ack = bool(value)
 
     @contextmanager
     def step(self, name, op: str = "action"):
@@ -485,6 +518,8 @@ class RunWriter:
                       "steps": list(self.steps)}
             if self.trace:
                 record["trace"] = self.trace  # T4：失败腿取证路径（只写路径，见 set_trace）
+            if self.trace_secrets_ack:
+                record["trace_secrets_ack"] = True  # 红线 #2 双确认标记（可审计）
             if reason:
                 record["reason"] = str(reason)[:REASON_MAX_LEN]  # 非空才写键（缺省形态=存量）
             # default 兜底永不抛（#126 面B）：坏字段可以有噪音，不能丢整轮证据。
@@ -818,7 +853,9 @@ ATLAS_FAST_PASSWORD(→DEMO_PASSWORD) / ATLAS_FAST_ALLOW_WRITES / ATLAS_RUNS_DIR
 ATLAS_BROWSER_EXECUTABLE / ATLAS_BROWSER_CHANNEL(T5 浏览器矩阵) / CDP_DEBUG / CDP_PORT /
 ATLAS_FAST_BASE_URL(→ATLAS_BASE_URL) / ATLAS_FAST_CDP / ATLAS_FAST_INTERACTIVE /
 ATLAS_FAST_ATTACH_MATCH / ATLAS_FAST_PARALLEL(T3 分片，>1 需 pytest-xdist) /
-ATLAS_FAST_TRACE(T4 失败腿 trace.zip，默认关=零开销；含凭据面,见 _atlas_fast.trace_enabled 注)。
+ATLAS_FAST_TRACE(T4 失败腿 trace.zip，默认关=零开销) /
+ATLAS_FAST_TRACE_ACCEPT_SECRETS(T4 第二确认键：只给 TRACE=1 不开 trace 且 WARN；两键齐才开，
+见 _atlas_fast.trace_enabled 注/红线 #2)。
 
 F-11 留白（本波**不实现**，别顺手加）：产物不做「page.evaluate(fetch(...)) 发 API」通道——
 那条路绕过 abilities.py 的 auth_expired 判据与净化刀，要接须先落判据再落代码。
@@ -838,7 +875,7 @@ from _atlas_fast import (FLOW_STATUS_TIMEOUT, EnvBlocked, NotWired, RunWriter,
                          launch_kwargs, load_plan_ctx, missing_browser_hint,
                          parallel_setup_problem, parallel_workers, save_plan_ctx,
                          session_channel, set_current_page, start_tracing, stop_tracing,
-                         trace_enabled, trace_path, xdist_available)
+                         trace_ack_warning, trace_enabled, trace_path, xdist_available)
 
 HERE = Path(__file__).resolve().parent
 RUNS_PATH = HERE / "reports" / "runs.jsonl"
@@ -873,6 +910,11 @@ def pytest_configure(config):
     problem = parallel_setup_problem(workers, xdist_available=xdist_available())
     if problem:
         raise pytest.UsageError(problem)
+    # trace 双确认闸（T4/红线 #2）：只给 ATLAS_FAST_TRACE=1 缺 ACCEPT_SECRETS → trace 不开 +
+    # 一行点名 WARN（缺第二键不静默生效）。会话级打一次。
+    warn = trace_ack_warning(dict(os.environ))
+    if warn:
+        print(warn)
 
 
 def _headless_decision(config) -> bool:
@@ -1178,6 +1220,7 @@ def _fast_runlog(request):
                 pass
             if stop_tracing(current_page(), tpath):
                 writer.set_trace(tpath.resolve())
+                writer.set_trace_secrets_ack(True)   # 红线 #2 双确认标记（可审计）
         else:
             stop_tracing(current_page())   # 成功腿丢弃缓冲区：不产文件、不写路径
     try:
@@ -1275,6 +1318,7 @@ ENV_KEYS = {
     "ATLAS_BROWSER_CHANNEL": None,  # T5 浏览器矩阵：chromium/chrome/firefox/webkit（缺省 chromium）
     "ATLAS_FAST_PARALLEL": None,    # T3 分片：>1 需 pytest-xdist（缺依赖点名，绝不静默降级）
     "ATLAS_FAST_TRACE": "0",        # T4 trace：=="1" 才失败腿落 trace.zip（默认关=成功腿零开销）
+    "ATLAS_FAST_TRACE_ACCEPT_SECRETS": "0",  # T4/红线#2 第二确认键：=="1" 才真开 trace（缺则 WARN）
 }
 
 
