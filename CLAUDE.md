@@ -130,7 +130,7 @@ PowerShell 设置模块路径：`$env:PYTHONPATH="src"`。
 4. 不写假 creator、假 API 实证或“看起来完整”的未验证状态机。
 5. 默认 `run` 零成功截图；排障才 `debug/heal`。
 6. 原始 `legacy-suite` 和 `legacy-api` 不修改；外部路径通过 `.env` 配置。
-7. 生产写默认只读（唯一放行通道 `ATLAS_ALLOW_PROD_WRITE=1`：默认关=逐字节不变，打开时 engine 打一行 ASCII 警告并把 `prod_write_allowed` 记入 runs.jsonl，开关值写坏按关处理）；自动单据必须带「非人工创建」。
+7. 生产写默认只读（唯一放行通道 `ATLAS_ALLOW_PROD_WRITE=1`：默认关=逐字节不变，打开时 engine 打一行 ASCII 警告并把 `prod_write_allowed` 记入 runs.jsonl，开关值只认精确 `1`、不 strip，写坏按关处理并点名）；自动单据必须带「非人工创建」。
 8. 每次收工同步 README/AGENTS/CLAUDE/PRIVACY 受影响的事实。
 9. 探索/自愈/生成的产物一律 `pending_review` 进 `atlas review` 塔；除 `--approve` 外不存在知识写路径，critical 档无自动晋级。
 10. 冻场（CDP_PAUSE_STEP）只在 debug 语义下使用；run/CI 不设环境变量即零开销，禁止在流水线里开 CDP 端口。

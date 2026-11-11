@@ -92,20 +92,47 @@ def test_allow_prod_write_does_not_exempt_remark(tmp_path, monkeypatch):
 
 
 # ③ 坏开关值按关处理、不静默生效
-@pytest.mark.parametrize("bad", ["yess", "true", "on", "0", "yes", "01", "TRUE"])
+@pytest.mark.parametrize("bad", ["yess", "true", "on", "0", "yes", "01", "TRUE", "1 ", " 1", "1\t"])
 def test_broken_switch_value_is_off_not_silently_on(tmp_path, monkeypatch, capsys, bad):
+    """#14：只认**精确** `"1"`；带空白/大小写/别名的坏值一律关 + 点名（不 strip）。"""
     monkeypatch.setenv(PROD_WRITE_ENV_KEY, bad)
     cfg = AtlasConfig(tmp_path, env="prod-hk")
     assert cfg.allow_prod_write is False                        # 坏值绝不静默当开
     with pytest.raises(PermissionError):
         cfg.validate_write("非人工创建")
-    assert PROD_WRITE_ENV_KEY in capsys.readouterr().err       # 坏值点名
+    assert PROD_WRITE_ENV_KEY in capsys.readouterr().err       # 坏值点名（打印原始 repr）
 
 
-def test_whitespace_around_one_activates(tmp_path, monkeypatch):
-    """`ATLAS_ALLOW_PROD_WRITE= 1 ` 去空白后是合法 '1'——放行（与 _int_env strip 口径一致）。"""
-    monkeypatch.setenv(PROD_WRITE_ENV_KEY, " 1 ")
-    assert AtlasConfig(tmp_path, env="prod-hk").allow_prod_write is True
+def test_empty_string_is_off_silently(tmp_path, monkeypatch, capsys):
+    """空串视同未设（按关、不告警）——与「缺省」同处理。"""
+    monkeypatch.setenv(PROD_WRITE_ENV_KEY, "")
+    assert AtlasConfig(tmp_path, env="prod-hk").allow_prod_write is False
+    assert capsys.readouterr().err == ""
+
+
+def test_flag_env_matches_product_trace_strictness(tmp_path, monkeypatch):
+    """#14 钉桩（行为对拍，非源码文本）：`config._flag_env` 与产物侧 `_atlas_fast.trace_enabled`
+    对同一 raw 值判读一致（两边都只认精确 `"1"`、都不 strip）——同一机器两个安全旗标不得语义分叉。
+    产物侧函数住在 `emit_fast._FAST_SUPPORT_SOURCE` 模板里，按既有 `_load_artifact` 同法装载。"""
+    import importlib
+    import sys
+    from atlas.generator import emit_fast
+    out = tmp_path / "artifact"
+    out.mkdir()
+    (out / f"{emit_fast.FAST_SUPPORT_MODULE_NAME}.py").write_text(
+        emit_fast._FAST_SUPPORT_SOURCE, encoding="utf-8")
+    monkeypatch.syspath_prepend(str(out))
+    sys.modules.pop(emit_fast.FAST_SUPPORT_MODULE_NAME, None)
+    support = importlib.import_module(emit_fast.FAST_SUPPORT_MODULE_NAME)
+    try:
+        for raw in ("1", "1 ", " 1", "01", "yess", "true", ""):
+            monkeypatch.setenv(PROD_WRITE_ENV_KEY, raw)
+            flag = AtlasConfig(tmp_path, env="prod-hk").allow_prod_write
+            trace = support.trace_enabled({"ATLAS_FAST_TRACE": raw,
+                                           "ATLAS_FAST_TRACE_ACCEPT_SECRETS": raw})
+            assert flag is trace is (raw == "1"), f"旗标语义分叉: raw={raw!r} flag={flag} trace={trace}"
+    finally:
+        sys.modules.pop(emit_fast.FAST_SUPPORT_MODULE_NAME, None)
 
 
 # ④ 凭据红线仍拦得住（开关不旁路）

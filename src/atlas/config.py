@@ -90,19 +90,23 @@ def _int_env(key: str, default: int, *, minimum: int = 0) -> int:
     return value
 
 def _flag_env(key: str) -> bool:
-    """布尔开关（显式 opt-in）的单一读取点：**只认字面 `'1'` 为开**。
+    """布尔开关（显式 opt-in）的单一读取点：**只认精确 `"1"` 为开**（不 strip、不折叠大小写）。
 
-    缺省/空白 → 关；其它任何值（`yess`/`true`/`on`/`0`/`yes`…）→ 关且 WARN。
+    缺省/空串 → 关；其余任何非空值（`"1 "`/`yess`/`true`/`on`/`0`…）→ 关且 WARN。
     坏值绝不静默生效：开关类配置写错是「看着像开其实没开」的假绿入口——若坏值当开，
     生产写这种不可逆动作会被一个拼错的环境变量悄悄放行；若坏值当关却不吭声，人又
-    以为已开。两种都坏，所以「按关处理 + 点名」是唯一诚实落点（#79/#80 口径）。
+    以为已开。两种都坏，所以「按关处理 + 点名（打印原始值 repr）」是唯一诚实落点
+    （#79/#80 口径）。
+
+    语义与产物侧 `emit_fast.trace_enabled` **一致**（两边都只认精确 `"1"`、都不 strip）
+    ——分叉会让同一台机器上两个安全旗标对 `"1 "` 给出相反的判读（t8-verify 实测陷阱）。
     """
     raw = os.environ.get(key)
-    if raw is None or not raw.strip():
-        return False
-    if raw.strip() == "1":
+    if raw == "1":
         return True
-    print(f"WARN: {key}={raw!r} 不是合法开关值（只认 '1'），按关处理", file=sys.stderr)
+    if raw is None or raw == "":
+        return False
+    print(f"WARN: {key}={raw!r} 不是合法开关值（只认精确 '1'），按关处理", file=sys.stderr)
     return False
 
 
