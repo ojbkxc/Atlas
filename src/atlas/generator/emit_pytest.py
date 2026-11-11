@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import locators
+from ..credential_gate import gate_flow_headers
 from .model import Endpoint
 from .dsl_utils import slugify, collect_path_query, form_pairs_to_string
 from .emit_flow import _save_as_name
@@ -1143,6 +1144,29 @@ def _fast_ui_gates(specs: list[StepSpec], comps_map: dict) -> None:
                     f"「{s.slug}」）；已知组件：{sorted(comps_map)}——组件库数据与渲染不一致。")
 
 
+def _gate_spec_headers(specs: list[StepSpec]) -> list[tuple[int, str, str]]:
+    """C4① 字面敏感头闸（红线 #2：凭据不落盘）——**判据唯一实现在 `credential_gate`**，
+    此处只调不复制名单/净化规则（#92，与 emit_flow 同一把刀）。
+
+    把 `specs[*].headers` 里手写的字面凭据（`Authorization`/`Cookie`/`*-sessionid` +
+    字面 UUID/JWT…）就地换成 `${ATLAS_HDR_n}` 占位，返回 `(序号, 头名, env 键)` 映射
+    （**不回显值**——值永不进任何输出通道）。
+
+    两条产物入口都必须过此闸，否则字面凭据逐字进产物 `test_*.py`（=凭据落盘，红线）：
+    - `export-pytest` 直接吃用户的 `flow.yaml`，步骤 headers 常是字面鉴权值；
+    - `gen --with-pytest` 的 **pytest 半产物**从 `endpoints + global_headers` 出——YAML 那半
+      已在 emit_flow 过闸，这半之前没有人闸（t8-verify 实锤：同次 gen，YAML 净化了、
+      pytest 半产物仍含字面 token）。
+    `${VAR}`/`${__P()}` 这类**已外部化**的值 `header_is_sensitive` 恒放行、原样进产物，
+    运行期未接线由产物侧 `resolve_placeholders` 报 `KeyError`（正向对照不丢）。
+
+    借用 flow 形状载体让同一把刀就地替换：`spec.headers` 是各自独立的 dict（`_specs_*` 里
+    `dict(...)` 构造），替换在该对象上可见、不回写调用方的 flow dict。
+    """
+    carrier = {"steps": [{"headers": spec.headers} for spec in specs]}
+    return gate_flow_headers(carrier)
+
+
 def emit_pytest_package(*, out_dir: Path, endpoints: list[Endpoint] | None = None,
                         flow: dict | None = None, flow_id: str = "",
                         base_url: str = "", global_headers: dict | None = None,
@@ -1198,6 +1222,9 @@ def emit_pytest_package(*, out_dir: Path, endpoints: list[Endpoint] | None = Non
             flow_id = slugify(f"{endpoints[0].summary} {endpoints[0].path}", fallback="flow")
         if not base_url and endpoints:
             base_url = endpoints[0].base or ""
+    # C4① 字面敏感头闸（红线 #2）：两条入口（flow / endpoints+global_headers）渲染前都过此闸，
+    # 字面凭据换占位——否则 export-pytest / gen --with-pytest 的字面鉴权值逐字落产物（凭据落盘）。
+    _gate_spec_headers(specs)
     mod_id = _ident_slug(flow_id or "regression", fallback="regression")
 
     comps = components if components is not None else _default_components()
