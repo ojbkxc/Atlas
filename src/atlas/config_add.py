@@ -75,7 +75,7 @@ _PLUGIN = '''\
 
 八个契约成员（与 DemoPlugin 一致，使 resolve_plugin() 返回可被 cli/runtime 无差别消费）：
   name / allowed_api_operations / knowledge / selectors / contracts /
-  session_defaults / register_tasks / make_provider
+  session_defaults / tasks / register_tasks / make_provider
 """
 from pathlib import Path
 import json
@@ -125,8 +125,11 @@ class {{Domain}}Plugin:
         from .tasks import overlay_session
         return overlay_session(self.knowledge().load("session") or {})
 
+    def tasks(self, legacy_pages_path=None):
+        return core_tasks(legacy_pages_path)
+
     def register_tasks(self, registry: TaskRegistry, legacy_pages_path=None) -> None:
-        for task in core_tasks(legacy_pages_path):
+        for task in self.tasks(legacy_pages_path):
             registry.register(task.name, lambda task=task, **kwargs: task.clone(**kwargs))
 
     def make_provider(self, config, api, division_code) -> DataProvider:

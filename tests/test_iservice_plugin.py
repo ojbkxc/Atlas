@@ -43,26 +43,80 @@ def test_resolve_plugin_iservice(monkeypatch):
     plugin = resolve_plugin()
     assert isinstance(plugin, IservicePlugin)
     assert plugin.name == "iservice"
-    # 八契约成员齐（与 DemoPlugin 一致，可被 cli/runtime 无差别消费）。
+    # 契约成员齐（与 DemoPlugin 一致，可被 cli/runtime 无差别消费）。
     for member in ("name", "allowed_api_operations", "knowledge", "selectors", "contracts",
-                   "session_defaults", "register_tasks", "make_provider"):
+                   "session_defaults", "tasks", "register_tasks", "make_provider"):
         assert hasattr(plugin, member), f"缺少契约成员 {member}"
     # 未接接口客户端：白名单如实留空（红线 #12，不伪造操作名）。
     assert plugin.allowed_api_operations == frozenset()
 
 
 def test_cli_contracts_resolves_iservice_end_to_end(tmp_path, monkeypatch, capsys):
-    """最强端到端：CLI `atlas contracts` 走真实入口 `resolve_plugin()` 取 iservice 契约。
+    """端到端：CLI `atlas contracts` 走真实入口 `resolve_plugin()` 取 iservice 契约。
 
-    注：`atlas tasks`/`atlas compose` 是引擎里 demo 硬编码的既有耦合（cli.py 直接 import
-    demo 的 core_tasks，非 resolve_plugin）——本波不去动引擎，故用真正走插件缝的
-    `atlas contracts`/`atlas selectors` 做端到端。"""
+    （`atlas tasks`/`compose` 的插件缝由下方 test_cli_* 覆盖。）"""
     monkeypatch.setenv("ATLAS_PLUGIN", "iservice")
     assert main(["--root", str(tmp_path), "contracts"]) == 0
     report = json.loads(capsys.readouterr().out)
     assert report["total"] == 7
     assert {"core", "high", "minimal"} <= set(report["levels"])
     assert any("iservice-spm" in c["path"] for c in report["contracts"])
+
+
+# ---- 插件协议任务枚举入口：cli tasks/compose/agent 走插件（2.6b 补缝）----
+
+def test_plugin_protocol_exposes_tasks(monkeypatch):
+    """插件协议的枚举入口 `tasks()`：demo 与 iservice 各自返回自身 core_tasks。"""
+    from atlas.plugins.demo import DemoPlugin, core_tasks as demo_core_tasks
+    from atlas.plugins.iservice import IservicePlugin, core_tasks as isvc_core_tasks
+    for plugin, core, domain in ((DemoPlugin(), demo_core_tasks, "demo"),
+                                 (IservicePlugin(), isvc_core_tasks, "iservice")):
+        tasks = plugin.tasks()
+        assert [t.name for t in tasks] == [t.name for t in core()]
+        assert all(t.metadata.domain == domain for t in tasks)
+
+
+def test_cli_tasks_default_matches_demo_core_tasks(tmp_path, monkeypatch, capsys):
+    """对照测：无 ATLAS_PLUGIN 时 `atlas tasks` 输出与 demo core_tasks 的 catalog **逐字节相同**。"""
+    from atlas.composition import catalog
+    from atlas.plugins.demo import core_tasks as demo_core_tasks
+    monkeypatch.delenv("ATLAS_PLUGIN", raising=False)
+    assert main(["--root", str(tmp_path), "tasks"]) == 0
+    assert capsys.readouterr().out == json.dumps(
+        catalog(demo_core_tasks()), ensure_ascii=False, indent=2) + "\n"
+
+
+def test_cli_compose_default_matches_demo_compose(tmp_path, monkeypatch, capsys):
+    """对照测：无 ATLAS_PLUGIN 时 `atlas compose <goal>` 输出与 demo core_tasks 的拼装**逐字节相同**。"""
+    from atlas.composition import compose_for_goal
+    from atlas.plugins.demo import core_tasks as demo_core_tasks
+    monkeypatch.delenv("ATLAS_PLUGIN", raising=False)
+    assert main(["--root", str(tmp_path), "compose", "--goal", "document_no"]) == 0
+    expected = "\n".join(t.name for t in compose_for_goal(demo_core_tasks(), "document_no")) + "\n"
+    assert capsys.readouterr().out == expected
+
+
+def test_cli_tasks_iservice_lists_iservice_tasks(tmp_path, monkeypatch, capsys):
+    """ATLAS_PLUGIN=iservice 时 `atlas tasks` 列的是 iservice 的任务（12 条，domain=iservice）。
+
+    iservice 任务名是 demo 的超集，故用条数 + domain 判别而非名字差集（demo 会列 10 条 domain=demo）。"""
+    monkeypatch.setenv("ATLAS_PLUGIN", "iservice")
+    assert main(["--root", str(tmp_path), "tasks"]) == 0
+    rows = json.loads(capsys.readouterr().out)
+    assert len(rows) == 12
+    assert all(r["domain"] == "iservice" for r in rows)
+    assert {"select_source_order", "fill_return_reason"} <= {r["name"] for r in rows}
+
+
+def test_generated_plugin_conforms_to_tasks_protocol(tmp_path, monkeypatch, capsys):
+    """`atlas config add` 生成的插件也必须实现 tasks()——否则 ATLAS_PLUGIN 指它时 `atlas tasks` 崩。"""
+    assert main(["config", "add", "acme", "--out", str(tmp_path)]) == 0
+    capsys.readouterr()   # 清掉 config add 的 JSON 输出
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.setenv("ATLAS_PLUGIN", "plugins.acme")
+    assert main(["--root", str(tmp_path), "tasks"]) == 0
+    rows = json.loads(capsys.readouterr().out)
+    assert all(r["domain"] == "acme" for r in rows)
 
 
 def test_full_registry_registers_iservice_tasks(monkeypatch):

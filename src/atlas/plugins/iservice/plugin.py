@@ -76,8 +76,12 @@ class IservicePlugin:
         session = self.knowledge().load("session") or {}
         return overlay_session(session)
 
+    def tasks(self, legacy_pages_path: Path | None = None) -> list:
+        """任务枚举单一入口（cli 的 catalog/compose/agent 走这里）。缺省 == core_tasks()。"""
+        return core_tasks(legacy_pages_path)
+
     def register_tasks(self, registry: TaskRegistry, legacy_pages_path: Path | None = None) -> None:
-        for task in core_tasks(legacy_pages_path):
+        for task in self.tasks(legacy_pages_path):
             # 必须把默认参数一并带过去，否则 registry 构造出的新实例会丢 page_key 等必需参数。
             registry.register(task.name, lambda task=task, **kwargs: task.clone(**kwargs))
 

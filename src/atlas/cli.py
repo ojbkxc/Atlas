@@ -14,8 +14,18 @@ from .config import AtlasConfig, load_dotenv
 from .dsl import FlowCompiler, FlowDocument, TaskRegistry
 from .legacy import LegacyAdapter
 from .plugin_api import resolve_plugin
-from .plugins.demo import core_tasks
 from .runtime import DemoRuntime, check_demo_api
+
+def core_tasks(legacy_pages_path=None):
+    """任务枚举的插件缝**单一入口**（cli 的 tasks/compose/agent 经此走 resolve_plugin().tasks()）。
+
+    缺省（无 ATLAS_PLUGIN）→ resolve_plugin() 返回 DemoPlugin，其 tasks() 即 demo 的
+    core_tasks——与旧 `from .plugins.demo import core_tasks` 逐字节等价（同一函数、同一默认
+    参数、同一返回）；ATLAS_PLUGIN=iservice → 列 iservice 的任务（换业务只换插件）。
+    保留 `core_tasks` 之名以兼容既有测试对 `cli.core_tasks` 的替身注入（agent 轨 rc 终态测）。
+    不在此写第二套分支判断（#92）：判据只在插件协议的 tasks()。
+    """
+    return resolve_plugin().tasks(legacy_pages_path)
 
 def _parser() -> argparse.ArgumentParser:
     # 全局参数用 parents 共享：`atlas run x.yaml --mode debug`（文档口径）与
