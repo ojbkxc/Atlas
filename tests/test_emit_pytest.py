@@ -205,9 +205,73 @@ def test_support_body_split(tmp_path):
     mod = _load_support(tmp_path)
     # body 分流：dict/list → json=；str → data=（同 Atlas DSL 口径）
     assert isinstance(mod.StepResult(True, 200, {}, ""), mod.StepResult)
-    # 不支持的 body 类型：发送前点名拒绝（不静默）
+    # 不支持的 body 类型：发送前点名拒绝（不静默）。base_url 用绝对地址——#17 后缺配置
+    # 在 URL 判据处先抛 EnvBlocked（本测只验 body 分流，故给合法 base_url）。
     with pytest.raises(TypeError):
-        mod.call_api(method="POST", path="/x", body=object())
+        mod.call_api(method="POST", path="/x", base_url="https://h", body=object())
+
+
+def test_support_call_api_missing_base_url_is_env_blocked(tmp_path):
+    """#17 T9-O2 判据（唯一落点=_SUPPORT_SOURCE::call_api 入口）：缺配置→EnvBlocked 点名键，
+    绝不漏 urllib 裸 `ValueError: unknown url type`（归因漂移：操作者把「少配一个键」误读成产物坏了）。"""
+    mod = _load_support(tmp_path)
+    for bad in ("", None, "   ", "/relative/x", "web/api", "ftp://h"):
+        with pytest.raises(mod.EnvBlocked) as ei:
+            mod.call_api(method="GET", path="/web/api/x", base_url=bad)
+        msg = str(ei.value)
+        assert "ATLAS_BASE_URL" in msg and "缺配置" in msg   # 点名缺哪个 env 键 + 家族措辞
+        assert "unknown url type" not in msg
+
+
+def test_support_call_api_with_base_url_reaches_transport(tmp_path, monkeypatch):
+    """正向对照：给了绝对 http(s) base_url → 不进 EnvBlocked 分支，真走到 urllib（假 transport，不碰网络）。"""
+    mod = _load_support(tmp_path)
+    import urllib.request as _u
+
+    class _Resp:
+        status = 200
+
+        def read(self):
+            return b'{"ok": true}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    calls = []
+
+    def _fake_urlopen(req, timeout=None):
+        calls.append(req.full_url)
+        return _Resp()
+
+    monkeypatch.setattr(_u, "urlopen", _fake_urlopen)
+    result = mod.call_api(method="GET", path="/p", base_url="https://host")
+    assert result.ok is True and result.status == 200 and result.data == {"ok": True}
+    assert calls == ["https://host/p"]                       # urljoin 语义不变（相对 path 拼接照旧）
+
+
+def test_support_envblocked_identity_with_atlas_fast(tmp_path, monkeypatch):
+    """#17 复核（lead 点名）：快包并存时 call_api 的 EnvBlocked 必须是 `_atlas_fast.EnvBlocked`
+    **同一类对象**（否则 fast runlog/conftest 的 isinstance 认不出 env_blocked）；缺席时自备本地类。"""
+    import types as _types
+    local_dir = tmp_path / "local"
+    local_dir.mkdir()
+    sys.modules.pop("_atlas_fast", None)
+    local = _load_support(local_dir)                         # 无 _atlas_fast → 本地类
+
+    class _FakeEnvBlocked(RuntimeError):
+        pass
+
+    fake = _types.ModuleType("_atlas_fast")
+    fake.EnvBlocked = _FakeEnvBlocked
+    monkeypatch.setitem(sys.modules, "_atlas_fast", fake)    # 注入即用即弃（teardown 自动撤销）
+    fast_dir = tmp_path / "fast"
+    fast_dir.mkdir()
+    fastform = _load_support(fast_dir)                       # from _atlas_fast import EnvBlocked → fake
+    assert fastform.EnvBlocked is fake.EnvBlocked            # 同一类对象（快形态）
+    assert local.EnvBlocked is not fake.EnvBlocked           # 本地类不同（慢形态自备，两形态不混用）
 
 
 # ---- 文件包产物 ----
@@ -295,11 +359,15 @@ def _sha(s: str) -> str:
 
 # E.1.2 零涟漪快照：fast=False 输出与快模式改造前**逐字节**一致的基线。
 # 动 fast=False 渲染形态必须同步改此表且经 lead 签字（#115）；fast 分支改动不得触碰这些哈希。
+# 2026-11-11 T9-O2（lead 签字，理由：错误路径点名终态；正常路径零涟漪——仅多一次 startswith 判断）：
+# `support` 哈希更新，diff 仅三处——①docstring 加一行；②模块级 try-import `_atlas_fast.EnvBlocked`；
+# ③`call_api` 入口加一次 `startswith(("http://","https://"))` 判断。正常路径（base_url 非空 http(s)）
+# 逐字节行为不变；其余 11 项哈希未动（本改动与 fast 分支、其它渲染面无涉）。
 # API 腿模块哈希项（lead 裁定 1 点名）：ep_single / ep_multi / flow_api_only / flow_mixed /
 # render_spec_direct / render_empty —— 覆盖 render_test_module 与 _render_api_test 的 fast=False
 # 缺省透传路径（headers 有/无、body 有/无、note 断言、混合 flow 内 API 腿均在列）。
 _FAST_OFF_BASELINE = {
-    "support": "8578da57f7e8743006076034beffdaa85e4419579b8021f9c234da5847f63912",
+    "support": "1fed045a64cdc83e13ad88aeb38f869aff6dba139b6a99380095d3a4d0481d98",
     "ep_single": "4be2db1dca53e163704700f77393f595e6f727e93393a3272e5593c04ac6672e",
     "ep_multi": "9a1f4aa69c8ce7587070aa2cc4f9316c8a672a0f96879859ef1206d233752582",
     "flow_mixed": "94bd0d1e432ce01ede894090f85d78f49a3248ad263a7f31bec2b31e224a7675",

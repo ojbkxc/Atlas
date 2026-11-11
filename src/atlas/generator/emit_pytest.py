@@ -584,6 +584,7 @@ _SUPPORT_SOURCE = '''"""生成候选（generator/emit_pytest）：回归用例�
 
 依赖：仅标准库（urllib/json/os/re）。**不引入 requests/playwright/allure**（AGENTS 红线 #4）。
 未解析的 ``${VAR}`` 占位符一律显式报错——绝不把占位符当字面量发出去（假请求/假通过防线）。
+缺配置（base_url 空/非绝对 URL）走 ``EnvBlocked`` 点名终态，绝不漏 urllib 裸 ValueError（归因漂移）。
 """
 from __future__ import annotations
 
@@ -592,6 +593,13 @@ import os
 import re
 import urllib.error
 import urllib.request
+
+try:  # 快包并存时复用 _atlas_fast.EnvBlocked → 同一类对象（fast runlog 的 isinstance 才认 env_blocked）
+    from _atlas_fast import EnvBlocked
+except ImportError:  # 慢形态/脱离 Atlas 独立运行：自备同义类（★不得与 fast 形态混用，两形态各自独立判定）
+    class EnvBlocked(RuntimeError):
+        """环境/配置阻塞终态（本模块自包含定义；快包并存时复用 _atlas_fast.EnvBlocked）。"""
+
 
 _PLACEHOLDER = re.compile(r"\\$\\{([^}]+)\\}")
 
@@ -640,6 +648,13 @@ def call_api(*, method, path, base_url="", headers=None, body=None, query=None,
         pairs = resolve_placeholders(query, env)
         sep = "&" if "?" in url else "?"
         url += sep + "&".join(f"{k}={v}" for k, v in pairs.items())
+    if not url.strip().lower().startswith(("http://", "https://")):
+        # 判据单点（本函数入口，快/慢两形态共用）：缺配置→点名终态；绝不把 空/相对 URL 漏给
+        # urllib 抛裸 ValueError: unknown url type（归因漂移：操作者把「少配一个键」误读成产物坏了）。
+        raise EnvBlocked(
+            "缺配置：ATLAS_BASE_URL（API 腿需要它；当前为空或非绝对 URL）——请在 .env/环境把 "
+            "ATLAS_BASE_URL 设为绝对地址（以 http 或 https 开头、含主机名的完整 URL），"
+            "或改产物 BASE_URL 默认值")
     hdrs = {k: str(v) for k, v in resolve_placeholders(headers or {}, env).items()}
     data = None
     if body is not None:
