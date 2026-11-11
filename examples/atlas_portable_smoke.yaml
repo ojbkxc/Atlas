@@ -1,0 +1,34 @@
+# Atlas 可移植产物样例：演示「flow → 可独立运行的 pytest 包」的最小随仓样例。
+#
+# 目的单一=能被 `atlas export-pytest examples/atlas_portable_smoke.yaml --fast -o <dir>` 逐字导出，
+# 且产物是可独立运行的 pytest 包（AST 级零 `import atlas`；判据见
+# tests/test_portable_sample_export.py）。它**不是**真机执行样例——只演示产物形态。
+#
+# 为何 UI 步用 `legacy_pages` 声明位、而不给 demo 组件库补 auto-wire actions：
+#   ① 声明位写在 flow 里，不受 ATLAS_KNOWLEDGE_DIR 私有知识覆盖影响——用户配了私有知识库时，
+#      auto-wire 会去读私有 components.json、认领不到 demo 任务名，导出照样 rc2。样例的用途是
+#      「随仓可跑」，不能依赖用户恰好没配私有库。
+#   ② demo 是**虚构**插件，为只读/导航类步硬造 click/fill/select/press 动作是「看起来完整的
+#      形式代码」（本波红线）；声明真实委托（`pages.<函数名>`，见 plugins/demo/tasks.py）才是诚实接线。
+#
+# 边界（如实）：`legacy_pages` 只被 `--fast` 导出消费；`atlas run/compile` 忽略该键。
+# 产物 UI 腿运行期经 `legacy_page_call("open_doc_list", …)` 只读委托旧套件页面函数，需
+# `ATLAS_LEGACY_WEB` 指到旧项目 web 目录（可移植，但非自包含——旧套件不在则 EnvBlocked 点名）。
+id: atlas-portable-smoke
+steps:
+  - task: api_call
+    id: query_customer
+    intent: 查询客户详情（API 腿；产物里以 requests 直调）
+    method: POST
+    path: /web/legacy-web-mdm/orgCustomerInfo/findEntireCustDetails
+    body:
+      customerCode: CUST00000010001
+      divisionCode: DIV-DEMO-0001
+    save_as: customer_resp
+  - task: open_doc_list
+    id: ui_open_list
+    intent: 打开单据列表（UI 腿；产物里经声明位委托旧套件页面函数）
+    page_key: sales_order
+    legacy_pages: open_doc_list
+assert:
+  - customer_resp.data.resultCode == "BUG-000"
