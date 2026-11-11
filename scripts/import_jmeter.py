@@ -15,6 +15,11 @@ from pathlib import Path
 import xml.etree.ElementTree as ET
 import yaml
 
+# 判据唯一实现在引擎侧 credential_gate（C4/M13）：脚本不自己复制敏感词名单，
+# 否则两份名单必然漂移（一份拦得住一份拦不住，比不拦更坏）。导入约定同
+# scripts/capture_save_request.py（`from atlas.x import …`，PYTHONPATH=src 或已安装）。
+from atlas.credential_gate import gate_flow_headers, mask_placeholder_value
+
 
 def extract_samplers(jmx_path: Path) -> list[dict]:
     """从 JMX 提取 HTTPSampler 节点：method/path/body/headers。
@@ -160,6 +165,18 @@ def to_atlas_dsl(samplers: list[dict], *, flow_id: str = "jmeter-import") -> dic
     return {"id": flow_id, "steps": steps}
 
 
+def apply_header_gate(flow: dict) -> list[tuple[int, str, str]]:
+    """C4① 字面敏感头闸（薄接线，判据在 `atlas.credential_gate`——脚本不复制第二份名单）。
+
+    `D:/jmx` 实测：主凭据虽已 `${__P()}` 外部化，但 582 个 Header 元素的
+    `isc-axios-sessionid` **全部是字面 UUID**、零变量——迁移器旧实现把 HeaderManager
+    原样照抄进 YAML 再原样打到 stdout，等于把「随时会泄」的字面凭据复制进新仓库/终端
+    回滚缓冲/CI 日志。闸把命中的值换成 `${ATLAS_HDR_<n>}`，映射只报键名不报值。
+    同一 (键, 值) 在全 flow 复用同一占位号：582 个重复头只需人审接一个 env 键。
+    """
+    return gate_flow_headers(flow)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("jmx", type=Path, help="JMeter .jmx 文件")
@@ -173,19 +190,42 @@ def main() -> int:
 
     samplers = extract_samplers(args.jmx)
     flow = to_atlas_dsl(samplers, flow_id=args.flow_id)
+    # 闸在**产出侧**、`yaml.dump` 之前（M14：确认位必须在产出侧）——dump 出来的文本与
+    # stdout 内容从此不含字面凭据，而不是「拦了但某条路径漏打」。
+    gated = apply_header_gate(flow)
     yaml_text = yaml.dump(flow, allow_unicode=True, sort_keys=False)
 
     hdr_n = sum(1 for s in flow["steps"] if s.get("headers"))
     placeholders = unresolved_placeholders(flow)
     if placeholders:
-        print(f"⚠ {len(placeholders)} 处 JMeter ${'{'}VAR{'}'} 占位符未解析，保留原样待人审接 env：",
+        # X4：终端标记 ASCII 化（旧 `⚠` 在 GBK 控制台直接 UnicodeEncodeError 崩掉迁移）
+        print(f"WARN: {len(placeholders)} 处 JMeter ${'{'}VAR{'}'} 占位符未解析，保留原样待人审接 env：",
               file=sys.stderr)
         for idx, key, val in placeholders[:20]:
-            print(f"  步骤{idx} {key} = {val[:80]}", file=sys.stderr)
+            # C4-C：JMeter 把回退值嵌在括号里（${__P(name,DEFAULT)}）——旧实现 val[:80]
+            # 原样打印 DEFAULT，等于把字面凭据打进 stderr。值段先过净化刀再截断。
+            print(f"  步骤{idx} {key} = {mask_placeholder_value(val)[:80]}", file=sys.stderr)
+
+    if gated:
+        print(f"WARN: {len(gated)} 处字面凭据头已换成占位（映射只报键名，值不进"
+              f" YAML/stdout/stderr）：", file=sys.stderr)
+        for idx, name, env_key in gated[:20]:
+            print(f"  步骤{idx} header {name} -> {env_key} = 值放 .env", file=sys.stderr)
+        if len(gated) > 20:
+            print(f"  另有 {len(gated) - 20} 处同类占位（同一 (键,值) 复用同一 env 键）",
+                  file=sys.stderr)
 
     if args.output:
         args.output.write_text(yaml_text, encoding="utf-8")
-        print(f"导入 {len(samplers)} 个采样器（{hdr_n} 步带鉴权头）→ {args.output}", file=sys.stderr)
+        print(f"导入 {len(samplers)} 个采样器（{hdr_n} 步带鉴权头）-> {args.output}",
+              file=sys.stderr)
+    elif gated:
+        # 无 -o 且闸命中：拒打 YAML 全文。占位后的产物仍需人审接 env 才可跑，而全文进
+        # 终端=进回滚缓冲/CI 日志/复制粘贴——泄漏面不因「已经占位」而归零。
+        print(f"摘要：{len(flow['steps'])} 步，其中 {hdr_n} 步带鉴权头；"
+              f"{len(gated)} 处字面凭据已占位，YAML 全文未打印。")
+        print("完整产物请用 -o 写文件：python scripts/import_jmeter.py <in.jmx> -o flows/<id>.yaml"
+              "（flows/ 不在 gitignore，产物请放受控目录）")
     else:
         print(yaml_text)
     return 0

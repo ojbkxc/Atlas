@@ -8,7 +8,10 @@ import json
 
 import pytest
 
-from atlas.allure_report import emit_allure, write_attachment
+from atlas.allure_report import (
+    default_categories, emit_allure, write_attachment, write_categories,
+    write_environment_properties, write_executor,
+)
 from atlas.recorder import RunRecorder
 
 
@@ -514,3 +517,286 @@ def test_cli_allure_uses_project_root_attachment_base(tmp_path, monkeypatch, cap
     assert summary["attachments"] == 1
     out = tmp_path / "reports" / "allure-results"
     assert list(out.glob("atlas-*-attachment.png"))      # 真实复制，非占位
+
+
+# ---- C6：版本三元组进 parameters（design_c6 §5.5）-----------------------
+
+def test_old_records_without_version_keep_env_only_parameters(tmp_path):
+    """存量结果集行为逐字不变：没有 version 键 → parameters 恒 [{env}]（#115 零涟漪）。"""
+    runs = tmp_path / "runs.jsonl"
+    _write_runs(runs, [{"run_id": "r1", "case": "tc_noversion", "env": "sit",
+                        "status": "passed", "steps": [],
+                        "started_at": "2026-11-06T00:00:00+00:00",
+                        "finished_at": "2026-11-06T00:00:01+00:00"}])
+    emit_allure(runs, tmp_path / "allure-results")
+    result = _read_results(tmp_path / "allure-results")[0]
+    assert result["parameters"] == [{"name": "env", "value": "sit"}]
+
+
+def test_version_triple_lands_as_three_parameters_with_calibre_suffix(tmp_path):
+    """三元组进 parameters，值带 #source/#kind 口径后缀；labels/historyId 不掺版本。
+
+    historyId 掺版本会把同一用例的跨版本趋势断成多条线——恰恰看不见漂移（设计 §2.4）。
+    """
+    runs = tmp_path / "runs.jsonl"
+    _write_runs(runs, [{
+        "run_id": "r1", "case": "tc_versioned", "env": "sit", "status": "passed",
+        "steps": [], "started_at": "2026-11-06T00:00:00+00:00",
+        "finished_at": "2026-11-06T00:00:01+00:00",
+        "version": {"atlas": "0.1.0",
+                    "knowledge": {"sha1": "1a2b3c4d5e6f", "source": "private", "files": 30},
+                    "flow": {"md5": "9f8e7d", "kind": "source"}}}])
+    emit_allure(runs, tmp_path / "allure-results")
+    result = _read_results(tmp_path / "allure-results")[0]
+    params = {p["name"]: p["value"] for p in result["parameters"]}
+    assert params["atlas_version"] == "0.1.0"
+    assert params["knowledge_sha1"] == "1a2b3c4d5e6f#private"
+    assert params["flow_md5"] == "9f8e7d#source"
+    assert params["env"] == "sit"
+    assert not [l for l in result["labels"] if "version" in l["name"] or "sha1" in l["name"]]
+    history_id = result["historyId"]
+    # 同 case 换知识指纹（历史版本行）→ historyId 不变，趋势仍然连得上
+    _write_runs(runs, [{
+        "run_id": "r2", "case": "tc_versioned", "env": "sit", "status": "passed",
+        "steps": [], "started_at": "2026-11-05T00:00:00+00:00",
+        "finished_at": "2026-11-05T00:00:01+00:00",
+        "version": {"atlas": "0.1.0",
+                    "knowledge": {"sha1": "000000000000", "source": "builtin", "files": 7},
+                    "flow": {"md5": "9f8e7d", "kind": "derived"}}}])
+    emit_allure(runs, tmp_path / "allure-results")
+    assert _read_results(tmp_path / "allure-results")[0]["historyId"] == history_id
+
+
+def test_partial_version_shape_does_not_crash_result(tmp_path):
+    """坏形态（version 是 list、knowledge 缺键）：结果集照常出，只少了缺的那几项。"""
+    runs = tmp_path / "runs.jsonl"
+    _write_runs(runs, [
+        {"run_id": "r1", "case": "tc_bad1", "env": "sit", "status": "passed", "steps": [],
+         "version": ["不是映射"]},
+        {"run_id": "r2", "case": "tc_bad2", "env": "sit", "status": "passed", "steps": [],
+         "version": {"atlas": "0.1.0", "knowledge": None, "flow": {"md5": "", "kind": ""}}},
+    ])
+    summary = emit_allure(runs, tmp_path / "allure-results")
+    assert summary["results"] == 2
+    results = _read_results(tmp_path / "allure-results")
+    by_case = {r["name"]: r["parameters"] for r in results}
+    assert by_case["tc_bad1"] == [{"name": "env", "value": "sit"}]
+    assert {p["name"] for p in by_case["tc_bad2"]} == {"env", "atlas_version"}
+
+
+def test_unreadable_fingerprint_is_visible_not_silent(tmp_path):
+    """source=unreadable 时 sha1 是空串——Allure 里仍要看得见「读崩」这个结论。"""
+    runs = tmp_path / "runs.jsonl"
+    _write_runs(runs, [{
+        "run_id": "r1", "case": "tc_unreadable", "env": "sit", "status": "passed",
+        "steps": [], "started_at": "2026-11-06T00:00:00+00:00",
+        "finished_at": "2026-11-06T00:00:01+00:00",
+        "version": {"atlas": "0.1.0",
+                    "knowledge": {"sha1": "", "source": "unreadable", "error": "PermissionError"},
+                    "flow": None}}])
+    emit_allure(runs, tmp_path / "allure-results")
+    params = {p["name"]: p["value"] for p in _read_results(tmp_path / "allure-results")[0]["parameters"]}
+    assert params["knowledge_sha1"] == "-#unreadable"
+    assert "flow_md5" not in params, "flow=None 是「没算」，不冒充一个空摘要"
+
+
+# ---- Gap6：产出侧对齐 UI AUTO TEST（label / 字段面 / 结果集组成部分）----
+#
+# UI AUTO TEST 用 allure-pytest 产出 result.json，字段面固定含 parentSuite/suite/subSuite/
+# package/framework/language/severity label + description + titlePath（见
+# D:/GitHub/UI AUTO TEST/iservice/reports/allure-results/*-result.json 真实取证）。
+# Atlas 直出对齐其中确定性可复现的子集，host/thread 机器相关不伪造。
+
+
+def test_aligned_result_matches_ui_auto_test_label_set(tmp_path):
+    """对齐后 label 集覆盖 UI AUTO TEST 用到的确定性项；既有 suite/severity 值不变。"""
+    runs = tmp_path / "runs.jsonl"
+    _write_runs(runs, [{"run_id": "r1", "case": "TC1", "env": "sit", "status": "passed", "steps": []}])
+    out = tmp_path / "allure-results"
+    emit_allure(runs, out)
+    labels = _labels(_read_results(out)[0])
+    assert labels["parentSuite"] == "Atlas"
+    assert labels["suite"] == "atlas"            # 历史值不变（零涟漪）
+    assert labels["subSuite"] == "sit"
+    assert labels["package"] == "atlas.sit"
+    assert labels["framework"] == "atlas"
+    assert labels["language"] == "python"
+    assert labels["severity"] == "normal"
+    # host/thread 机器相关——不伪造（离线确定性）
+    assert "host" not in labels and "thread" not in labels
+
+
+def test_aligned_result_carries_description_and_title_path(tmp_path):
+    """UI AUTO TEST 的 result.json 恒带 description/titlePath（附加，不改既有键）。"""
+    runs = tmp_path / "runs.jsonl"
+    _write_runs(runs, [{"run_id": "r1", "case": "TC1", "env": "sit", "status": "passed",
+                        "description": "创建销售订单验 PT 落库", "steps": []}])
+    out = tmp_path / "allure-results"
+    emit_allure(runs, out)
+    result = _read_results(out)[0]
+    assert result["description"] == "创建销售订单验 PT 落库"
+    assert result["titlePath"] == ["Atlas", "sit"]
+    # 无 description 时诚实留空，不伪造业务说明
+    runs2 = tmp_path / "runs2.jsonl"
+    _write_runs(runs2, [{"run_id": "r2", "case": "TC2", "env": "sit", "status": "passed", "steps": []}])
+    out2 = tmp_path / "allure-results2"
+    emit_allure(runs2, out2)
+    assert _read_results(out2)[0]["description"] == ""
+
+
+def test_align_false_preserves_legacy_result_shape(tmp_path):
+    """#115 零涟漪逃生舱：align=False 退回逐字旧 result.json（只 suite+severity / 无新键）。"""
+    runs = tmp_path / "runs.jsonl"
+    _write_runs(runs, [{"run_id": "r1", "case": "TC1", "env": "sit", "status": "passed", "steps": []}])
+    out = tmp_path / "allure-results"
+    emit_allure(runs, out, align=False)
+    result = _read_results(out)[0]
+    assert result["labels"] == [{"name": "suite", "value": "atlas"},
+                                {"name": "severity", "value": "normal"}]
+    assert "description" not in result and "titlePath" not in result
+
+
+def test_step_level_png_attachment_renders_as_image(tmp_path):
+    """UI AUTO TEST 的失败截图走 step 级 attachment（type=image/png + source 落盘）。
+    Atlas 同链：step 记录里的附件引用 → 结果集图片附件条目 + 真实字节落盘。"""
+    evidence = tmp_path / "artifacts" / "snapshots"
+    evidence.mkdir(parents=True)
+    png = b"\x89PNG\r\n\x1a\n real-capture-bytes"
+    (evidence / "step3_FAIL.png").write_bytes(png)
+    runs = tmp_path / "runs.jsonl"
+    _write_runs(runs, [{
+        "run_id": "r1", "case": "TC_fail", "env": "sit", "status": "failed",
+        "started_at": "2026-11-06T00:00:00+00:00", "finished_at": "2026-11-06T00:00:02+00:00",
+        "steps": [{"step": "save", "op": "ui", "ok": False, "fail_class": "assertion",
+                   "dur_ms": 120,
+                   "attachment": {"path": "artifacts/snapshots/step3_FAIL.png",
+                                  "label": "step3_FAIL", "type": "image/png"}}],
+    }])
+    out = tmp_path / "allure-results"
+    summary = emit_allure(runs, out, attachments_dir=tmp_path)
+    assert summary["attachments"] == 1
+    step = _read_results(out)[0]["steps"][0]
+    att = step["attachments"][0]
+    assert att["type"] == "image/png"            # Allure 渲染成图片而非占位文本
+    assert att["name"] == "step3_FAIL"
+    copied = out / att["source"]
+    assert copied.read_bytes() == png            # 真实字节（非「源缺失」占位）
+
+
+def test_step_tree_has_name_status_and_timing(tmp_path):
+    """步骤树保真：name/status/start/stop 齐全，且 start/stop 落在 run 区间内、按时长推进。"""
+    runs = tmp_path / "runs.jsonl"
+    _write_runs(runs, [{
+        "run_id": "r1", "case": "TC", "env": "sit", "status": "passed",
+        "started_at": "2026-11-06T00:00:00+00:00", "finished_at": "2026-11-06T00:00:10+00:00",
+        "steps": [{"step": "open", "op": "ui", "ok": True, "dur_ms": 1000},
+                  {"step": "save", "op": "ui", "ok": True, "dur_ms": 2500}],
+    }])
+    out = tmp_path / "allure-results"
+    emit_allure(runs, out)
+    result = _read_results(out)[0]
+    s0, s1 = result["steps"]
+    assert [s["name"] for s in (s0, s1)] == ["open", "save"]
+    assert all(s["status"] == "passed" and s["stage"] == "finished" for s in (s0, s1))
+    assert s0["start"] <= s0["stop"] and s1["start"] >= s0["stop"]   # 顺序推进、不重叠
+    assert result["start"] <= s0["start"]
+
+    def _ms(x):
+        from datetime import datetime
+        return int(datetime.fromisoformat(x).timestamp() * 1000)
+    assert abs((s0["stop"] - s0["start"]) - 1000) <= 1
+    assert result["start"] == _ms("2026-11-06T00:00:00+00:00")
+
+
+def test_metadata_writes_categories_and_environment(tmp_path):
+    """结果集组成部分补齐：categories.json（fail_class 分类）+ environment.properties
+    （env 从各 run 去重派生）。UI AUTO TEST 的 results 目录两者皆缺、组件渲染为空。"""
+    runs = tmp_path / "runs.jsonl"
+    _write_runs(runs, [
+        {"run_id": "r1", "case": "A", "env": "sit", "status": "passed", "steps": []},
+        {"run_id": "r2", "case": "B", "env": "uat", "status": "passed", "steps": []},
+    ])
+    out = tmp_path / "allure-results"
+    summary = emit_allure(runs, out)
+    assert set(summary["metadata_files"]) == {"categories.json", "environment.properties"}
+    cats = json.loads((out / "categories.json").read_text(encoding="utf-8"))
+    assert isinstance(cats, list) and cats
+    assert all("name" in c and "matchedStatuses" in c for c in cats)
+    env = (out / "environment.properties").read_text(encoding="utf-8")
+    assert "env=sit,uat" in env                  # 去重排序派生，确定性
+    assert summary["out"] == str(out)
+
+
+def test_default_categories_match_atlas_fail_class_messages(tmp_path):
+    """分类的 messageRegex 锚在 Atlas 自产的 `run failed: <fail_class>`，命中正确桶；
+    非缺陷终态（skipped）单列一桶，绝不与真实缺陷混桶（红线 #7）。"""
+    import re
+    cats = {c["name"]: c for c in default_categories()}
+    def bucket(msg, status):
+        for name, c in cats.items():
+            if status not in c["matchedStatuses"]:
+                continue
+            rx = c.get("messageRegex")
+            if rx is None or re.search(rx, msg):
+                return name
+        return None
+    assert bucket("run failed: assertion", "failed") == "断言/契约缺陷"
+    assert bucket("run failed: contract", "failed") == "断言/契约缺陷"
+    assert bucket("run failed: data", "failed") == "数据缺陷"
+    assert bucket("run failed: session", "failed") == "交互/会话缺陷"
+    assert bucket("run failed: unknown", "broken") == "执行缺陷（未归类）"
+    assert bucket("生产环境禁止建单", "skipped") == "环境阻断/中断（非缺陷）"
+
+
+def test_categories_override_and_empty(tmp_path):
+    """categories= 可覆盖默认；categories=[] 写空数组（不静默塞默认）。"""
+    runs = tmp_path / "runs.jsonl"
+    _write_runs(runs, [{"run_id": "r1", "case": "A", "env": "sit", "status": "passed", "steps": []}])
+    out = tmp_path / "allure-results"
+    emit_allure(runs, out, categories=[{"name": "自定义", "matchedStatuses": ["failed"]}])
+    assert json.loads((out / "categories.json").read_text(encoding="utf-8")) == \
+        [{"name": "自定义", "matchedStatuses": ["failed"]}]
+    emit_allure(runs, out, categories=[])
+    assert json.loads((out / "categories.json").read_text(encoding="utf-8")) == []
+
+
+def test_metadata_false_writes_no_extra_files(tmp_path):
+    """#115 零涟漪逃生舱：metadata=False 只产 result.json，不写任何附加文件。"""
+    runs = tmp_path / "runs.jsonl"
+    _write_runs(runs, [{"run_id": "r1", "case": "A", "env": "sit", "status": "passed", "steps": []}])
+    out = tmp_path / "allure-results"
+    summary = emit_allure(runs, out, metadata=False)
+    assert summary["metadata_files"] == []
+    assert not (out / "categories.json").exists()
+    assert not (out / "environment.properties").exists()
+    assert not (out / "executor.json").exists()
+
+
+def test_executor_json_is_opt_in(tmp_path):
+    """executor.json 无自然来源——不传就不写（不伪造宿主标识）；传了才落盘。"""
+    runs = tmp_path / "runs.jsonl"
+    _write_runs(runs, [{"run_id": "r1", "case": "A", "env": "sit", "status": "passed", "steps": []}])
+    out = tmp_path / "allure-results"
+    emit_allure(runs, out)
+    assert not (out / "executor.json").exists()
+    emit_allure(runs, out, executor={"name": "Atlas", "type": "atlas", "host": "ci-01"})
+    execu = json.loads((out / "executor.json").read_text(encoding="utf-8"))
+    assert execu["name"] == "Atlas" and execu["host"] == "ci-01"
+
+
+def test_environment_properties_escapes_newlines(tmp_path):
+    """properties 是行格式：值内换行折成空格，不把一条拆成两条读成假内容。"""
+    out = tmp_path
+    write_environment_properties(out, {"env": "sit", "note": "line1\nline2", "empty": None,
+                                       "weird=key": "v"})
+    text = (out / "environment.properties").read_text(encoding="utf-8")
+    assert text.splitlines() == ["env=sit", "note=line1 line2", "weird_key=v"]
+
+
+def test_write_categories_and_executor_standalone(tmp_path):
+    """独立写函数可直接调用（不依赖 emit_allure），返回落盘路径。"""
+    p1 = write_categories(tmp_path, [{"name": "x"}])
+    p2 = write_executor(tmp_path, {"name": "Atlas"})
+    assert p1.name == "categories.json" and p1.exists()
+    assert p2.name == "executor.json" and json.loads(p2.read_text(encoding="utf-8"))["name"] == "Atlas"
+

@@ -4,14 +4,29 @@ from dataclasses import dataclass
 from typing import Callable
 from .core import Channel, Task
 from .failures import CONTROL_FLOW
+from .review import verification_problems  # 单一判据（#92）；healing→review 无反向依赖，不成环
 
 @dataclass
 class HealingProposal:
+    """自愈提案。C2 提案层（design_c2 §3.2）：evidence 可选携带 verification 三元组
+    （--to-tower 时并入草稿 evidence，晋级仍走 review 闸）。构造期形态校验——坏形态
+    的提案不进塔；三元组门控「晋级」，不新增「执行」（红线 #9/#10）。"""
     task: str
     trigger: str
     remedy: str
     pitfall_id: str
     status: str = "pending_review"
+    evidence: dict | None = None      # {"verification": {...}} 同 review.VERIFICATION_KEYS schema
+
+    def __post_init__(self):
+        if self.evidence is None:
+            return
+        if not isinstance(self.evidence, dict):
+            raise ValueError(f"HealingProposal.evidence 必须是映射，"
+                             f"实为 {type(self.evidence).__name__}")
+        problems = verification_problems(self.evidence.get("verification"))
+        if problems:
+            raise ValueError(f"HealingProposal.evidence.verification 形态不完备: {problems}")
 
 class Healer:
     def __init__(self, knowledge):

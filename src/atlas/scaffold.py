@@ -11,11 +11,9 @@ flows/smoke.yaml/tests/test_smoke.py/scripts/run_allure.py/README.md。
 - --interactive 默认关闭（CI 安全）
 """
 from __future__ import annotations
-import re
-import shutil
 from pathlib import Path
 
-from .config import ENV_PREFIX_DEFAULT, ENV_URL_SUFFIXES, env_url_keys
+from .config import ENV_PREFIX_DEFAULT, ENV_URL_SUFFIXES
 
 
 class ScaffoldError(Exception):
@@ -168,6 +166,11 @@ def main() -> int:
     if args.mode == "generate":
         return subprocess.call([args.allure, "generate", str(RESULTS),
                                 "-o", str(REPORT), "--clean"])
+    # C4③ 分发口径（PRIVACY「报告只在授权范围内分发」的落点）：结果集/报告目录可能含
+    # 真实 URL、单号与截图——本地起服务只绑回环。`allure serve/open` 自身参数不动
+    # （这是纯文案提示），自建 HTTP 一律带 --bind 127.0.0.1。
+    print("分发提醒：报告只在 localhost 看。自建 HTTP 请显式绑回环："
+          "python -m http.server 8765 --bind 127.0.0.1", file=sys.stderr)
     if args.mode == "serve":
         return subprocess.call([args.allure, "serve", str(RESULTS)])
     return subprocess.call([args.allure, "open", str(REPORT)])
@@ -223,12 +226,39 @@ atlas allure reports/runs.jsonl --out reports/allure-results --clean
 allure serve reports/allure-results
 ```
 
+分发口径：`reports/` 与 Allure 结果集可能含真实 URL、单号与截图，**只在授权范围内分享**。
+本机看报告一律绑回环地址——自建 HTTP 服务必须显式 `--bind 127.0.0.1`：
+
+```bash
+python -m http.server 8765 --bind 127.0.0.1 --directory reports/allure-report
+```
+
 ## 添加系统/微服务
 
 ```bash
 atlas config add <domain>            # 生成插件骨架
 atlas config add <domain> --mapping  # 只出 ATLAS_* 映射片段
 ```
+
+## 快模式 pytest 回归包（atlas gen --fast）
+
+从接口文档生成「执行速度对标旧套件」的 pytest 回归代码包（单浏览器/单登录、语义等待、
+零成功截图、跨批上下文、用例看门狗、Atlas 兼容 runs.jsonl）：
+
+```bash
+atlas gen <接口文档> --with-pytest --fast   # --fast 须配 --with-pytest（rc 2 拒单用，不隐式改行为）
+```
+
+- 依赖栈：**pytest + playwright**（playwright 为既有依赖——UI 自动化能力本体就是浏览器驱动，
+  不引 allure-pytest / pytest-playwright / pytest-timeout / requests，见 gap9 F9）。
+- 产物包内多出 `_atlas_fast.py`（底座）+ `conftest.py`（fixtures），可脱离 Atlas 运行。
+- 消费：`pytest <产物包> -q` → `atlas allure <产物包>/reports/runs.jsonl --out <产物包>/reports/allure-results`。
+- 运行期旋钮（`ATLAS_FAST_*` 族、`CASE_TIMEOUT` 等）见产物 README「运行期 env」清单。
+- 写操作腿默认被闸拦下（记 env_blocked），放行需显式 env——红线 #13 精神，机器永不自动放行。
+
+> **为什么 init 骨架不带快底座**：本骨架生成时没有组件知识库（选择器/登录指示器未人审），
+> 此时写 `_atlas_fast.py`+`conftest.py` 即红线 #12 的「形式代码」。后续波次若要骨架资产，
+> 唯一通道是调 `atlas.generator.emit_fast.write_fast_artifacts()`——禁止把模板文本复制进本文件（#92）。
 
 ## 诚实说明
 

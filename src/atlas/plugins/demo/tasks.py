@@ -170,8 +170,16 @@ class SelectCustomerTask(DemoTask):
     """选客户：channel=auto 时优先走 API 查客户详情，失败降级 UI。
 
     API 路径调用 DemoApi.customer_detail，产出 customer 与 payment_terms。
+
+    C12 能力声明（design_c12 §7 #9 + 评审必改 C12-A 选项 (a)，lead 拍板）：本 Task 元数据
+    `read_only=False`（UI 腿在页面上选客户有交互副作用），但 API 腿 `customer_detail` 是
+    **只读查询**——无投递副作用。引擎对未声明的自定义 API 腿写任务按「请求已发出」
+    fail-closed（禁自动降级重跑，红线 #9）；这里显式声明读语义腿，放行既有的
+    「API 查失败→退 UI」行为（#115 不把正常路径翻成错误）。声明位归业务插件
+    （红线 #11），引擎不猜。
     """
     supports_api = True
+    api_leg_side_effect_free = True
 
     def _perform_api(self, actor) -> Any:
         api = getattr(actor, "demo_api", None)

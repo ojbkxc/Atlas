@@ -3,7 +3,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from .model import Endpoint, CONFIDENCE_HIGH
+from ..credential_gate import gate_flow_headers
+from .model import Endpoint
 from .dsl_utils import (slugify, collect_path_query, form_pairs_to_string,
                         body_to_yaml_value)
 
@@ -170,6 +171,12 @@ def emit_flow(endpoints: list[Endpoint], *, scenario: str = "auto",
         all_manual.extend(manual)
         all_low.extend(ep.low_confidence())
     flow = {"id": flow_id, "plugin": plugin, "steps": steps}
+    # C4① 字面敏感头闸（design_c4 §2.3，判据唯一实现在 credential_gate，不在这里复制名单）：
+    # 文档/头文件里手写的字面凭据（Authorization/Cookie/…-sessionid + 字面 UUID/JWT）
+    # 换成 ${ATLAS_HDR_<n>} 占位——生成的 YAML 是要人审、可能进 git/工单系统的产物，
+    # 照抄字面鉴权值等于把凭据泄漏面搬进新仓库。占位由 DSL 既有 `${...}` 插值承接，
+    # checklist 的未解析占位符告警照常点名（人审一步不缺）。
+    gate_flow_headers(flow)
     # requires 块（场景 B/D 优先）
     if scenario in ("b", "d"):
         requires = _build_requires(endpoints, scenario)

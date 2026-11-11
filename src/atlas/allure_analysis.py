@@ -12,13 +12,19 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .failures import FailureClass, classify_text
+from .failures import FailureClass, OPERATIONAL, classify_text
 
 # §6.3 四大失败类型映射（可配置分组，不写死引擎——红线 #11）。
-# 默认映射基于 Atlas 现有 8 类聚成 4 桶 + 兜底 unknown。
+# 默认映射基于 Atlas 现有失败类聚成 4 桶 + 兜底 unknown。
 # 分组表可被调用方覆盖（传 buckets=...），引擎不含业务口径。
 DEFAULT_BUCKETS = {
-    "environment_blocked": frozenset({"env_blocked", "interrupted"}),
+    # 桶**键名**是对外口径，C9 加成员时不改名（改名会破既有消费者与外部看板）。
+    # 成员清单不再在这里手抄：从 `failures.OPERATIONAL` 派生——家族判据只有一处（#92）。
+    # 手抄的历史代价：本行曾写着两个字面量，C9 加第三个成员若漏改这里，「等人」就会被
+    # 读进缺陷桶（把非缺陷洗成缺陷=红线 #7 的反方向，同样是失真）。
+    # 语义=「操作/环境族桶」：env_blocked（策略挡住）/interrupted（宿主终止）/
+    # waiting（在等人处置）——三者都不是产品缺陷。
+    "environment_blocked": frozenset(OPERATIONAL),
     "data_issue": frozenset({"data"}),
     "assertion_contract": frozenset({"assertion", "contract"}),
     "interaction_session": frozenset({"interaction", "session"}),
@@ -36,6 +42,7 @@ class AllureFinding:
     labels: dict[str, str]
     fail_class: str       # Atlas FailureClass.value；passed 为空串
     evidence: dict = field(default_factory=dict)
+    assertions: int = 0   # C2：Allure steps 计数（design_c2 §2「断言数……或 Allure steps 计数」）
 
 
 def _bucket_of(fail_class: str, buckets: dict[str, frozenset]) -> str:
@@ -98,6 +105,11 @@ def parse_allure_result(result: dict) -> AllureFinding:
                 break
     evidence["full_name"] = str(result.get("fullName", ""))
 
+    # C2 三元组的 assertions 来源：Allure steps 计数（design_c2 §2 口径，来源见 command 语义）。
+    # 形态容错同 #131：steps 非列表当 0，不猜不崩。
+    raw_steps = result.get("steps")
+    assertions = len(raw_steps) if isinstance(raw_steps, list) else 0
+
     return AllureFinding(
         name=str(result.get("name", "")),
         full_name=str(result.get("fullName", "")),
@@ -107,6 +119,7 @@ def parse_allure_result(result: dict) -> AllureFinding:
         labels=labels,
         fail_class=fail_class,
         evidence=evidence,
+        assertions=assertions,
     )
 
 
@@ -164,6 +177,20 @@ def load_allure_results(results_dir: Path) -> list[AllureFinding]:
         print(f"警告：{results_dir} 有 {skipped} 个 *-result.json 无法解析（坏字节/坏 JSON/非对象），已跳过",
               file=sys.stderr)
     return findings
+
+
+def build_allure_verification(finding: AllureFinding, results_dir: Path | str) -> dict:
+    """C2（design_c2 §6-7）：Allure finding → evidence.verification 三元组。
+
+    verdict 由 Allure status 派生：passed→pass，其余（failed/broken/skipped/unknown）→fail；
+    exit_code 同向（0/1）。command 是可重跑的解析命令——原结果集能否重跑真实用例未证
+    （design_c2 §8），来源标注 allure 分析（evidence.source），人审自行判断证据强度。"""
+    return {
+        "command": f"atlas allure-analyze {results_dir}",
+        "exit_code": 0 if finding.status == "passed" else 1,
+        "assertions": finding.assertions,
+        "verdict": "pass" if finding.status == "passed" else "fail",
+    }
 
 
 def analyze_allure(results_dir: Path, *, knowledge=None, to_tower=None,
@@ -231,11 +258,13 @@ def analyze_allure(results_dir: Path, *, knowledge=None, to_tower=None,
             })
         elif to_tower is not None:
             # 未命中 → pending_review 草稿进既有审核塔（不新开塔、不新增知识写路径）
+            # C2：草稿携带 verification 三元组（build_allure_verification，见其 docstring）
             draft = to_tower.draft_from_text(
                 task=f.name or f.full_name,
                 text=text,
                 failure_class=f.fail_class,
-                evidence={"source": "allure", **f.evidence},
+                evidence={"source": "allure", **f.evidence,
+                          "verification": build_allure_verification(f, results_dir)},
             )
             to_tower.append_draft(draft)
             tower_drafts.append(draft["id"])

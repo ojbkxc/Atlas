@@ -41,14 +41,14 @@
 步骤级字段（现状）：
 - `step` 名称、`op`（`channel` 值：`ui`/`api`/`auto`）、`ok`（bool）、`dur_ms`。
 - 失败时带 `fail_class`（`failures.FailureClass` 的 `.value`）。
-- 可选：`api_ms`、`healed`（自愈成功就地更正）、`degraded_to_ui`（auto 降级留痕，`#106`）。
+- 可选：`api_ms`、`healed`（自愈成功就地更正）、`degraded_to_ui`（auto 降级留痕，`#106`）、`dispatch`（路由决策留痕：gate/on/value/selected，engine `_flush_routes` 并入路由节点步骤，2026-11-05）。
 
 ### 1.2 现有报告出口（`reporting.py`）
 
 | 函数 | 输入 | 输出 |
 |---|---|---|
 | `summarize(path)` | `runs.jsonl` | `{runs, cases, status{}, fail_classes{}, skipped_malformed_lines, slowest_steps[]}` |
-| `export_runlog(in, out)` | `runs.jsonl` | runlog-steps 格式 JSONL（`run_id, case, env, step, op, ok, dur_ms, api_ms, wait_ms, ui_ms, retries, reloads, fail_class`） |
+| `export_runlog(in, out)` | `runs.jsonl` | runlog-steps 格式 JSONL（`run_id, case, env, step, op, ok, dur_ms, api_ms, retries, fail_class`）；`retries` 由 `healed` 自愈重试标记推导（heal 恰重跑一次；外部显式 `retries` 键原样透传）；死字段 `reloads`/`wait_ms`/`ui_ms` 已删（2026-11-05 审计：全仓无生产方，恒 0 假统计；`api_ms` 有生产方 `engine.py:102` 保留） |
 
 两个函数都已实现 `UnicodeDecodeError → errors="replace"` 回落（`#131`）与逐行容错（残行/非对象/缺主键跳过）。**新模块必须复用这套读侧纪律**，不得另起一套裸读。
 

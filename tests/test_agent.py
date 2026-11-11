@@ -129,6 +129,41 @@ def test_agent_keyboard_interrupt_journaled_as_interrupted(tmp_path):
     assert row["executed"] == []
 
 
+def test_agent_awaiting_human_journaled_as_waiting_not_failure(tmp_path):
+    """C9 补齐：agent 轨的「等人」曾被泛捕获记成「执行失败」——journal 里看不出
+    该去找人还是查 bug。现按类型分流，且异常仍原样重抛（不吞、不降级成通过）。"""
+    from atlas.failures import AwaitingHuman
+    journal = tmp_path / "decisions.jsonl"
+    agent = AtlasAgent(journal=journal)
+
+    def need_human(actor):
+        raise AwaitingHuman("等待审批人在 OA 里点通过")
+    t = FunctionalTask(TaskMetadata("demo", "approve", (), ("doc",)), need_human, "approve")
+    with pytest.raises(AwaitingHuman):
+        agent.run([t], "doc", Actor())
+    row = json.loads(journal.read_text(encoding="utf-8").strip())
+    assert "等待人工" in row["reason"] and "执行失败" not in row["reason"]
+    assert "等待审批人在 OA 里点通过" in row["reason"], "在等什么必须可读出，不留裸终态"
+
+
+def test_agent_delivery_uncertain_journaled_not_as_plain_failure(tmp_path):
+    """C12 补齐：DU 记成「执行失败」会诱导操作者重放整段计划=写双跑。
+    reason 必须点名「需人工核实」，且**仍不是 approved**（红线 #7：不借文案洗绿）。"""
+    from atlas.failures import DeliveryUncertain
+    journal = tmp_path / "decisions.jsonl"
+    agent = AtlasAgent(max_auto_risk=RiskLevel.LOW, journal=journal)
+
+    def uncertain(actor):
+        raise DeliveryUncertain("API 已发出，网关无响应")
+    t = FunctionalTask(TaskMetadata("demo", "save", (), ("doc",)), uncertain, "save")
+    with pytest.raises(DeliveryUncertain):
+        agent.run([t], "doc", Actor())
+    row = json.loads(journal.read_text(encoding="utf-8").strip())
+    assert "投递不确定" in row["reason"] and "人工核实" in row["reason"]
+    assert "执行失败" not in row["reason"]
+    assert row["approved"] is True   # 审批门当时确实放行了——留痕语义不变，只改终态文案
+
+
 def test_agent_journal_write_failure_does_not_bury_execution_error(tmp_path):
     """留痕文件写不进（父路径是文件）：不得顶掉执行真因；内存 decisions 仍保留记录。"""
     blocker = tmp_path / "blocker"
@@ -259,3 +294,99 @@ def test_agent_propose_includes_channel_and_read_only():
     proposal = AtlasAgent().propose(tasks, "s")
     for t in proposal["tasks"]:
         assert "channel" in t and "read_only" in t and "intent" in t
+
+
+# ── CLI agent 轨显式终态（C9/C12 补齐：此前两类异常都穿透到泛捕获，rc1+「执行失败」）──
+
+def _agent_cli(tmp_path, monkeypatch, raiser, goal="doc"):
+    """跑 `atlas agent --execute`：替掉 registry/运行时，只验 rc 与 stderr 终态口径。"""
+    import contextlib
+    import io
+    from atlas import cli as cli_module
+    monkeypatch.setenv("DEMO_URL_SIT", "https://sit.example.com")
+    # 预检里的 DemoApi 文件/旧项目路径存在性与本测要验的「终态腿」无关：
+    # 前者替成直通，后者按 #103 fail-fast 要求造出真目录（不造就得等登录才撞错）
+    monkeypatch.setattr(cli_module, "check_demo_api", lambda _config: None)
+    legacy = tmp_path / "legacy-suite"
+    (legacy / "legacy-web").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("ATLAS_LEGACY_PROJECT", str(legacy))
+    boom = FunctionalTask(TaskMetadata("demo", "approve", (), (goal,)), raiser, "approve")
+    monkeypatch.setattr(cli_module, "core_tasks", lambda: [boom])
+
+    class _RT:
+        def __init__(self, *a, **k):
+            self.actor = Actor()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(cli_module, "DemoRuntime", _RT)
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        rc = cli_module.main(["--root", str(tmp_path), "agent", "--goal", goal,
+                              "--execute", "--max-auto-risk", "high"])
+    return rc, err.getvalue()
+
+
+def test_cli_agent_awaiting_human_returns_rc3_with_waiting_line(tmp_path, monkeypatch):
+    from atlas.failures import AwaitingHuman
+
+    def raiser(actor):
+        raise AwaitingHuman("等待审批人在 OA 里点通过")
+    rc, err = _agent_cli(tmp_path, monkeypatch, raiser)
+    assert rc == 3, "等人=rc3（与 run 轨、审批门同值），不是 rc1 失败"
+    assert "WAITING-HUMAN:" in err and "OA" in err
+    err.encode("cp936")   # X4：中文段在 GBK 控制台不许崩掉退出码
+
+
+def test_cli_agent_delivery_uncertain_keeps_rc1_but_names_its_own_action(tmp_path, monkeypatch):
+    from atlas.failures import DeliveryUncertain
+
+    def raiser(actor):
+        raise DeliveryUncertain("API 已发出，网关无响应")
+    rc, err = _agent_cli(tmp_path, monkeypatch, raiser)
+    assert rc == 1, "红线 #7：投递不确定仍是失败，不借新文案洗成非失败"
+    assert "DELIVERY-UNCERTAIN:" in err and "网关无响应" in err
+    assert "执行失败" not in err, "终端不再把 DU 混进一般失败的措辞"
+    err.encode("cp936")
+
+
+def test_cli_agent_ordinary_failure_escapes_without_new_markers(tmp_path, monkeypatch):
+    """负向对照（防上面两测恒真）：普通异常**不得**冒出 WAITING-HUMAN/DELIVERY-UNCERTAIN。
+
+    同时如实钉住既有形态——agent 轨没有兜底 `except Exception`，普通异常穿出 `main()`
+    由进程顶层处理（与 run 轨同口径：真失败不被任何显式终态腿收编）。
+    """
+    import contextlib
+    import io
+    from atlas import cli as cli_module
+    monkeypatch.setenv("DEMO_URL_SIT", "https://sit.example.com")
+    monkeypatch.setattr(cli_module, "check_demo_api", lambda _config: None)
+    legacy = tmp_path / "legacy-suite"
+    (legacy / "legacy-web").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("ATLAS_LEGACY_PROJECT", str(legacy))
+    boom = FunctionalTask(TaskMetadata("demo", "approve", (), ("doc",)),
+                          lambda actor: (_ for _ in ()).throw(RuntimeError("SIT 抖动")),
+                          "approve")
+    monkeypatch.setattr(cli_module, "core_tasks", lambda: [boom])
+
+    class _RT:
+        def __init__(self, *a, **k):
+            self.actor = Actor()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(cli_module, "DemoRuntime", _RT)
+    err = io.StringIO()
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err), \
+            pytest.raises(RuntimeError, match="SIT 抖动"):
+        cli_module.main(["--root", str(tmp_path), "agent", "--goal", "doc",
+                         "--execute", "--max-auto-risk", "high"])
+    assert "WAITING-HUMAN" not in err.getvalue() and "DELIVERY-UNCERTAIN" not in err.getvalue()

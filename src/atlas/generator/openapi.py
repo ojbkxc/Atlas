@@ -1,6 +1,5 @@
 """OpenAPI 3 / Swagger 2 解析：$ref 解引用 + 循环检测，归一到 Endpoint 模型。"""
 from __future__ import annotations
-import copy
 from typing import Any
 
 from .model import (Endpoint, Param, BodySpec, ResponseSpec,

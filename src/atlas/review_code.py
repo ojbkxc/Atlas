@@ -22,10 +22,10 @@ import ast
 import hashlib
 import json
 import re
-import time
 import uuid
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import yaml
 
@@ -160,14 +160,50 @@ RULES: dict[str, tuple[str, str, str, str, str]] = {
 }
 
 # 凭据/URL 正则模式（SAFE-001）
+# 字面秘密赋值（password=/token=/…）：**永不豁免**——豁免只可能开在 URL 形态上，
+# 真字面 token 无论出现在哪个目录/哪一行都仍 critical（W3 追加项②硬约束：
+# 「看着刺眼是对的」，C4 故意放进 tests/ 的字面凭据样本必须继续吃 critical）。
 _CREDENTIAL_PATTERNS = [
     re.compile(r"password\s*=\s*['\"][^'\"]{3,}['\"]", re.IGNORECASE),
     re.compile(r"passwd\s*=\s*['\"][^'\"]{3,}['\"]", re.IGNORECASE),
     re.compile(r"token\s*=\s*['\"][^'\"]{8,}['\"]", re.IGNORECASE),
     re.compile(r"api_key\s*=\s*['\"][^'\"]{8,}['\"]", re.IGNORECASE),
     re.compile(r"secret\s*=\s*['\"][^'\"]{8,}['\"]", re.IGNORECASE),
-    re.compile(r"https?://[^\s'\"]+", re.IGNORECASE),
 ]
+_URL_PATTERN = re.compile(r"https?://[^\s'\"]+", re.IGNORECASE)
+
+# SAFE-001 URL 豁免判据（唯一豁免面，W3 追加项②）：**只认保留域**
+# （RFC 2606 example 家族 + .test/.invalid，RFC 6761 localhost/回环）。
+# 严禁按目录/文件豁免（「tests 目录整体不判」= 静默泄露口，已被否决）。
+# host 由 urlsplit().hostname 归一小写取得，大小写混排的 EXAMPLE.COM 同样命中。
+_RESERVED_EXACT_HOSTS = frozenset({
+    "example", "example.com", "example.net", "example.org",
+    "test", "invalid", "localhost", "127.0.0.1", "::1",
+})
+_RESERVED_HOST_SUFFIXES = (".example", ".example.com", ".example.net",
+                           ".example.org", ".test", ".invalid", ".localhost")
+
+
+def _url_host_reserved(url: str) -> bool:
+    """URL 主机是否 RFC 保留域（虚构样本 host）。解析不出 host 一律 False（保守）。
+
+    源码里的 URL 常量常带转义尾（`"https://real.example\\n"`），`\\n` 在源文本中是
+    反斜杠+字母两字符、不是空白——正则 token 会把它并进 URL。host 判定按首个反斜杠
+    截断：截断只会让保留域**更容易**被识别（放行面不扩大），真实 host 截后仍是真 host。
+    """
+    try:
+        host = urlsplit(url.split("\\", 1)[0]).hostname
+    except ValueError:
+        return False
+    if not host:
+        return False
+    return host in _RESERVED_EXACT_HOSTS or host.endswith(_RESERVED_HOST_SUFFIXES)
+
+
+def _safe001_urls_exempt(line: str) -> bool:
+    """行内 URL 全为保留域才豁免；混合行（含任一非保留 host）照旧 critical。"""
+    urls = _URL_PATTERN.findall(line)
+    return bool(urls) and all(_url_host_reserved(u) for u in urls)
 
 # 选择器模式（MAINT-002）：CSS/XPath 选择器字面量
 _SELECTOR_PATTERN = re.compile(
@@ -261,7 +297,6 @@ def score_findings(findings: list[dict], config: dict) -> dict:
     critical 硬顶：出现任一 critical → total = min(total, critical_cap)。
     """
     weights = config.get("weights", DEFAULT_WEIGHTS)
-    deductions = config.get("severity_deductions", SEVERITY_DEDUCTIONS)
     cap = config.get("critical_cap", CRITICAL_CAP)
 
     dimension_findings: dict[str, list[dict]] = {}
@@ -497,11 +532,15 @@ def _scan_pytest_line_level(file: str, source: str, config: dict,
             if _rule_enabled("GREEN-004", config):
                 findings.append(_make_finding("GREEN-004", file, i, stripped, config))
         # SAFE-001: 硬编码凭据/URL
-        for pattern in _CREDENTIAL_PATTERNS:
-            if pattern.search(line):
-                if _rule_enabled("SAFE-001", config):
-                    findings.append(_make_finding("SAFE-001", file, i, stripped, config))
-                break
+        # 顺序敏感：字面秘密赋值恒判；只有「仅 URL 命中且 host 全为保留域」才放行
+        # （豁免只此一面，见 _safe001_urls_exempt 注释）。
+        credential_hit = any(p.search(line) for p in _CREDENTIAL_PATTERNS)
+        if credential_hit:
+            if _rule_enabled("SAFE-001", config):
+                findings.append(_make_finding("SAFE-001", file, i, stripped, config))
+        elif _URL_PATTERN.search(line) and not _safe001_urls_exempt(line):
+            if _rule_enabled("SAFE-001", config):
+                findings.append(_make_finding("SAFE-001", file, i, stripped, config))
         # MAINT-002: 硬编码选择器（不在注册表中检测在 knowledge 模式做，这里只标记字面量）
         # MAINT-003: 写死数据
         if _HARDCODED_DATA_PATTERN.search(line):
@@ -515,7 +554,9 @@ def scan_pytest_file(path: Path, config: dict,
 
     registry: 可选的 SelectorRegistry（knowledge 模式用，检查选择器是否注册）。
     """
-    source = path.read_text(encoding="utf-8")
+    # 读侧 replace（#131 纪律，W3 追加项①）：坏字节文件不再把整份评审顶成
+    # UnicodeDecodeError——语法解析失败落 MAINT-006 finding，评审继续扫其余目标。
+    source = path.read_text(encoding="utf-8", errors="replace")
     file_str = str(path)
     findings: list[dict] = []
 
@@ -754,14 +795,23 @@ def detect_kind(path: Path) -> str:
     return "pytest"
 
 
+_SCANNABLE_SUFFIXES = frozenset({".py", ".yaml", ".yml", ".json"})
+
+
 def _iter_targets(paths: list[str | Path], kind: str) -> list[tuple[Path, str]]:
-    """展开路径列表为 (file, kind) 列表。"""
+    """展开路径列表为 (file, kind) 列表。
+
+    目录递归只收可评审文本形态（.py/.yaml/.yml/.json）——旧实现 rglob("*") 把
+    `__pycache__/*.pyc` 也收进来，`scan_pytest_file` 的严格 utf-8 读当场裸崩
+    UnicodeDecodeError（`atlas review-code tests/` 必踩的预存红灯，W3 追加项①）。
+    显式传入的单文件不受扩展名过滤影响（用户点名要审什么就审什么）。
+    """
     results = []
     for p in paths:
         path = Path(p)
         if path.is_dir():
             for child in sorted(path.rglob("*")):
-                if child.is_file():
+                if child.is_file() and child.suffix.lower() in _SCANNABLE_SUFFIXES:
                     k = kind if kind != "auto" else detect_kind(child)
                     results.append((child, k))
         elif path.is_file():
@@ -1145,7 +1195,6 @@ def findings_to_tower(findings: list[dict], reports_dir: Path) -> int:
     journal = ExperienceJournal(reports_dir)
     count = 0
     for f in findings:
-        identity = f"{f['file']}|{f['line']}|{f['rule_id']}"
         draft = journal.draft_from_text(
             task=f"code_review: {f['file']}:{f['line']}",
             text=f"{f['rule_id']} {f['rationale']}",
@@ -1212,7 +1261,8 @@ def review_code(paths: list[str | Path], *, mode: str = "static",
             findings = scan_pytest_file(file_path, config, registry)
         elif file_kind == "dsl":
             try:
-                flow = yaml.safe_load(file_path.read_text(encoding="utf-8"))
+                flow = yaml.safe_load(file_path.read_text(encoding="utf-8",
+                                                           errors="replace"))
                 if isinstance(flow, dict):
                     findings = scan_dsl_flow(file_path, flow, config, registry)
                 else:
@@ -1232,8 +1282,12 @@ def review_code(paths: list[str | Path], *, mode: str = "static",
             baseline_path = Path(baseline)
             if baseline_path.is_file() and baseline_path.suffix == ".py":
                 try:
-                    baseline_source = baseline_path.read_text(encoding="utf-8")
-                    current_source = file_path.read_text(encoding="utf-8")
+                    # replace 回落（W3 追加项①）：UnicodeDecodeError 是 ValueError
+                    # 不是 OSError，旧实现基线文件带坏字节时穿透 except 崩掉整份评审。
+                    baseline_source = baseline_path.read_text(encoding="utf-8",
+                                                              errors="replace")
+                    current_source = file_path.read_text(encoding="utf-8",
+                                                         errors="replace")
                     diff_findings = diff_baseline(
                         current_source, baseline_source, file_str, config)
                     findings.extend(diff_findings)

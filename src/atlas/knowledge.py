@@ -2,9 +2,10 @@
 from __future__ import annotations
 import hashlib
 import json
+import time
 from pathlib import Path
-from typing import Any
 from .failures import FailureClass, classify_failure, exception_text
+from . import locators
 
 def _scope_list(row: dict) -> list:
     """坑点 scope 的单一判据（#127 面2）：键存在值为 null 时 `row.get("scope", [])`
@@ -124,16 +125,25 @@ class KnowledgeBase:
         path.write_text(json.dumps({name: records}, ensure_ascii=False, indent=2), encoding="utf-8")
         return path
 
-    def save_component_selector(self, component: str, element: str, selector: str, *,
+    def save_component_selector(self, component: str, element: str, selector, *,
                                 approved: bool = False, source: str = "review",
                                 note: str = "") -> dict:
         """批准的选择器写回组件库——selector_candidate 的唯一入库路径。
+
+        `selector` 两形态（gap13）：CSS 字符串（存量）或结构化描述
+        `{"role": "button", "name": "保存"}` / `{"label":...}` / `{"testid":...}`。
+        **落盘前**过 `locators.parse` 校验：坏形态当场点名（LocatorSpecError），
+        脏形态绝不进知识文件（进了就是「产得出、入不了库」的反面：入了库但跑不了）。
 
         保持 components.json 的嵌套结构（{"components": {...}}），
         与 save_reviewed 的列表型知识库不同，不能混用。
         """
         if not approved:
             raise PermissionError("组件选择器写回需要人工审核；请传 approved=True 明确批准")
+        # 形态判据前置到读旧库之前：坏输入不留任何中间状态（也不白读一遍盘）。
+        # 落**用户形态**（CSS 恒为字符串、结构化描述不带内部 kind 标签）：存量逐字节不变，
+        # 且存进去的值再读出来能原样 parse 回来（落 IR 会存出一份自己解析不了的知识）。
+        stored = locators.normalize(selector)
         data = self.load("components")
         # #127 面4：load 的顶层闸门保证 data 是 dict，但「components」键值仍可能是手滑的
         # 非映射（字符串/列表——#77 键在值 null/坏形态默认不生效同族），旧实现直接 .get 后
@@ -153,14 +163,14 @@ class KnowledgeBase:
             selectors = {}
             spec["selectors"] = selectors
         overwritten = element in selectors
-        selectors[element] = selector
+        selectors[element] = stored
         if note and not spec.get("notes"):
             spec["notes"] = note
         path = self._writable_root() / "components.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({"components": components}, ensure_ascii=False, indent=2),
                         encoding="utf-8")
-        return {"component": component, "element": element, "selector": selector,
+        return {"component": component, "element": element, "selector": stored,
                 "status": "approved", "source": source, "overwritten": overwritten}
 
     def save_overlay(self, bu: str, key: str, value, *, approved: bool = False,
@@ -187,6 +197,58 @@ class KnowledgeBase:
         return {"bu": bu, "key": key, "value": value, "status": "approved",
                 "source": source, "overwritten": existed}
 
+    def save_task_entry(self, entry: dict, *, approved: bool = False,
+                        source: str = "review") -> dict:
+        """批准的流程候选写回公共任务库——flow_candidate 的唯一入库路径。
+
+        task_library.json 存跨流程可复用的**动作序列**（{"tasks": [...]}），按 name 唯一：
+        同名再批准是更新不是堆叠（save_component_selector 的 element 语义同款），
+        overwritten 显式回传让人知道盖了旧条目。steps 非空且逐条为映射才收——
+        空序列入库是「看似完整实为空」的假资产（#102 同红线），宁可在批准时点名。
+        写闸门与 save_reviewed 同源（_writable_root，红线 #11：包内虚构默认是只读资产）。
+        """
+        if not approved:
+            raise PermissionError("公共任务库写回需要人工审核；请传 approved=True 明确批准")
+        if not isinstance(entry, dict):
+            raise ValueError(f"任务库条目必须是映射，实为 {type(entry).__name__}")
+        name = str(entry.get("name", "")).strip()
+        if not name:
+            raise ValueError("任务库条目必须有非空 name（库按名字取用，无名条目无法被引用）")
+        steps = entry.get("steps")
+        if not isinstance(steps, list) or not steps \
+                or not all(isinstance(item, dict) for item in steps):
+            raise ValueError(f"任务库条目 steps 必须是非空映射列表，实为 "
+                             f"{type(steps).__name__}（空/坏形态入库=假资产）")
+        data = self.load("task_library")
+        # #127 面4/面5 同族：tasks 键值坏形态（手滑成映射/字符串）当空库重建，
+        # 行非映射的旧条目同样丢弃——批准会以 write_text 把好结构写回私有，
+        # 半路崩=塔清不动（批准是唯一写路径，闸门必须能走通）。
+        tasks = data.get("tasks")
+        if not isinstance(tasks, list):
+            tasks = []
+        overwritten = any(isinstance(t, dict) and t.get("name") == name for t in tasks)
+        tasks = [t for t in tasks
+                 if not (isinstance(t, dict) and t.get("name") == name)]
+        record = {"id": hashlib.sha1(f"task-library:{name}".encode("utf-8")).hexdigest()[:12],
+                  "name": name, "steps": steps, "status": "approved",
+                  "source": source,
+                  "created_at": time.strftime("%Y-%m-%dT%H:%M:%S")}
+        if isinstance(entry.get("assert"), list):
+            record["assert"] = entry["assert"]
+        description = str(entry.get("description", "")).strip()
+        if description:
+            record["description"] = description
+        source_run = str(entry.get("source_run", "")).strip()
+        if source_run:
+            record["source_run"] = source_run
+        tasks.append(record)
+        path = self._writable_root() / "task_library.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"tasks": tasks}, ensure_ascii=False, indent=2),
+                        encoding="utf-8")
+        return {"id": record["id"], "name": name, "steps": len(steps),
+                "status": "approved", "source": source, "overwritten": overwritten}
+
     def load_overlays(self) -> dict:
         overlays = self.load("bu_overlays").get("overlays")
         return overlays if isinstance(overlays, dict) else {}
@@ -200,13 +262,22 @@ class SelectorRegistry:
         self.components = {name: spec for name, spec in (raw or {}).items()
                            if isinstance(spec, dict)} if isinstance(raw, dict) else {}
 
-    def get(self, component: str, element: str) -> str:
+    def get(self, component: str, element: str):
+        """返回登记的**原值**（字符串=CSS，或结构化描述 dict）——老调用方零影响。"""
         spec = self.components.get(component)
         selectors = spec.get("selectors") if spec else None
         # selectors 键值 null/非映射按「未注册」归因，不再 None[element] 裸 TypeError
         if isinstance(selectors, dict) and element in selectors:
             return selectors[element]
         raise KeyError(f"选择器未注册：{component}.{element}")
+
+    def resolve(self, page, component: str, element: str):
+        """登记的定位描述 → Playwright locator（两形态通吃；判据在 `locators.resolve` 一处）。"""
+        return locators.resolve(page, self.get(component, element))
+
+    def describe(self, component: str, element: str) -> str:
+        """登记的定位描述 → 可读单行文本（展示/留痕；dict 不可切片，别裸用原值）。"""
+        return locators.canonical(self.get(component, element))
 
     def find(self, component: str) -> dict:
         """返回组件的全部选择器与说明，供 agent 探查后再动手。"""

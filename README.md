@@ -3,7 +3,7 @@
 <p align="center">
   <a href="https://github.com/ojbkxc/Atlas"><img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License"></a>
-  <a href="#当前验证边界"><img src="https://img.shields.io/badge/tests-720%20passed-brightgreen" alt="720 passed"></a>
+  <a href="#当前验证边界"><img src="https://img.shields.io/badge/tests-2216%20passed-brightgreen" alt="2216 passed"></a>
   <img src="https://img.shields.io/badge/engine-Playwright-45edaa" alt="Playwright">
   <img src="https://img.shields.io/badge/self--healing-human--reviewed-orange" alt="Human-reviewed healing">
 </p>
@@ -28,11 +28,14 @@
 - **双轨资产**：自己的 YAML DSL；`LegacyAdapter` 直接运行同事 `legacy-suite` 原项目，不复制、不改写其 17 条用例。
 - **三种模式**：`run` 全速（不在每步截图）、`debug` 慢速/快照、`heal` 失败现场。
 - **CDP 冻场接管**：`CDP_DEBUG=1 CDP_PAUSE_STEP=n atlas run` 在指定步骤前冻住，另开终端 `playwright-cli attach --cdp=…` 人工接管调试，按 Enter 继续跑完——与 legacy-suite 调试习惯同构。
-- **审核吞吐入口**：`atlas review` 把失败草稿/探索候选汇入一个证据卡片队列；批准按 kind 分发——坑点进知识（`--remedy`）、选择器候选进组件库（`--component/--element`）、trace 步骤拒之塔外；`--reject` 留原因不删记录，`--stats` 看每周吞吐；决策落 `review_decisions.jsonl`。
-- **探索会话与沉淀**：`atlas explore` 开非生产 CDP 会话给外部大脑（playwright-cli/Claude 类）接管；回车记证据 checkpoint，`atlas explore --compile` 把 trace 编译成 pending_review 草稿——探索永不直接成资产。
+- **审核吞吐入口**：`atlas review` 把失败草稿/探索候选汇入一个证据卡片队列；批准按 kind 分发——坑点进知识（`--remedy`）、选择器候选进组件库（`--component/--element`；定位写 `--remedy`，ARIA 候选可直接 `--role/--name` 或 `--remedy '{"role":..,"name":..}'`，不必手抄成 CSS）、trace 步骤拒之塔外；`--reject` 留原因不删记录，`--stats` 看每周吞吐；决策落 `review_decisions.jsonl`。
+- **组件库两种定位形态（gap13）**：`components.json` 的 `selectors` 值可以是 CSS 字符串（存量形态，逐字节兼容），也可以是结构化描述 `{"role": "button", "name": "保存"}` / `{"label": ...}` / `{"testid": ...}`。形态判据只有一处（`atlas.locators`：解析 / canonical 文本 / →locator）：写库前校验、坏形态点名、绝不静默回落成 CSS 字面量；探索与自主循环（`explore`/`autopilot`）和 `atlas export-pytest` 产出的页对象都走同一把尺——**ARIA 优先由组件库的人审内容决定，不是引擎猜的**；role 的 name 走精确匹配（子串会点错「保存并提交」）。**边界如实**：ARIA 名不是万能——通用 combobox 这类身份模糊的候选仍应留在 CSS（真机塔里 2026-11-04 已有此判例），`.el-table`/`.el-loading-mask` 这类框架结构类不适用（`waits.py` 仍用 CSS，原因写在模块 docstring）。
+- **晋级要证据（C2）**：三个可批准 kind（坑点/选择器候选/BU 坐标）必须携带完备的 `evidence.verification` 四元组（`command`/`exit_code`/`assertions`/`verdict`）才能批准——缺者列 `[UNVERIFIED]` 并拒绝晋级（**不删除、照常列出、可 reject 留原因**）。engine 失败路径与 `allure-analyze --to-tower` 的草稿自动带上这四项（`verdict=fail` 合法：证明的是失败真实复现过，不要求必须绿）；人可显式豁免 `--allow-unverified --reason "<依据>"`，批准行与决策留痕双记豁免标记，批量 `--apply` 有意无此通道。闸只查形态完备，绝不放宽任何既有判定（红线 #7/#13）。
+- **探索会话与沉淀**：`atlas explore` 开非生产 CDP 会话给外部大脑（playwright-cli/Claude 类）接管；回车记证据 checkpoint，`atlas explore --compile` 把 trace 编译成 pending_review 草稿——探索永不直接成资产。`atlas explore --auto --goal "…"` 是同一闭环的无人版（gap12）：Atlas 内置 LLM 循环做「观察→决策→护栏→执行→留痕」，LLM 只许输出白名单动作（`click/fill/press/goto/assert/wait/record/done`），写/提交类动作按 `classify_risk` 拦在审批门下（默认停），产物同样只进 `pending_review`。
+- **跑绿固化与公共任务库**：flow 级 `harvest: true`（或 `atlas run --harvest`）的 flow **整条跑绿**后，动作序列原文（steps/assert，含 `${var}` 占位不改写）+ C2 成功三元组（`verdict="pass"`，与失败路径同一把 `engine._verification` 刀）自动固化为 `flow_candidate` pending_review 草稿进审核塔——失败/中断/env_blocked/waiting 一律不固化，固化写盘失败只 WARN 不翻 run 终态。同一 flow 重跑只增 `seen` 刷新证据，flow 改了才出新行。批准（`atlas review --approve <id> [--remedy "<库名>"]`）写私有知识根 `task_library.json`（按名唯一、同名再批准=更新）；`atlas library` 列表 / `atlas library <名>` 查看条目。与失败草稿同一把三元组闸：无证据的手工草稿照样拦（红线 #9/#10/#13）。
 - **真实项目对接映射**：`ATLAS_ENV_PREFIX`/`ATLAS_LEGACY_WEB`/`ATLAS_DEMO_API_*`/`ATLAS_APP_HEADER_*` 一组开关把仓库自带的虚构 demo 映射到真实旧项目，引擎零业务字面量。
 - **探测式供给**：`find_only` / `find_or_create`，优先复用数据；生产禁写、自动建单必须带「非人工创建」、create 配额。
-- **失败实证与分类**：`env_blocked/session/interaction/contract/data/assertion`；支持精确 API 重放辅助判别。
+- **失败实证与分类**：`env_blocked/session/interaction/contract/data/assertion/interrupted/unknown/waiting`；支持精确 API 重放辅助判别。其中 `env_blocked`/`interrupted`/`waiting` 是**操作/环境终态家族**（判据单点 `failures.OPERATIONAL` + `is_operational()`）：三者都不进 failed 缺陷分布，也都不静默变绿——Allure 一律 `skipped` + 独立 label + 保留原文 message，`atlas summary` 的 `fail_classes` 里照常可见「等人」 occurred 几次。
 - **知识与自愈**：30 条首批 Demo 结构化坑点；知识命中、修复提案、知识写回与自愈均要求人审，绝不放宽断言。
 - **契约分级**：核心字段强校验、高频通用规则弱校验、最小响应校验；不按 数百条接口盲目生成强 schema。`atlas contracts` 展示与运行时校验共用同一私有→包内回退来源；契约定义在构造期钉死形态（required 类型值/路径键写坏当场点名，配合逐文件回退——手改坏的私有契约 JSON 按「文件损坏」降级包内默认，不再让一个手误连坐整条断言链）；`atlas contracts --validate` 只读结构自校验，点名空 path/name「在清单里冒充覆盖率、运行时却静默跳过、永不生效」的契约与无法解析的契约文件（不发真实请求，有问题 rc=2）。
 - **外部资产适配**：原 `DemoApi` 接口语义、`toolbox` 感知/重放、runlog 风格 JSONL 记录。
@@ -43,16 +46,58 @@
 - **跨平台**：纯 Python、Playwright、`pathlib`；Windows/Linux 使用同一套代码。
 - **DSL assert 块**：`assert:` 支持表达式断言（`pt_echo == source_order.pt`、`count >= 5`、`document_no != ""`，六种比较运算符）+ 内联 Task 断言（`task: assert_api`）+ 键值断言；compile 提前验证 task 引用。结构校验（步骤形态/未注册 Task/assert 块/requires 数据供给块/flow 级 on_env_blocked）统一在 `validate_flow` 单一来源：`atlas compile` 与 `atlas run` 共用——坏 flow 登录**前**即 rc 2，不再先起真实浏览器+走真实 SIT 登录才在 compile/provision 裸崩。
 - **运行入口配置预检**：`atlas run`/`agent --execute` 在启动浏览器**之前**检查环境 URL 与 DemoApi 适配路径（`runtime.check_demo_api`），缺失点名 `DEMO_URL_*`/`ATLAS_DEMO_API_PROJECT` 一行 stderr + rc 2。旧实现合法 flow+缺 URL 裸 traceback，`ATLAS_DEMO_API_PROJECT` 指错时浏览器已开、真实 SIT 登录+Cookie 烘焙都烧完才撞 attach_demo 缺文件（白烧会话、留半截现场）。
-- **channel=auto API 路由**：`auto` Task 有 `supports_api=True` 时引擎优先调 Task 自己的 `_perform_api`，失败降级 UI。降级只捕 `(NotImplementedError, RuntimeError)`——契约违规与网络故障照常传播，不被降级掩盖；降级原因随 step 记录落 `runs.jsonl`（`degraded_to_ui` 字段），事后审计能区分「UI 本来就该走」与「API 坏了才退 UI」。
+- **channel=auto API 路由**：`auto` Task 有 `supports_api=True` 时引擎优先调 Task 自己的 `_perform_api`，失败降级 UI。降级只捕 `(NotImplementedError, RuntimeError)`——契约违规与网络故障照常传播，不被降级掩盖；降级原因随 step 记录落 `runs.jsonl`（`degraded_to_ui` 字段），事后审计能区分「UI 本来就该走」与「API 坏了才退 UI」。**写不盲重试（C12）**：降级重跑前问 `delivery.safe_to_auto_reexecute`（判据唯一出处）——「API 尝试已进入发送路径 ∧ `read_only=False`」绝不自动重跑（红线 #9），改抛 `DeliveryUncertain`（`classify_failure` 按类型短路归 interaction、保持 failed 不洗绿、step 记录带 `delivery_uncertain=true`、原异常留 `__cause__`）。发送面证据只有 CallApi 的 `request_seq`（进 `request()` 即计数，保守方向），而自定义 `_perform_api` 腿常走插件自有传输（demo_api），seq 不动 ≠ 未发出——故**未声明**的自定义腿对写任务一律 fail-closed 按已发出计；读语义 API 腿要放行降级，Task 须**显式声明** `api_leg_side_effect_free=True`（如 demo 的 `select_customer`），引擎不猜。只读任务的降级/步骤重试/heal 行为逐字不变；healing 侧零改动（既有 read_only 两道门已是最严形态）。
 - **语义等待**：`waits.py` 提供 `wait_for_rows`/`wait_for_mask_gone`/`wait_for_vue_field`/`wait_for_url_change`，替代硬 sleep；表格按「attached → loading mask 落定 → vm.data」判定，合法空表（无数据业务事实）返回 0 不误报超时，导航期执行上下文销毁容忍重试。
 - **会话保活**：`CallApi.set_keepalive(callback)` 检测 `auth_expired` 自动重新烘焙 Cookie，支持间隔保活。
 - **造单回收**：run 退出时把本次配额内建过的单自动落盘 `reports/recycle_list.jsonl`（默认读取路径与其同源，不再赌 CWD）；`atlas recycle` 列出供人工回收，不自动删除。
 - **JMeter 导入**：`scripts/import_jmeter.py` 把 .jmx 工程转 Atlas DSL YAML，供生产巡检。
+- **凭据泄漏面闸（C4）**：迁移器与 `atlas gen` 的**产出侧**统一过字面敏感头闸（判据唯一实现
+  `src/atlas/credential_gate.py`，通用 HTTP 凭据词表，不含业务头名）：命中名单且值是字面量的
+  鉴权头换成 `${ATLAS_HDR_<n>}` 占位，映射清单只报键名——凭据值不进 YAML/stdout/stderr。
+  已写成 `${VAR}`/`${__P()}` 的外部化值不重复告警。迁移无 `-o` 且闸命中时**拒打 YAML 全文**，
+  只出摘要与接线指引（终端回滚缓冲与 CI 日志不是凭据存放处）。异常文本落盘三条路径（经验草稿
+  `evidence.text`、agent 留痕 `reason`、step 的 `degraded_to_ui.reason`）与 `runtime` 写进异常的
+  `page.url` 走同一把净化刀：URL query **逐键**命中才 `<redacted>`（`docNo`/`page`/`ou` 等业务取证
+  参数保留）、fragment 整抹；而**定性输入用净化前原文**——反序会把 `?code=401` 这类样本的会话问题
+  翻成 unknown，脱敏损归因比泄露更隐蔽。Allure 报告分发口径落进提示文案：自建 HTTP 必须
+  `--bind 127.0.0.1`。
+- **版本三元组入报告（C6）**：每次 run 记录与 Allure parameters 带「引擎版本 + 知识库内容 sha1
+  指纹（private/builtin/unreadable 三态）+ flow 摘要（文件 md5 `source` / 内存派生 `derived`）」，
+  计算唯一入口 `src/atlas/versioning.py`，纯读不新增写路径；`atlas doctor` 增 `version_triple`
+  （含 `tz_data` 体检：Windows 缺 tzdb 时点名 `pip install tzdata`，不静默回落 UTC），
+  `atlas summary` 增 `versions.drifted`——「上周能跑今天炸」从玄学变成可 diff 的事实。
 - **私有知识目录**：`ATLAS_KNOWLEDGE_DIR` 指到仓库外——读逐文件回退包内虚构默认，人审批准（组件/坑点/坐标）只写私有目录，真实业务知识零入库。
 - **BU 坐标双轨（离线管线）**：`atlas overlay` 对两组业务坐标做逐键 diff，差异生成 `bu_overlay` 草稿进审核塔；批准才落私有 overlay 库。租户=坐标不是分支；真实 BU-B 双跑仍待会话值。
 - **项目初始化向导**：`atlas init` 一键生成含 `.atlas-root/.env/pyproject.toml/flows/smoke.yaml/tests/test_smoke.py/scripts/run_allure.py` 的新项目骨架；`.env` 值全空无凭据、pyproject 不含 allure-pytest（报告走 `atlas allure` 纯 stdlib 直出 Allure 2.39.0）。
 - **微服务配置生成器**：`atlas config add <domain>` 生成 `plugins/<domain>/` 插件骨架（plugin/tasks/probes + knowledge 空骨架），Task `perform` 诚实抛 `NotImplementedError`；`--mapping` 只出 ATLAS_* 映射片段（零代码）。外部插件经 `resolve_plugin()` 缝动态加载，不碰引擎代码。
-- **代码质量评审**：`atlas review-code` 对 pytest 用例 / DSL flow YAML / 契约 JSON 做质量评审，输出含评分的 Allure 2.39.0 风格报告。5 维度权重计分（断言强度 .25 / 安全 .20 / 可维护 .20 / 覆盖 .20 / 重复 .15），28 条反模式规则（ASSERT-*/GREEN-*/SAFE-*/MAINT-*/COV-*/DUP-*），critical 硬顶 ≤59。核心价值：反向侦测「为变绿而放宽断言」（弱断言、假绿、生产写风险），三种互补手法（静态反模式 / 基线差分 / 运行史交叉）。static/knowledge 模式纯 stdlib 离线，ai 模式默认关闭不上传代码。rc 0 通过 / 1 门禁失败 / 2 用户错误。与 `atlas review`（审核塔）边界：review 审运行产物、批准写知识；review-code 审源码、只出报告、永不写知识。
+- **代码质量评审**：`atlas review-code` 对 pytest 用例 / DSL flow YAML / 契约 JSON 做质量评审，输出含评分的 Allure 2.39.0 风格报告。5 维度权重计分（断言强度 .25 / 安全 .20 / 可维护 .20 / 覆盖 .20 / 重复 .15），31 条反模式规则（ASSERT-*/GREEN-*/SAFE-*/MAINT-*/COV-*/DUP-*），critical 硬顶 ≤59。核心价值：反向侦测「为变绿而放宽断言」（弱断言、假绿、生产写风险），三种互补手法（静态反模式 / 基线差分 / 运行史交叉）。static/knowledge 模式纯 stdlib 离线；`ai` 模式未实现（CLI 拒绝 `--review-mode ai`）。rc 0 通过 / 1 门禁失败 / 2 用户错误。与 `atlas review`（审核塔）边界：review 审运行产物、批准写知识；review-code 审源码、只出报告、永不写知识。
+- **回归代码产出**：`atlas gen --with-pytest` 额外产出**可独立运行**的 pytest 回归代码包（`test_<id>.py` + `atlas_pages.py` 页对象库〔派生自组件库〕+ `_atlas_support.py` 自包含底座〔仅标准库，可脱离 Atlas 运行〕+ README）。形态评审见 `docs/gaps/gap7-regression-code-eval.md`：推荐「pytest 用例 + 共享页对象库 ⊕ 自包含底座」，弃用「每用例自带 step_N 零复用」。只生成不执行（红线 #9），未解析 `${VAR}` 运行期显式报错。
+- **快脚本产出（gap9/gap9b，`--fast`）**：`atlas gen <doc> --with-pytest --fast`（--fast 须配 --with-pytest，单用 rc 2 点名）在回归包之上追加**快模式**形态：单浏览器/单登录（module 级 `sole_page` + 登录指示器**实查**权威——磁盘登录标记不做放行依据）、语义等待替代固定 sleep（产物用例层禁 `wait_for_timeout`/裸 `pytest.skip`/`time.sleep`，底座轮询实参只许裸 `TICK_MS`，判据按实参形态不按计数）、**成功不截图**（仅失败腿取证，截图绝对路径直连 `atlas allure`）、plan_ctx 式跨批上下文（缺前置=EnvBlocked 点名，**跨批只传标量**；非标量产出须在前一步显式提取）、用例看门狗（超时写 `status:"timeout"` 不洗绿，Allure 侧 broken）、写腿默认不执行（`ATLAS_FAST_ALLOW_WRITES` 未置位记 env_blocked，放行=人的显式 env 决定）。产物执行写 **Atlas 兼容 runs.jsonl**（run 级 `reason` 只取框架自产点名文案、非空才写、截 200——不复制净化刀，不落不可控文本），`atlas allure <产物>/reports/runs.jsonl` 直接可吃；依赖栈 `pytest + playwright`（零新增运行时：不引 allure-pytest/pytest-playwright/pytest-timeout/requests，conftest 自注销 pytest-playwright）。
+  **flow→快包入口**：`atlas export-pytest <flow.yaml> [-o DIR] [--fast] [--force]`（只生成不执行；rc 0/2，**3 不使用**——生成期无「等人」可映射；缺省 `exports/pytest/<flow 名>/`，同 flow 重复导出内容相等）。快包 UI 腿需**显式声明位**（引擎不猜）：`page_object: <已批准组件名>`（页对象类名唯一来源）或 `legacy_pages: <旧套件函数名>`（委托 `legacy_page_call`，模块位是产物常量 `lib.pages`）——两键互斥，形态判据落 compile 静态段（`atlas compile`/`atlas run`/导出入口自动同尺）；未接线动作运行期抛 `NotWired(EnvBlocked)` 归 env_blocked 并点名组件/元素（不假绿、不污染缺陷分布，也不按异常文案猜）。`atlas gen` 文档源恒 API 腿——快 UI 腿只经 flow 入口可达。
+  **CDP 会话复用（attach 通道，形态更快一档：零 launch 零登录）**：`ATLAS_FAST_CDP` ∧ `ATLAS_FAST_INTERACTIVE=1`（在场声明——机器上恰好有人开着调试端口≠有人看着这次运行） ∧ `ATLAS_FAST_ENV` 非 `prod-` 三条件齐才走 attach（判据单点 `session_channel()`，conftest 分流与 login 腿都经它取道）；选页按 `ATLAS_FAST_ATTACH_MATCH` 点名 URL 子串，0 命中与多命中都拒绝、**绝不位置兜底**（拿人的无关 tab 当业务会话=错数据被当成通过）、attach 永不发登录动作、teardown 只断连。无人值守三件套：调度 argv 面 `guard_fast_cdp` 显式 raise + env 面 `child_env` pop `ATLAS_FAST_CDP/INTERACTIVE/ALLOW_WRITES` 三键 + 行为面测「**剥离放行≠放行成功**」（pop 后写腿仍 env_blocked 点名，不得变 passed）。**残留风险口径（约束说明，非缺陷）**：attach 的前提是人在场且该会话即目标账号；产物不替人核账号，账号错配的责任在接线的人身上。
+  **边界（勿过度解读；速度面已有真机实测）**：生成与判据面为**离线闭合**；真机面**用户拍板只跑 R1/R6**（已执行，归档 `reports/r1r6_20261109/SUMMARY.md`，本机证据不外发）——**R1**（真实 SIT，同一条 TC1 写用例）：旧套件 `1 failed, 17 deselected in 135.04s`（进程墙钟 139s）vs Atlas 桥接轨墙钟 **147s**，**净增约 8s（≈6%）：引擎桥接轨不比旧套件快**。机制清楚——`legacy_case` 委托旧 `step_N` 本体、**继承全部固定睡眠**，「语义等待」的收益在这条路上拿不到；且两者**同点同因失败**（step 7 按钮不可见，SIT 现状非代码回归），时长只到同一失败点，**不是完整链路产能对比**。**R6**（本机零凭据、会话层、各两次取样方向一致）：launch **29.75/31.49s** vs attach **6.18/8.28s**——**会话获取成本差约 23s/模块**；两道闸真机成立（未声明 `ATLAS_FAST_INTERACTIVE=1` 时 CDP 被忽略判回 launch、不碰人的浏览器；`ATTACH_MATCH` 零命中点名拒绝并明写不回落 `pages[0]`），两腿同停在缺 `ATLAS_FAST_LOGIN_INDICATOR`。**接线后的同链路 UI 产能仍未测**（快包 UI 腿恒 `NotWired`，待 R2 授权）——「快模式已验证比旧套件快」这句是**假的**；R2/R3/R5/R7 仍待授权。产物机需装 bundled chromium（`python -m playwright install`）或显式设 `ATLAS_BROWSER_EXECUTABLE`，否则 launch 通道开箱即失败（旧套件靠 `channel="chrome"` 复用系统 Chrome，产物侧尚无此旋钮，加旋钮待下一波裁）。全目录快包不过自家 `atlas review-code --fail-under 75`（rc1，SAFE-001 命中私有库派生的**密码名 CSS 选择器**——取证口径必须先声明 `ATLAS_KNOWLEDGE_DIR` 现值）：**用户已裁=维持现状、如实留白**（不改评审器、不改产物形态，E.1.10 的 rc0 判据只认 `test_*.py` 层）。真机抓出的三个新缺口（fixture 期 EnvBlocked 不留痕、bundled chromium 开箱失败、env_blocked 在 pytest 层 failed/error 不统一——是否映射 skip 属人的判定）记在落地注「下一波待办」，本波未修。设计-实现偏离逐条见 `docs/gaps/gap9-fast-pytest-runner.md`「G. 落地注」。**产物含真实 URL、账号名、flow 内容与知识库派生的真实选择器，且 `exports/` 不在 .gitignore——快包放受控目录，勿提交仓库。**
+- **旧仓兼容快脚本（gap11：垫片 + `--compat` 布局）**：R1 已证否「Atlas 引擎让旧用例变快」，gap11 换的是**另一条机制**——在旧仓代码之外、运行期替换「等待」与「成功截图」的实现方式（红线 #4：旧仓零改动）。**本节只描述机制，不描述收益**：真机 A/B 三轮（六组）+ 8 组档位探针之后，**等待垫片的默认档被判为间歇性行为变更，等待腿已改为显式 opt-in（#36）**——机制、边界与证据见 `docs/gaps/gap11-legacy-fast-compat.md`（§A 硬判据 2 收紧记录 + G.6 负面证据索引 + G.7 #36 裁决证据）与 `reports/gap11_ab_r3_20261110/SUMMARY3.md`（含探针矩阵）。
+  `atlas legacy --fast` 注入 `atlas.fastplugin`：类级替换 `Page.wait_for_timeout` 为**有界语义等待**（`readyState==='complete'` ∧ 无可见遮罩**全枚举** ∧ 可选 xhr/mutation 递加档 ∧ 可选锚点可见；进程侧 `_TICK_MS=25` 轮询，不用 `wait_for_function`、不再用 `wait_for_timeout` 免递归）。硬判据（#33 收紧后）：**绝不延长**（预算制，永不静默就恰好睡满原 ms）、**只有「确实观测到过忙→再转静默」才允许提前返回；整段从未观测到忙就按原值睡满（fail-safe）**——上面那组条件只是必要条件，不再充分（旧口径把「没有遮罩可等」当成了「页面已静默」，正是失败点前移的根因）、probe 异常回退睡满剩余预算并计数；另 `ATLAS_FAST_NO_STEP_SHOTS` 只丢 `step<N>_result` 成功 attach（`_FAIL` 与字节直写落盘三重证据不动）。**#36（2026-11-10，真机实证后的裁决）**：`atlas legacy --fast` **只代置位 `ATLAS_FAST_NO_STEP_SHOTS=1`**，**不再代置位 `ATLAS_FAST_WAITS`**——等待垫片是**显式 opt-in**（`ATLAS_FAST_WAITS=mask|mask+xhr|mutation` 才启用；未设时 `--fast` 会打一行 NOTE 点名这件事）。依据：`mask`（默认下限 400）与 `mask+xhr` 在真机上**间歇**把失败点前移（同码同配置有时过、有时挂），`mutation` 2/2 同点但 `saved_ms≈0`（安全=没提速），`mask`+`MIN_MS=3000` 3/3 同点但省下的 1–2s 落在基线跨批噪声（93–177s）以内且本质是「更短的固定等待」；按 G11-1 硬规则（失败点前移即判行为变更），会间歇改变行为的档位不能默认发出去。**垫片本体侧默认关**（env 未置位=逐字节旧行为；未知值 WARN 后仍按关）不变。度量面只认三项：同链路墙钟（**失败点前移即判行为变更，不算成绩**）、成功截图张数（G11-2 **非破坏差分**，旧仓字节零删除零改动）、固定睡眠实际发生量（`ATLAS_FAST_WAITS_STATS` 逐调用 jsonl 派算 Σrequested vs Σactual，静态求和只是上限）。**读 stats 的两个数别混**：`fallbacks`=真回退（探针错误/无 evaluate/不可恢复/档位降级，`fallbacks=0` 只意味「探针没错」，**不再等于「垫片没插手」**），`no_busy_observed`=**从未见忙而睡满**的笔数（收紧后这是**正常路径不是故障**，会单独上升）——两者语义分立，相加当「异常数」是误读。**还有一条预期，不看会误判垫片坏了**：收紧后 `saved_ms` 会**明显低于收紧前那一轮，极端情形接近 0——这是正确性不是退步**。省多少取决于该链路上「真出现过遮罩 / xhr 在途 / 真实 DOM 变化」的等待占比，而登录、语言切换、OU 沉降这类**本来就没有遮罩可等**的段落现在一律睡满。**若因为数字变小就把判据放宽回去，等于把失败点前移换回来**（那正是本波撤回提速结论的原因）。
+  **`saved_ms` 与 `no_busy_observed` 只是报告量，不是任何一关的通过条件**：判「垫片是不是被关成了 no-op」看离线配对格，真机面只验装配生效（stats jsonl 或 summary 行出现且 `calls>0`）——完整三关见下方「当前验证边界」的 gap11 条。**显式启用等待腿的人**要自己过那三关；`--fast` 默认不再替人做这个决定。
+  `atlas export-pytest <flow> --fast --compat legacy-suite` 产出旧仓能直接吃的布局（**产物 conftest 与 CLI 同源：默认清单只剩截图抑制（#36），等待腿要人显式设**；`class Test<Suite>Plan` + `@pytest.mark.order(N)`、自带 `pytest.ini`（`--strict-markers`/注册 `order`）、同名 fixture 面逐一对名、**垫片按真文件字节 vendored 两份带 sha256 provenance**、依赖面显式列 `pytest-order>=1.1`），两条第一红线=**产物零 `import atlas`**、**绝不写旧仓任何字节**；`--compat` 须配 `--fast`（未配对/未知值 rc 2 **零产物**，拒绝先于 mkdir）。
+  **未覆盖边界（三句，勿读成「已验证更快」）**：①**改动面只在运行期垫片**——旧代码内部逻辑一概不碰，垫片能触达的只有「等待」与「成功截图」两处调用点；**「这两处能省下多少」没有成立的成绩**（省下的量真实存在，但里面混着本该等的真等待）；②**三轮 A/B + 8 组档位探针的结论是「默认档不可用」**：基线恒 step 7，`mask` 档 r2 两组前移到 step 3，`mask+xhr` 探针 2/3 前移，`mutation` 2/2 同点但零节省，`mask`+`min_ms=3000` 3/3 同点但收益在噪声内——**提速结论继续撤回**（证据档案 `reports/gap11_ab_20261109/` 与 `reports/gap11_ab_r3_20261110/`，均不得删除；三量均无有效数，**下方「当前验证边界」那条因此不设占位符**）；③**语义等待的 flake 面已是实证**：导航/reload 与登录/语言切换那几段本来就没有遮罩可等，旧口径照样放行——现按 fail-safe 收紧为「从未观测到忙就睡满」，但 `mask` 档在「遮罩消失 ≠ DOM 数据就绪」的数据敏感链路上仍有残余盲区（真机三轮实测），兜底次序与档位差、连跑稳定性仍只能真机定（R-G3），不口头保证。另：截图抑制省的是 attach 体积与 IO，**省不掉 PNG 编码耗时**；atlas-free 闸现由判据测与 xcheck 消费，生成期硬拒待裁。逐格索引与三态表见 `docs/gaps/gap11-legacy-fast-compat.md`「G. 落地注」。
+- **真实 flaky 兜底**：`waits.retry` 通用重试助手（只重试导航瞬态/交互类可恢复错误，断言/业务/控制流失败**绝不重试**——红线 #7）+ engine 步骤级重试（仅只读 Task）+ 用例级看门狗（超时走 interrupted 终态不伪装 pass）；`ATLAS_STEP_RETRY`（默认 0）/`ATLAS_STEP_RETRY_INTERVAL_MS`（默认 500）/`ATLAS_CASE_TIMEOUT`（默认 0=关闭）三旋钮走 env，**默认零行为变化**。更强的整树强杀由 CLI `atlas run --case-timeout` 子进程层负责。- **DevOps 平台同步**：`atlas devops-sync` 把 Atlas 产出的 Allure 结果集同步到美的 DevOps 平台（用例库 + 测试计划 + 执行结果关联）。配置 `<root>/devops-sync.yaml`，MCP 服务器名可配置（`devops-mcp-sit/uat/prd`，不硬编码）。**默认 dry-run 只算不传**（对外平台同步属 AGENTS §4 Ask-first），`--execute` 才真实上传。零新运行时依赖。
+- **调度核（C1）**：`atlas schedule add|list|status|enable|disable|edit|remove|run|crontab`——
+  `atlas schedule run <id>` 是**被 OS cron / Windows 任务计划器调起的一次性薄命令**，Atlas 不造
+  常驻守护进程、不自动注册 OS 任务（`crontab` 子命令只打印可粘贴的成品行）。状态文件在
+  `reports/schedule/`（gitignore 内）：`tasks.json` 台账（水位线/连败计数）、
+  `schedule_runs.jsonl` 调度索引（与业务 `runs.jsonl` **分离**——「错过几轮」不污染缺陷分布）。
+  决策是纯函数 `decide_slot`：≤2min 准点、>2min 且 ≤7d **补跑只补最近一轮**并把更老的槽计入
+  `skipped_slots`（`atlas schedule status` 能答「这台机错过几轮」，不重放烧配额）、>7d 丢弃、
+  改配置（cron/tz/flow/run_args）或重新 enable 当场**重置水位线**——人改配置的瞬间不回放历史。
+  连败 5 次自动停用并写明原因（`AUTO-PAUSED`），timeout 与业务 rc≠0 计败、Ctrl-C/被杀属
+  CONTROL_FLOW 不计败（#114 在调度域的第二实现）。租约=O_EXCL 原子锁 + 心跳 TTL（90s，权威判据；
+  占用中**推迟≠跳过**，不推进水位线，下一轮 OS tick 还会来；删不动的锁绝不硬删）。cron 是
+  **5 段自写解析器**（纯 stdlib，dom/dow 双受限按 POSIX vixie 取 OR），最小触发间隔 ≥5 分钟
+  防手滑烧配额；`max_duration_min` 到点 abort。**默认只读档**：含写步骤的 flow 必须显式
+  `--i-accept-writes` 才能入库，且调度器**永不带 `--approve`**（写档 flow 的批准永远是人的决定，
+  红线 #13/#2 双层护栏：入库/派发闸 + engine 既有生产 `validate_write` 兜底）。详见
+  「定时巡检接线」。
 
 ## 快速开始
 
@@ -88,9 +133,23 @@ atlas legacy
 
 # 单条 TC（示例）
 atlas legacy "testcases/demo_sit_regression/test_demo_sit_regression.py::TestDemoSitRegressionPlan::test_tc1_sales_order_default_pt"
+
+# 快脚本形态：注入垫片插件（运行期替换「等待」与「成功截图」的实现方式，旧仓代码一行不改；默认档已被真机判为不安全，见下）
+atlas legacy --fast --dry-run   # 只打印注入形态：-p atlas.fastplugin + 绝对 PYTHONPATH + 各开关键三态
+                                # （#36 后 --fast 默认只置位 NO_STEP_SHOTS=1；WAITS 未设为 unset=预期，
+                                #  要等待垫片须显式 ATLAS_FAST_WAITS=mask|mask+xhr|mutation）
+atlas legacy --fast             # 真实执行；可与 --headed/--keyword/node 任意组合
+
+# 规则档（安全提速，显式 opt-in）：按每个等待点的语义条件放行，超时睡满
+ATLAS_FAST_WAITS=mask ATLAS_FAST_SITE_RULES=examples/legacy_fast_rules_iservice.json \
+  atlas legacy --fast --keyword "test_tc1_"
 ```
 
 Atlas 的兼容层**不替换同事引擎**，因此结果、浏览器生命周期、执行速度和原有 skip 语义不被偷偷改变。`LegacyStep` 也可将旧 `step_N(page, ctx)` 包成 Screenplay Task，用于增量迁移。
+
+`--fast` 的语义边界（写死，不可谈判）：**不带 `--fast` 时命令行与环境逐字节不变**；**`--fast` 打了就生效的是「截图抑制」**——CLI 代你置位 `ATLAS_FAST_NO_STEP_SHOTS=1`（你显式设的值优先）；**等待垫片自 #36 起是显式 opt-in**：`ATLAS_FAST_WAITS=mask|mask+xhr|mutation` 才启用，未设时 `--fast` 会打一行 NOTE 点名（不给静默空转）。**为什么撤掉等待腿的默认置位**：真机三轮 A/B + 8 组档位探针显示 `mask`/`mask+xhr` 会**间歇**把失败点前移（同码同配置有时过、有时挂），`mutation` 安全但零节省，`min_ms=3000` 只是「更短的固定等待」且收益在墙钟噪声内——按 G11-1 硬规则（前移即判行为变更），会间歇改变行为的档位不能默认发出去。垫片本体仍只把「固定睡眠」换成「有界语义等待」，**绝不延长等待**（预算制，整段从未观测到忙就恰好睡满原 ms），失败点必须仍是原步——前移即判行为变更，不算成绩；**显式启用等待腿的人要自己过三关**（失败点同一步 → 装配生效 `calls>0` → 才谈墙钟；见下方「当前验证边界」gap11 条）。本波垫片开关的唯一清单在 `LegacyAdapter.FAST_ENV_SWITCHES`（现含 `ATLAS_FAST_WAITS`/`ATLAS_FAST_MIN_MS`/`ATLAS_FAST_SETTLE_ANCHOR`/`ATLAS_FAST_NO_STEP_SHOTS`/`ATLAS_FAST_WAITS_STATS`）；快包自身的运行期旋钮另见唯一声明位 `emit_fast.ENV_KEYS`，两处互不覆盖。dry-run 逐键可辨识「开了/没开/拼错了」——**条数不写进文档，键清单加一项就漂一处**（等值即计数，gap9 F-15 同款教训）。旧 `lib` 只经 `ATLAS_LEGACY_WEB` 定位，缺失即点名配置键拒绝，不猜目录。
+
+**调用点规则（site rules，2026-11-10 新增）**：通用档只能判「页面此刻静不静」，判不了「这次等待在等什么」——三轮真机 A/B 的失败点前移全部发生在**数据依赖等待**上（点查询后等表格刷新、点菜单后等路由）。`ATLAS_FAST_SITE_RULES=<json>` 给每个等待点（文件名 + 行号 + 可选函数名）声明就绪条件，五类：`js`（任意 DOM 条件）、`url`（URL 包含子串）、`mask_gone`（无可见遮罩）、`mask_cycle`（遮罩出现→消失；从未出现=睡满）、`never`（黑名单，禁止任何提前）。命中规则时按条件放行，**条件超时一律睡满剩余预算**；未命中点仍走通用档。示例规则表在 `examples/legacy_fast_rules_iservice.json`（TC1 链路，含「等客户查询结果出现目标代码」这类业务条件）。真机证据（2026-11-10 同链路 5 组，`reports/gap11_fast_safe_20261110/`）：4 组失败点与基线同为 step 7、1 组 `TargetClosedError` 环境异常；`saved_ms` 11.8–13.7s（机制硬账；墙钟受环境 ±30s 级噪声，单轮不可作判据）。规则档仍是**显式 opt-in、不默认**——样本还不足以证明「永不前移」，默认置位仍按 #36 裁决执行。
 
 ## 新建 Atlas 项目
 
@@ -128,9 +187,28 @@ atlas gen pet.yaml --scenario b      # 场景：a单接口/b链路/c批量/d写�
 atlas gen api.md --strict            # 低置信度/占位符未接 env → rc 2（CI 门禁）
 atlas gen api.md --check-only        # 只解析+编译自检，不写文件
 atlas gen api.md --to-tower          # 生成摘要登记 pending_review 进审核塔（trace_step，不可 --approve）
+atlas gen api.md --with-pytest -o exports/gen/api   # 额外产出可独立运行的 pytest 回归代码包
+atlas gen api.md --with-pytest --fast -o exports/gen/api  # 快模式包（--fast 须配 --with-pytest，单用 rc 2；文档源只出 API 腿）
+
+# flow → pytest 包（已存在的 flow.yaml；只生成不执行；rc 0 导出 / 2 用户错误，3 不使用）
+atlas export-pytest flows/my_flow.yaml -o exports/pytest/my   # gap7 形态（UI 腿 skip 骨架）
+atlas export-pytest flows/my_flow.yaml --fast                 # 快包；UI 步需 page_object/legacy_pages 声明位（互斥）
+atlas export-pytest flows/my_flow.yaml --fast --compat legacy-suite -o exports/compat/my  # 旧仓可直接吃的布局（gap11）
+pytest exports/pytest/my -q                                   # 执行产物：ATLAS_FAST_* 旋钮见产物 README（凭据恒从 env，模板无值）
+atlas allure exports/pytest/my/reports/runs.jsonl --out exports/pytest/my/reports/allure-results  # 产物 runlog → Allure（行 schema 兼容）
+
+# DevOps 平台同步（默认 dry-run，只算不传）
+atlas devops-sync                                     # 读 reports/allure-results + devops-sync.yaml，打印将发送的 payload
+atlas devops-sync --suite sit_cvt_regression          # 只同步指定 suite
+atlas devops-sync --mcp-server devops-mcp-sit         # 显式指定 MCP 服务器（mcp.json 有多个 devops-mcp-* 时必须）
+atlas devops-sync --execute                           # 真实上传（对外平台同步属敏感操作，默认关闭）
 ```
 
 `atlas gen` 把接口文档离线翻译成可被 `atlas compile` 校验、可被 `atlas run` 执行的 Atlas 资产（flow YAML + 契约候选 + 探针骨架 + report.json），**只生成不执行**（红线 #9）。产物全部 `pending_review` 进 `atlas review` 塔，`trace_step` 不可 `--approve`（人工写成 flow YAML 后 compile）。与 `scripts/import_jmeter.py` 的分工：JMeter 迁流量保真，`gen` 从文档起测控结构。契约候选落独立 `.candidate.json` 不进运行时注册表，人审后并入私有知识目录。写场景（save/submit/delete）强制 `read_only: false` + `on_env_blocked: stop`；探针只实现 `find()`，`create()` 恒 `NotImplementedError`（红线 3/12/16）。退出码：0 成功 / 2 输入问题 / 3 结构自检失败。
+
+`atlas export-pytest <flow.yaml>` 是另一条产出轨（gap9b）：**输入是已存在的 flow**，导出可独立运行的 pytest 包（缺省目录 `exports/pytest/<flow 名>/`，无时间戳/随机——同 flow 重复导出内容相等）。校验先过 `validate_flow`（与 compile/run 同一把尺，含 `page_object`/`legacy_pages` 声明位形态闸），结构坏**连产物目录都不创建**、rc 2；rc **3 不使用**——生成期不执行产物，没有「等人」终态可映射。`--fast` 形态的机制、闸门与边界见「已实现·快脚本产出」与 `docs/gaps/gap9-fast-pytest-runner.md`（设计+落地注），`--with-pytest`/`export-pytest` 的产物含真实 URL、账号名、flow 内容与私有知识库派生的选择器，且 **`exports/` 不在 .gitignore**——放受控目录，勿提交（PRIVACY 同口径）。
+
+`--compat legacy-suite` 是第三种布局（gap11）：产出**旧仓能直接吃**的包——`testcases/<suite>/test_<suite>.py`（`class Test<Suite>Plan` + `@pytest.mark.order(N)`）+ `conftest.py`（旧仓同名 fixture 面逐一对名：`browser`=session、`_case_watchdog` autouse、其余 module）+ `pytest.ini`（`--strict-markers` + 注册 `order` + `-p no:randomly/no:playwright`，判据照旧仓对齐）+ `README.md`（依赖面显式列 **`pytest-order>=1.1`**——不列就是「旧仓开箱即跑」判据为假）+ **vendored 垫片两份**（`legacy_fast.py`/`fastplugin.py` 按真文件字节拷入，头部带 `source=… sha256=…` provenance；源改了不重生成，判据测必红）。两条第一红线：**产物零 `import atlas`**（旧仓机器没装 atlas，`is_atlas_free` 双扫描 + 沙箱自证），**绝不写旧仓任何字节**（G11-2 非破坏差分）。`--compat` 必须与 `--fast` 同用，未配对或取值未知 → 一行 stderr + rc 2 **且零产物**（拒绝先于 mkdir）；`--compat none`（缺省）时导出形态逐字节不变。组合判据唯一位=`generator.emit_compat.compat_combo_problem`，CLI 只委托不复制。
 
 ## 项目结构
 
@@ -150,6 +228,7 @@ src/atlas/
 ├── generator/                           # Gap3 文档→代码生成（只生成不执行）
 │   ├── sources.py / openapi.py / markdown.py / plaintext.py  # 多来源嗅探与解析
 │   ├── emit_flow.py / emit_contract.py / emit_probe.py       # DSL/契约/探针映射
+│   ├── emit_pytest.py / emit_fast.py   # gap7 回归包渲染 / gap9 快模式底座模板唯一来源
 │   └── checklist.py / tower.py          # 编译自检、审核塔登记
 └── plugins/demo/                        # 可替换的 Demo 业务插件
     ├── tasks.py                        # 10 个核心 Task，委托 pages.py
@@ -165,6 +244,9 @@ python examples/hybrid_readonly.py
 
 # 运行 DSL，真实注入探针、契约、知识和执行记录；自动建单默认配额 0
 atlas run examples/sales_order.yaml --account demo_user
+
+# 跑绿固化：整条跑绿后动作序列自动固化为 flow_candidate 草稿进审核塔（等价 flow 内 harvest: true）
+atlas run examples/sales_order.yaml --harvest
 
 # 复杂单据状态机：先校验结构/目标路径，再决定是否执行
 atlas machine examples/so_change_states.yaml --target approved
@@ -216,8 +298,11 @@ CDP_DEBUG=1 CDP_PAUSE_STEP=3 atlas run examples/sales_order.yaml --mode debug
 # 审核塔：看待审草稿（证据卡片），批准按 kind 分发：坑点进知识 / 选择器候选进组件库
 atlas review
 atlas review --approve a1b2c3 --remedy "点保存前先等 .app-main 出现"
+atlas review --approve a1b2c3 --remedy "…" --allow-unverified --reason "真机已复现，依据在工单"  # 人工豁免（必留痕）
 atlas review --approve d4e5f6 --component order_header --element save \
     --remedy ".app-main button:has(i.demoicon--save)"
+atlas review --approve d4e5f6 --component order_header --element save \
+    --role button --name "保存"        # ARIA 候选直接入库（等价 --remedy '{"role":"button","name":"保存"}'）
 atlas review --reject d4e5f6 --reason "已有坑点覆盖"
 atlas review --kind selector_candidate   # 塔堆高了按类清
 atlas review --group                     # 聚类视图：批量类压表、坑点留全卡
@@ -225,6 +310,10 @@ atlas review --kind selector_candidate --template mapping.jsonl  # 导出决策�
 atlas review --apply mapping.jsonl       # 批量批准：仍逐条分发留痕，空行失败点名
 atlas review --reject-kind trace_step --reason "步骤素材不进塔"   # 一类驳回
 atlas review --stats
+
+# 公共任务库（只读查询；写路径只有 review --approve 批准 flow_candidate）
+atlas library                # 列出已入库的可复用动作序列
+atlas library 开票动作序列    # 单条详情（steps/assert 原文，可作 flow 骨架复用）
 
 # 代码质量评审：扫描 pytest/DSL/契约，输出含评分的 Allure 2.39.0 风格报告
 atlas review-code tests/                          # 默认 static + allure
@@ -237,6 +326,10 @@ atlas review-code tests/ --review-mode ai         # AI 增强（默认关，需�
 # 探索会话（非生产）：外部大脑接管浏览器，回车记 checkpoint，结束后编译成草稿
 atlas explore --account demo_user
 atlas explore --compile reports/explore_20261103_101500.jsonl
+
+# LLM 全自动探索（gap12）：目标进去、pending_review 草稿出来，全程无人
+# 需 ATLAS_LLM_BASE_URL/_API_KEY/_MODEL；LLM 只输出白名单动作，写类动作默认被审批门拦停
+atlas explore --auto --goal "在销售单列表页按客户号查询并确认列表已就绪" --account demo_user
 ```
 
 ### DSL 扩展字段
@@ -249,6 +342,22 @@ atlas explore --compile reports/explore_20261103_101500.jsonl
 | `task: assert_api` | UI 之后按接口断言真实落库值，支持 `data.0.paymentTerms` 点路径 |
 | `task: legacy_step` | 把旧 `step_N` 接进 Atlas 流程，不改旧代码 |
 | `task: legacy_case` | 把**整条**旧用例（yaml 骨架 + 同目录 `step_N`）委托旧 `run_case_py`：ctx 播种、断言、抽取、runlog、SKIP 语义全部沿用旧实现；SKIP 落 `env_blocked`，`write: true` 在 prod 被写护栏拦截。见 `docs/case-migration-mapping.md` |
+| `id: <步骤名>` | 给步骤命名，供 `dispatch` 点名目标；同 flow 内重复即编译期拒绝（重名等于让运行期猜跳哪个） |
+| `dispatch: {on, to}` | **路由**：读已声明的 ctx 字段 `on`，按取值走 `to.<取值>` 指向的后续步骤（值是步骤 id 或 id 列表），`to.default` 必选——无隐式通道。目标集与 `on` 的声明来源全部编译期校验；取值运行时缺失按 `EnvBlocked` 明确终止（不静默走 default 把「没数据」洗成「走了兜底分支」）。未选中分支一步都不执行、也不进 `runs.jsonl`，决策留在 `ctx["_dispatch_routes"]` 并并入路由节点自身的 step 记录 `dispatch` 键（engine `_flush_routes`，事后审计有盘可查）。`on_env_blocked`（skip/stop）语义不变，新用例的分支选择优先用 `dispatch`。**删 lane 必须同时删/挪走那一步**：路由只管「被 `to`/`default` 认领」的步骤，没被认领的步骤不在路由管辖内**恒执行**且编译零警告（写操作时等于静默放大执行面）。不在编译期拒绝是有意取舍——判「这步本该属于本路由」要猜分支边界（启发式会误报合法落空步骤）；预留的收紧方案是显式 `dispatch.exclusive`，等有真实多 lane flow 再上。行为由 `tests/test_dsl_template_dispatch.py::test_unclaimed_branch_step_runs_unconditionally` 钉桩 |
+| `template` + `slots` | **骨架实例化**：实例文件只带骨架路径与槽位表，`load()` 做文本级 `{{slot}}` 替换后再编译（同骨架多 BU 参数化，流程只有一份真相）。槽位值限单行标量（容器/多行会把骨架行号挤歪，^ 指针就指错行）；**没填完的骨架不产出可执行 flow**——`{{customer}}` 当客户号发出去就是假数据假通过 |
+| `harvest: true`（flow 级） | **跑绿固化**：整条跑绿（`passed`）后把动作序列原文（steps/assert，含 `${var}` 占位不改写）+ C2 成功三元组（`verdict="pass"`、`exit_code=0`）自动固化为 `flow_candidate` pending_review 草稿进审核塔；失败/中断/env_blocked/waiting 一律不固化，固化写盘失败只 WARN 不翻 run 终态。同一 flow 重跑只增 `seen` 刷新证据；flow 改了才出新 id 新行。批准写私有 `task_library.json`（公共任务库，按名唯一）；无 journal 的纯 DSL 装配如实跳过。编译期只收布尔，`harvest: "yes"` 即拒 |
+| `page_object` / `legacy_pages` | **页对象声明位**（gap9b；`atlas export-pytest --fast` 消费，引擎执行路径不解释）：`page_object`=已批准组件名的非空标量（产物页对象类名**唯一来源** `_pascal(声明值)`，禁止按 Task 名相似猜类——猜=引擎猜业务，红线 #11）；`legacy_pages`=旧套件函数名的非空标量（模块位是产物常量 `lib.pages`，点分形态当场拒绝并解释）。**两键互斥**，同带即拒点名序号；形态判据落 compile 静态段——`atlas compile`/`atlas run`/`export-pytest` 自动同尺（不留第二把校验，#92）；「类名是否真会被生成」的成员资格判据留生成期第二道闸，两层各管各的。UI 步两键皆缺 + `--fast` → 生成期「缺声明位」拒绝、写盘前拦截不留半成品 |
+
+编译口径（`atlas compile` 与 `atlas run` 同一入口，全离线）：
+
+- **全有或全无**：步骤形态、Task 引用、`channel`/`on_env_blocked` 取值、`requires` 落点、
+  `dispatch` 目标与 default、模板槽位、assert 块——任一处不合法整个 flow 被拒，拒绝时
+  **一个 Task 都不构造**，也绝不先跑数据供给（`requires` 会占建单配额、可能真实建单）；
+  多处问题一次报全。
+- **^ 指针**：未注册 Task、`requires`/`dispatch.on` 引用不存在、`dispatch` 目标不存在、
+  槽位未填这类报错带 `--> 文件:行:列` + 源行 + `^`。内存里构造的 flow 没有源文本，
+  退化为「步骤 N」粗定位——不假造行号。
+- **md5 编译缓存**：缓存键 = 源文本 md5 + 当前 steps 结构指纹 + registry 代次，同一 `FlowCompiler` 实例内三者都没变才复用编译结果；只存进程内存，不落盘（落盘=制造「磁盘产物 ≠ 当前代码」的脏状态）。flow dict 是可变的，所以 load 之后被脚本改过一步不会拿旧编译结果放行。
 
 `DemoRuntime` 优先使用 Atlas `.env`，缺失键再继承旧项目 `.env`，不覆盖已有环境变量、不复制凭据。白名单只读操作通过 `demo_api` Task 调用；禁止 YAML 任意访问 Python 对象。
 
@@ -273,11 +382,134 @@ assert actor.ctx["data"]["value"] == 1
 
 `channel: auto` 是**路由意图**，不是无限制兜底。只有 Task 明确实现并启用 API 操作时才走 API；不会把未验证的 UI 业务按钮随意替换为接口调用。
 
+## 定时巡检接线（C1 调度核）
+
+Atlas 的调度是**薄命令**：`atlas schedule run <id>` 被 OS cron / Windows 任务计划器调起，
+跑一轮就退出。Atlas 不起常驻守护进程，也不替你注册 OS 任务（那是 Ask-first 边界）——
+`atlas schedule crontab` 只打印可粘贴的成品行。
+
+登记一个欧洲巡检任务（每 30 分钟、1–8 点窗口，只读 flow）：
+
+```bash
+atlas schedule add ics-patrol-eu \
+  --flow flows/patrol/eu.yaml \
+  --cron '*/30 1-8 * * *' --tz Europe/Amsterdam \
+  --run-arg=--account --run-arg=ops --run-arg=--ou --run-arg=EU \
+  --max-duration-min 30
+atlas schedule status            # 看错过几轮 / 连败 / AUTO-PAUSED
+atlas schedule run ics-patrol-eu --dry-run    # 只体检+决策，不抢锁不派发
+atlas schedule crontab ics-patrol-eu --platform linux
+atlas schedule crontab ics-patrol-eu --platform windows
+```
+
+**Linux（crontab）**——把 expr 逐字复制进 crontab 行，窗外（非 1–8 点）不补发，窗外错过的
+那一轮由窗内下一个 tick 以 catch-up 补最近一轮：
+
+```cron
+*/30 1-8 * * * cd /path/to/Atlas && PYTHONPATH=/path/to/Atlas/src python -m atlas schedule run ics-patrol-eu >> /path/to/Atlas/reports/schedule/cron.log 2>&1
+```
+
+**Windows（schtasks）**——`/SC MINUTE /MO <expr 最小间隔>`：窗外也照样 tick，错过的以 catch-up
+补最近一轮（与 Linux 形态语义**有意不同**：常驻 tick 与窗内 tick 的差异，复制命令时看清）。
+`crontab` 子命令打印的成品行里 `/TR` 的内层引号已转义成 `\"`：
+
+```
+schtasks /Create /SC MINUTE /MO 30 /TN atlas-ics-patrol-eu /TR "cmd /c cd /d D:\...\Atlas && set \"PYTHONPATH=D:\...\Atlas\src\" && python -m atlas schedule run ics-patrol-eu"
+```
+
+接线纪律（`crontab` 输出里也会打这几行提醒）：
+
+- **cronie / schtasks 都不解析任务里的时区**——它们只按**本机墙钟**调起 tick；`schedule.tz`
+  只用于 Atlas 侧的窗口/水位线判定，别把它当「按时区精确触发」用。
+- **时钟漂移**：NTP 漂移超过 2 分钟（准点宽限）会自然表现为 catch-up，Atlas 不额外校时。
+- **调度目录必须在本地文件系统**：`reports/schedule/` 落在同步盘/NFS（OneDrive/坚果云/NFSv2）
+  时 O_EXCL 锁语义不可靠，双机各建各的锁——**不在支持范围**，会双跑。
+- **`/TR` 引号形态**已用真实 `schtasks` 冒烟通过（2026-11-06，含 256 字符载荷上限，见「当前验证边界」W2①）。
+- **无人值守的知识环境**：cron/schtasks 的父 env **不继承**交互式 shell 里 `export` 的
+  `ATLAS_KNOWLEDGE_DIR`（cron 只给 HOME/PATH）。若不配私有知识库，无人值守轮次会**静默**回退
+  包内虚构坑点/契约/会话默认去跑真实 flow（读侧「逐文件回退」是既有的「读不残缺」语义，
+  engine/dsl 都不报错，所以必须主动防）——把该键**写进项目 `.env`**（`load_dotenv` 会读，
+  调度器进程与派发子进程都继承得到）最稳。两道可见性：`schedule add`/`edit` 当场若解析不到
+  私有库，stderr 一行 `WARN: knowledge_source=builtin` 并记进台账 `knowledge_source` 字段；
+  `crontab` 成品行**内嵌**当前解析到的 `ATLAS_KNOWLEDGE_DIR`（没有则放刺眼占位
+  `__FILL_ABSOLUTE_PATH_TO_PRIVATE_KB__` + stderr 提醒，绝不留空被忽略）。判据只在
+  `versioning.private_knowledge_root()` 一处，调度域只加展示/WARN 面，不新建可用性判定。
+- `--run-arg` 只准传账号名等**非凭据**值；密码恒从 env 取（PRIVACY 同 `session.json` 口径）。
+  调度器拼的 argv 固定是 `atlas run <flow>`，**永不含 `--approve`/`--mode`**（装配处显式 raise，
+  不是 assert——`python -O` 会剥掉 assert，安全闸不依赖它）。
+
+## 资产吸收与边界账本（C5）
+
+Atlas 长期吸收外部/遗留资产（LiteFlow 编译语义、legacy 用例桥、.jmx 迁移、pi 调度语义），
+边界账本 `docs/ownership/atlas-boundaries.json` 记录「哪些是引擎自有、哪些是吸收件、
+哪些是私有知识」——**它是数据不是引擎字面量**（红线 #11：引擎运行时永不解析它），
+消费方只有 `atlas doctor`（一致性项）与 `scripts/boundary_classify.py`（merge/吸收前的
+入站变更集分类 gate），判据唯一实现在 `src/atlas/boundaries.py`（#92，两处共用一把尺）。
+
+分类必须发生在 **merge/吸收动作之前**——事后已无法用 diff 还原入站变更集（义务，不是可选项；
+git 命令由人执行，脚本零 subprocess，X2）：
+
+```bash
+git diff --cached > incoming.diff
+PYTHONPATH=src python scripts/boundary_classify.py --diff incoming.diff           # 逐文件分级 JSON
+PYTHONPATH=src python scripts/boundary_classify.py --diff incoming.diff --to-tower # REVIEW-TOWER 项进 atlas review
+```
+
+- **分类轴 cosmetic/structural**；`risk` 不是枚举，由 structural 行数阈值推得（30 medium /
+  250 high——阈值是账本数据，不写死在代码里）。表层样式/文案大 diff = cosmetic（自动放行 AUTO）；
+  跨文件搬移（A 删的行成批出现在 B 加的行里，或 git rename/copy 对）与结构改写 = structural。
+- 路径裁决：**最长非通配前缀 / 更特异 glob 优先**；同一路径被两条同特异度规则跨区认领 →
+  账本非法，doctor 点名。账本 paths 全 POSIX 相对串，反斜杠/绝对路径/`..` 逃逸当场拒绝（X1）。
+- `disposition` 是债的标价：`reduce`（有意保留的差异，后续轮次只缩小不放大）/ `accepted`
+  （暂付代价，**必须带 decision_log 说明何时为何**——说不清怎么消除的债不算 accepted）。
+  每条分类结果随带 `decision_log_tail`，防「看似错误实为刻意」的决定被下一轮干净合并带回来。
+- 进塔的 `boundary_review` 草稿**永不自动写知识**：`atlas review --approve` 对该 kind 点名拒绝
+  （trace_step/code_review 同族，红线 #9/#10），处置方式是人工改判账本条目/decision_log 后重跑分类。
+- doctor 口径：账本**存在但坏**=漂移 → rc1（与 docker 资产同纪律）；文件**缺失** → 如实
+  `present:false` **不改 rc**（新波次前的历史分支/精简克隆不该被账本卡死）；`optional: true`
+  区域（私有知识/迁移产物，gitignore 排除）全缺只 warn——CI/干净克隆没有它们属正常。
+- rc：0=无 structural；1=有 structural；2=用法错或账本坏（没有可信账本就没有分类，宁可拒绝不猜）。
+
 ## 数据与失败口径
 
+- **等人不是失败（C9 `waiting` 显态）**：业务 Task 在 `perform()` 里显式 `raise AwaitingHuman("在等什么、需要谁")`
+  ——这是**唯一**的 run 内生产者（空原因当场 `ValueError` 点名，裸一条 "waiting" 落盘等于新型静默）。
+  终态链：step `fail_class="waiting"`（由 `classify_failure` 单点继承，recorder 分类链零改动）→
+  flow `status="waiting"` + run 顶层 `reason`（净化后摘要，`close(status, reason=)` 末位可选参，
+  **其余终态不写这个键**=存量行逐字节不变）→ `atlas run` 退出码 **3** 且 stderr 一行
+  `WAITING-HUMAN: <原因>` → Allure `skipped` + `atlas.fail_class=waiting` + `atlas.waiting=true` +
+  message 保留原文 → `atlas summary` 的 `attention` 块 → `atlas schedule run` 记 outcome `waiting`
+  （不计连败、水位线照常推进，与 `defer_lease`「没执行所以不推进」区分）。
+  判据封闭在类型面：关键词表 `_RULES` 一字不加，外部文本里的 "waiting/等待人工/approval required"
+  **永不**产出 waiting（把真失败误标成等人=洗绿的另一条路）；`env_blocked`/`interrupted`/`waiting`
+  同族判据只在 `failures.OPERATIONAL` 一处。没有「跳过等人继续跑」的 DSL 键——那正是静默绿通道。
+- **退出码按子命令读，不跨命令并表**（同名不同义会误导 CI）：
+
+  | 子命令 | rc | 含义 |
+  |---|---|---|
+  | `atlas run` | 0 / 1 / 2 | 通过 / 真实失败（异常照原样传播）/ 输入错误（坏 flow、缺 URL、路径指错，登录**前**拒绝） |
+  | `atlas run` | **3** | **等人**：flow 命中 `AwaitingHuman`，需要人来处置，不计失败也不计通过 |
+  | `atlas run --case-timeout` | 124 / 130 | 看护超时（整树强杀 + `status:"timeout"` 终态行）/ 人 Ctrl-C 看护进程；子进程的 rc **原样透传**（含 3） |
+  | `atlas agent --execute` | 3 | 审批门 `ApprovalRequired`（决策留痕，与 run 的等人同值不同来源，不进 `runs.jsonl`） |
+  | `atlas schedule run` | 0 / 1 / 2 / 130 | 0=一切正常答复（`succeeded`/`defer_lease`/`none`/`dropped`/**`waiting`）/ 1=派发子进程真失败 / 2=用户错误 / 130=人 Ctrl-C 调度器 |
+  | `atlas gen` | 0 / 2 / 3 | 3=**结构自检失败**（与上面的「等人」无关，别并表） |
+  | `atlas export-pytest` | 0 / 2 | 导出成功（stdout 文件清单）/ 用户错误（flow 不存在、结构拒绝、目录非空无 `--force`、`--fast` 闸门拒绝）；**3 不使用**——生成期不执行产物，无「等人」终态可映射 |
+  | `atlas review-code` | 0 / 1 / 2 | 通过 / 门禁失败 / 用户错误 |
+- **`atlas summary` 的 `attention` 块**：`{"waiting": n, "operational": n, "tower_pending": n|null, "notes": [...]}`。
+  `operational` 是家族（env_blocked/interrupted/waiting）计数之和，**不含** `timeout` 行（那是 supervisor
+  造的 flow 级新终态，归属本波不扩面，见下）；`tower_pending=null` + `notes:["TOWER-NOT-READ"]` 表示
+  「没人读过审核塔」，不冒充 0 条积压。批量巡检里混着等人工步骤时，处置动作是**找人**而不是查 bug。
 - DSL 的 `requires` 声明业务条件，不写死历史单号。
 - `find_only` 找不到时明确 `EnvBlocked`；不擅自造数。
 - `find_or_create` 的 create 必须由业务插件显式实现；当前 Demo 探针的默认 creator 为空，**不伪造已跑通的 API 建单**。
+- **建单的两条腿合成闭环（C12 ∧ #14，gap6「同源取增量」落点）**：#14 保证「超额不建单」（配额在调脚本**之前**占用），
+  C12 保证「失败不盲重发」——`supply` 在占额前算 `delivery.idempotency_token(entity, where)`（sha1 截 16 hex，
+  键序无关），`idem` 写进配额/回收台账（`recycle_list.jsonl` 条目级**可选键**，给了才写、旧行无键照常读）；
+  create 抛任何异常**原异常原样传播**（真因优先），台账行已含 token+where 即证据。同 (entity, where) 跨 run
+  同 token=下次 find/人工追单的关联把手。现引擎**没有**自动二次 supply 通路（`provision` 每需求恰一调，测钉），
+  手工重触发时配额满即 `EnvBlocked` 拦在 create 之前。`make_scripted_creator(..., honors_idempotency=True)` 是
+  **人声明**「脚本兑现该键」时才把 `atlas_idem` 注入脚本 stdin——缺省 False 进脚本的字节形态逐字不变（不给未
+  验证能力加功能面；脚本侧去重兑现归业务，引擎只传递，红线 #11）。
 - UI 失败需要 API 实证时，由业务流提供精确重放器；引擎不猜测接口，尤其不自动重放写接口。重放是尽力而为的诊断：单条重放器抛错/返回坏形态（非映射）时跳过试下一条，全坏回落 `classify_failure`——定性器绝不先于被定性对象死，不把原用例异常顶掉、不丢 results/经验草稿/现场取证。
 - 已知环境限制不伪装成 PASSED，也不通过修改断言变绿。
 
@@ -307,11 +539,166 @@ assert actor.ctx["data"]["value"] == 1
 
 ## 当前验证边界
 
-- 离线测试：**720 passed**，Python 3.13；编译、CLI、外部资产路径发现已通过。
+- 离线测试：**2216 passed / 0 failed**（Python 3.13；`PYTHONPATH=src python -m pytest -q`，
+  2026-11-10 gap12「LLM 全自动撒手」波实测——0 skipped、`--collect-only` 同为 2216、两次全量同值；
+  其中新文件 `tests/test_llm.py` 11 项（env 门逐键点名 / 错误绝不吞成空串 / 注入 transport 离线可测）
+  与 `tests/test_autopilot.py` 21 项（白名单动作 / 风险门 / 闭环沉淀 / 终止条件 / 生产闸 / 决策留痕 /
+  `explore --auto` CLI 入口）；
+  上一收口位为 2180（调用点规则 site rules），其间 +9 来自规则层判据格（命中规则按语义条件放行/超时睡满/黑名单点）；
+  再上一收口位为 2149（gap11 旧仓兼容快包波），其间 +22 来自默认档修复波（#30/#31 `--fast`/`--compat` 空转修复、
+  #33 忙→静判断据与 fail-safe 睡满、#34 配对判据格、#35 产物 README 正误、#36 等待腿撤出默认）；
+  更早收口位为 1959（2026-11-09 gap9 快脚本产出波），其间 +190 全部来自该波新测（垫片/兼容产物/跨切判据/路径形态），
+  同期删减审计清理 ruff 死导入 24→0 且全量不减项），编译、CLI、`contracts --validate`、`doctor` rc0 一并通过。
+  其中 pi-absorb W6（C9 `waiting` 显态）新增 `tests/test_waiting_operational.py` **99 项**，
+  覆盖「产生→分类→落盘→聚合→报告/退出码」全链与红线 #7 的四道反机制；W5（C12 写不盲重试）
+  同期收口。**计数三处（顶部徽章、本节、AGENTS.md 基线）由 lead 统一收口，波次实施者不各自改数。**
   （#136/#137 轮实测时环境已接入真实 `.env`：`base_url_source=legacy.env`、`demo_api=true`、
   `knowledge_pitfalls=104`，doctor 因此 rc0——虚构默认下 rc1 的旧前提仅适用于裸仓库。
   634→637 为 #140 自身补的 3 条感知器官错误形态回归测；637→668 中 #141 自身补 3 条
-  Cookie 烘焙/保活回归测，其余 +28 为并发队友自有增量，如实归因。）
+  Cookie 烘焙/保活回归测，其余 +28 为并发队友自有增量，如实归因。
+  720→772 为 LiteFlow 吸收改造新增的 52 条离线回归测——原子编译缓存/^指针报错/
+  {{slot}} 模板/dispatch 路由留痕/死字段清理，2026-11-05 实测。
+  772→**1074** 为 pi-absorb W1（2026-11-06 实测）：C2 证据三元组 +49（impl_tower）；
+  C4 凭据泄漏面 +87（`test_credential_gate.py` 44、`test_failures_sanitize.py` 20、
+  `test_privacy_drift.py` 15、`test_import_jmeter.py` 追加 8）；C6 版本三元组 +26
+  （`test_versioning.py` 22、`test_allure_report.py` 追加 4）；W1 协调补丁接线面 +8
+  （`test_cli_review_override.py`：CLI `--allow-unverified` 透传、engine 自动三元组确实可批、
+  `op=="assert"` 的核盘口径）；跨平台哨兵 `test_xplat_sentinels.py` 132
+  ——按 src/+scripts/ **目录级逐文件参数化**（两条规则 × 64 个文件 + 严格模块与行为各 1），
+  后续波次新增文件自动入网，因此这条数字会随文件数自然上涨。
+  1074→**1327** 为 pi-absorb W2 的 C1 调度核（2026-11-06 实测，impl_sched）：调度核自身 +239
+  （`test_scheduling_cron.py` 43 边界、`test_scheduling_decision.py` 37 表 1–7/10、
+  `test_scheduling_lease.py` 29、`test_scheduling_state.py` 56、`test_scheduling_cli.py` 74——
+  含 fake subprocess 全终态映射、argv 永不出现 approve 专项、双平台 crontab 文案、rc 口径表）；
+  跨平台哨兵随之 132→146（scheduling 包 7 个新文件自动入网，两规则 ×7，非改哨兵本体）。
+  1327→**1448** 为 pi-absorb W3（2026-11-06 实测，impl_bounds）：C5 边界账本 +31
+  （`test_boundaries.py`：schema/重叠裁决/读侧容错/classify 阈值与跨文件搬移/进塔联动/doctor rc 两态）；
+  哨兵 146→152（`src/atlas/boundaries.py`、`scripts/boundary_classify.py` 自动入网，非改哨兵本体）；
+  同波次并行增量（C3 迁移三件套，非我改动）一并计入 1448，终验 #8 统一复核归因。
+- **gap9/gap9b（快脚本产出）本波收口——闭合面与留白面分列（2026-11-09；计数以顶部徽章/AGENTS §2
+  基线为准，本条不复述数）**：
+  **离线已钉**——E.1 十一条（产物语法自钉、fast=False 逐字节快照、禁词**实参形态**判据 + `TICK_MS * 2`/
+  `wait_for_timeout(2000)`/`time.sleep(1)` 三组对抗注入测、锁步六连、F7 映射半段往返无洗绿、F1/F2 结构、
+  watchdog 假时钟、写闸含 strip 后仍拦停、依赖面零新运行时、F-2 未接线类型级归因带正向对照）与
+  gap9b B-4 离线十条（入口三态、`session_channel` 八向真值表、fake browser 双向对照、声明位五向、
+  点分值拒、调度 argv/env/行为三件套、`safe_persist` 标量闸、业务字面量哨兵、PROD 锁步、全表不回归）
+  判据测全部在位且非恒真（#8 grep 实查口径=测在位+判据非恒真，**不等于跑绿**；跑绿与基线数只认 #6
+  当日复跑）；逐格证据索引在 `docs/gaps/gap9b-flow-export.md` F 节。**真机面（用户拍板只跑 R1/R6，
+  已执行；R2/R3/R4/R5/R7 保持待授权）**——R1：真实 SIT 同一条 TC1 上桥接轨墙钟 147s vs 旧套件 139s，
+  **净增约 8s（≈6%）：桥接轨不比旧套件快**（`legacy_case` 继承旧 `step_N` 全部固定睡眠，语义等待收益
+  在这条路拿不到；两者同点同因失败于 step 7，时长只到同一失败点，非完整链路对比）；R6：会话层
+  launch 29.75/31.49s vs attach 6.18/8.28s（**差约 23s/模块**），在场闸与点名选页两道闸真机成立。
+  数据与复现命令归档 `reports/r1r6_20261109/SUMMARY.md`（gitignore 内，本机证据不外发）。
+  **接线后的同链路 UI 产能仍未测**（UI 腿恒 `NotWired`，待 R2）——「快模式已验证比旧套件快」不得出现；
+  离线全绿≠速度成立（红线 #15 不伪造真机验收）。**已裁/留白**——`atlas review-code <快包全目录>
+  --fail-under 75` rc1（SAFE-001 命中私有库派生的**密码名 CSS 选择器**、GREEN-001 命中 conftest 清理腿；
+  取证必须先标 `ATLAS_KNOWLEDGE_DIR` 现值——带库/回落库两种产物）：**用户已裁=维持现状、如实留白**
+  （不改评审器与产物形态，E.1.10 的 rc0 判据只认 `test_*.py` 层）；F-5 产物侧净化等值性记留白（产物不落
+  不可控文本代替加刀）；attach 异账号残留为约束口径（「attach 的前提是人在场且该会话即目标账号；产物不替人核账号，
+  账号错配的责任在接线的人身上」）；真机顺带抓出三缺口记「下一波待办」（fixture 期 EnvBlocked 不留痕/
+  bundled chromium 开箱失败/env_blocked 的 failed-error 不统一，是否映射 skip 属人的判定——F-33.4）。
+  每处设计与实现的偏离、三态清单与收口过程记录（含 lead 七处自我更正/事故与一次假派工、一次未核 mtime
+  的误指控撤回）在 `docs/gaps/gap9-fast-pytest-runner.md`「G. 落地注」。
+- **gap11（旧仓兼容快脚本产出）本波收口——闭合面/留白面/待授权三态分列（2026-11-10；计数以顶部徽章、
+  本节上一条与 AGENTS §2 基线为准，本条不复述数）**：
+  **离线已钉**——D.1 十条（假时钟四态含「永不静默恰等于原 ms」的双向边界、**env 未置位时逐字节旧行为**（注意：`--fast` 只代置位截图抑制，故该判据测的始终是本体层不是 CLI 层）、档位递加
+  且基础条件恒含 mask+readyState、hook 缺失自动降 mask+WARN、多遮罩全枚举判可见（2026-10-30 教训回归）、
+  进程侧轮询绝不触达页侧计时器、stats 逐调用 jsonl + `Σactual ≤ Σrequested` property 测 + saved 负值照记、
+  fixture 面与旧仓 AST 对拍且**只含旧仓同名七件套**、导航后等待负向三态防 0ms 放行、min_ms 补足同走进程侧
+  sleep）+ C 段产物面（vendored 字节锁步含 CRLF/BOM/手抄对抗样本、atlas-free 双扫描含真旧仓文件正向对照、
+  `--strict-markers` 与 marker 注册、`--compat` 与 `--fast` 组合闸八向等值、拒绝先于写盘零残留、
+  同 flow 重复导出内容相等、`--compat none` 形态逐字节不变）+ CLI 注入面（`-p atlas.fastplugin` 注入、
+  PYTHONPATH 逐条绝对化、不带 `--fast` 命令行与环境逐字节不变、dry-run 逐键三态可辨识）+ G11-2 非破坏差分
+  （旧仓源面双快照 diff 为空、注入违规必须让差分咬人）。逐格索引（格→函数名）在
+  `docs/gaps/gap11-legacy-fast-compat.md`「G. 落地注」。
+  **真机 A/B 已跑三轮 + 8 组档位探针，三量均无「可当成绩」的数**（#20b 三轮已执行、#29 兼容包端到端仍待授权）：**第一轮作废**——`--fast` 只注入不置位，垫片全程空转（日志里既无 summary 行也无 stats 文件），那一轮 fast 侧**不是「更慢」也不是「更快」，是没测**；**第二轮垫片真的在跑**（stats 逐调用有账）：**基线两轮恒 step 7**，而 **fast 组四次运行出现三个不同终点（step 1 / step 3 / step 7）**——同码同档给出不同失败点=**时序非确定性**，按 G11-1 A/B 硬规则判**行为变更、加速比不入成绩**；**第三轮（#33 收紧后，2026-11-10 08:26–08:49，两轮六组）**：基线仍恒 step 7，r1 三组全 step 7（看着像过了），**r2 两组 fast 同时前移到 step 3**（`客户查询/选中失败: 查询结果中无客户代码 …`，表格停在未过滤默认行）——**同配置同链路，一轮全过一轮全挂**，前移未归零，提速结论继续撤回。**随后 8 组档位探针（同档案）把处置空间量完了**：`mask`（400）=间歇前移、`mask+xhr`（400）=1/3 同点、`mutation`（400）=2/2 同点但 `saved≈0`（安全=没提速）、`mask`+`min_ms=3000`=3/3 同点但省 1.0–2.0s（低于基线跨批噪声 93–177s，且本质是「更短的固定等待」）。**#36 裁决 = 等待腿改显式 opt-in（CLI 与 `--compat` 产物同源不再代置位），截图抑制保留默认**。三量各自的成因**不许混写成一种**：**①同链路墙钟——测了，但出不了结论**：同码同参的基线墙钟跨批就在 93.0 / 107.6 / 177.6s 之间摆，波动量级 ≥ 组间差，三轮样本吞不掉噪声；且 fast 组「看起来更短」（69s / 72s）是**更早失败**的结果而非产能——用例在 step 1/step 3 就停了，后面那些等待根本没走到；**②成功截图张数（G11-2 非破坏差分）——测了且判定成立**（每组新增 1 张 `step<N>_FAIL_*.png`、旧仓字节零删除零改动、allure-results 增 0 删 0），**但它是边界判据（没多拍、没动旧字节），本身不是产能数字**；**③固定睡眠实际发生量（逐调用 jsonl 派算 Σrequested vs Σactual）——测出来了、省也是真的，但省掉的是本该等的真等待，那是语义差异不是产能差异**。**这三个位置刻意不设占位符**：占位会被读成「等个人来填数字」，而当前结论是「默认档不许用」。**重测三关（次序固定，前一关不过后面不作数；只对被显式启用的等待腿适用）**：**①失败点与基线同一步**（真机）——前移即判行为变更，后面全不作数；**②装配生效 + 判据不是 no-op，两半缺一不可**：**2a 真机·装配生效证据**=`ATLAS_FAST_WAITS_STATS` 指定的 jsonl 存在且 `calls>0`，或收尾 summary 行出现且 `calls>0`（**这是第一轮 A/B 的原始判据**——那轮「既无 summary 行也无 stats 文件」= 垫片压根没装；没有这一关，整轮可以完全空转：垫片不装 → 行为与基线逐字相同 → 第①关恒过 → 看着全绿其实什么都没测。要 `calls>0` 而不是 `saved_ms>0`：**前者证明垫片确实拦到了等待，后者要求它必须省**，那是另一件事且可以合法为 0）；**2b 离线·判据正确性**=配对格全绿 `test_p0_mask_appears_then_vanishes_returns_early_never_appears_full` × `test_p0_never_busy_page_sleeps_out_requested_original_never_called`（三档版 `test_p0_never_busy_sleeps_out_requested_all_three_tiers`）——**真机观测区分不了「这条链路本来没机会」与「实现坏了（no-op）」，能区分的只有这些格**；**③才谈墙钟**（多轮/中位 + 同失败点）。**`saved_ms` 与 `no_busy_observed` 都是报告量**（写进 A/B 记录，看这条链上有多少等待真被忙信号守护过），**不作任何一关的通过条件**：真机 `saved_ms` 接近 0 是**合法结果**（被守护的等待本来就少），既不构成失败，也**不构成把判据放宽回去换数字的理由**——拿它当通过条件，等于逼人造数字，正是这条闸要防的反面。证据档案 `reports/gap11_ab_20261109/`（`SUMMARY.md`=第一轮作废、`SUMMARY2.md`=第二轮行为变更，另六份日志 + 两份 jsonl）与 `reports/gap11_ab_r3_20261110/`（`SUMMARY3.md`=第三轮六组、八份 `probe_*.log`=档位矩阵）**不得删除、不得覆盖**，逐文件角色索引见 `docs/gaps/gap11-legacy-fast-compat.md` G.6/G.7。**未覆盖边界三句（不得被读成「已验证更快」）**：
+  ① **机制上只有两处可能省**——桥接轨整条委托旧 `run_case_py`/`step_N`，继承旧代码全部逻辑，运行期垫片能碰的只有「固定睡眠」与「成功截图」这两项开销，除此之外没别处可拿；R1 已实测证否「Atlas 引擎能让旧用例变快」（净增约 8s）。**这两处目前只证明了「能少睡/能少发 attach」，没证明「更快且不变」**：省下来的时间里包含本该等的真等待，所以收益结论撤回。
+  ② **兼容包真机端到端一步未跑**（#29 待授权）——`--compat legacy-suite` 产物在旧仓环境里的端到端实跑（含登录、真实数据、allure 结果集）本波**一步未跑**，离线只到 collect-only 与沙箱自证（产物在无 atlas 的隔离环境里能被 pytest 装载并跑起来）；「旧仓拿到产物直接跑通」这句在 #29 授权执行前不成立。**同族更硬的一条：等待垫片的三档在真机上都没拿到「有收益且不改行为」的组合（`mask`/`mask+xhr` 间歇前移，`mutation` 零节省，`mask`+3000 治标且收益在噪声内），因此等待腿已改为显式 opt-in（#36）**——「跑了会不会更快」这个问句目前的答案是「未知，且默认不启用」。
+  ③ **语义等待的 flake 面已从「风险」升级为「实证」**——纯 mask 探针在导航/reload 后**以及登录、语言切换、OU 沉降这些本就没有遮罩的段落**会照判「静默」并放行（stats 面当时 `fallbacks` 恒 0=探针从没判过一次未就绪，`6000ms→400ms` 就是这么来的；**注意这两个数在 #33 之后要分开设**：`fallbacks` 只数真回退、fail-safe 睡满另记 `no_busy_observed`，所以**收紧后 `fallbacks=0` 不再能证明垫片没插手**，见第 79 行与落地注 §A stats 段）；防线已按 #33 收紧为**第一道「整段从未观测到忙→按原值睡满」（fail-safe）**，readyState ∧ `min_ms`（默认 400）∧ 可选 `ATLAS_FAST_SETTLE_ANCHOR` 三层降为第二道；**第三轮进一步证明这还不够**：`mask` 档的「遮罩生命周期结束」不等于「Vue 表格已把数据渲进 DOM」，在「连续操作 + 表格重渲染」链路上仍有残余盲区（同码同配置一轮全过、一轮两组前移），**档位差与连跑稳定性仍只能由真机定（R-G3），本文档不口头保证**。
+  另三处如实标注：`--fast` 的截图抑制默认置位源于 2026-11-10 的 P0 修正（此前连截图抑制都不置位=整组**空转**，所以**那一轮（00:20–00:29）A/B 整体作废、是「没测」而不是数值**；修复后重跑的那一轮（01:35–01:45）垫片真在跑，但因失败点前移判**行为变更、加速比不入成绩**，见落地注 G.5 第 6/7 条与 G.6）；**#36（08:5x–09:4x）把等待腿的默认置位也撤了**——`--fast` 仍「打了就生效」，生效的是截图抑制；等待腿要人显式设并自己过三关。截图抑制省的是 attach 体积与 IO，**省不掉 `page.screenshot()` 的 PNG 编码耗时**（B.2 边界，
+  量数据待 R-G2）；`atlas legacy` 不带 `--fast`、`export-pytest` 不带 `--compat` 时旧行为**逐字节不变**——
+  「默认关」说的是**垫片本体**（env 未置位=旧行为，G11-4 硬约束不变），`--fast`/`--compat` 只是**人显式打了旗标**
+  的那一侧；两者不冲突。设计/实现偏离、三态清单与过程记录在 `docs/gaps/gap11-legacy-fast-compat.md`「G. 落地注」。
+- **W1（C4/C6）的未验证项**（离线全绿 ≠ 真机已验，AGENTS §2）：
+  ① 净化对 **Playwright 真实导航超时文案**的完备性只由 fake 样本钉住行为，真实文案形态未取证——
+  验收动作是跑一次真实 flow 后 `grep -c "?[^&]*=<redacted>" reports/runs.jsonl` 看是否足量；
+  ② 「上周能跑今天炸」的**真实案例回放**未做（需要用户拿一条历史 `runs.jsonl` 与当天对比），
+  三元组的落盘/读侧/Allure/doctor 四条链路已离线钉死，跨机对比另受 `git autocrlf` 字节抖动影响，
+  以 `source`+`files` 计数为辅（口径，不是缺陷）；
+  ③ 迁移器闸的真实 .jmx（`D:/jmx` 582 头）回归由用户按 SOP 执行，本仓库只用最小 JMX fixture 钉行为，
+  **不改动也不读取 `D:/jmx`**。C3 门禁、C5 账本已由 W3 实现（2026-11-06），各自未验证项见下。
+- **W2（C1 调度核）的未验证项**（离线全绿 ≠ OS 接线已验，design_c1 §10；①②③⑥已由
+  2026-11-06 真机冒烟收口——任务 #6，real_ops 单人串行，本机 Windows+CPython 3.13.16）：
+  ① **已真机冒烟（13:25）**：成品行原形态（`\"` 内层转义 + `set \"K=V\"`）经 `schtasks /Create`
+  rc0 接受、`/Run` 拉起、**Last Task Result=2**（载荷=`atlas run nonexistent.yaml` 的不登录 rc2
+  链路，登录前拒绝属实），`/Delete` 后全表 0 残留。新钉两条边界：**`/TR` 载荷上限 256 字符**——
+  成品行本体 200 字符安全，长安装路径（深 KB/python 路径+重定向）实测 264 被 schtasks 层拒绝；
+  任务上下文里 `> %TEMP%…` 重定向不可靠（交互 cmd 同命令行正常），OS 侧取证以
+  Last Task Result 为准；
+  ② **已真机复现（14:25）**：任务计划器拉起 tick，外部进程 `AttachConsole` 广播
+  CTRL_C_EVENT（tick+派发子进程同 console 同组接收，等价人工 Ctrl-C）——台账实态
+  `outcome=interrupted / counts_as_failure=false / child_rc=null / 水位线维持已认领 /
+  lease 释放 / 连败计数不涨`（此前 3 次真实派发失败各自 `failed`+count 如实入账，interrupted
+  走 keep 不抹不增）。**新发现（环境事实）**：mintty/git-bash 拉起的进程**无真 console**，
+  `GenerateConsoleCtrlEvent` 静默失效（首轮 tick_rc=0/2 假通过即此因）——这条竞态必须在
+  真 console 会话（conhost/任务计划器）里验，ConPTY 伪终端下测不到；README 旧句「子进程已死、
+  记录未写→以 aborted 收尾」未复现：interrupted 记账路径在真机同样先落台账行再传播；
+  ③ **半小时 DST 区已实测（2026-11-06 14:30 前后，zoneinfo+tzdata 2026.6，doctor `tz_data.ok=true`）**：该机
+  Lord_Howe 数据秋令回拨段=[01:30,02:00)（02:00→01:30）、春令缺口段=[02:00,02:30)（02:00→02:30）。
+  `prev_slot` 对 fold 两遍返回**同一绝对槽位**（fold=0 第一遍口径），已认领水位线下第二遍判
+  `none`——**单轮不双跑**（真实 cronie 会双触发；这是 fold=0+「补跑只补最近一轮」的有意差异，
+  记档不修）；缺口日不存在的槽（`15 2` 在 10-04）按 fold=0 用转换前偏移映射到真实绝对时刻、
+  **catch_up 照常触发一次**（实际墙钟已非 02:15——真实 crontab 当天根本不触发，**语义偏差属实、
+  按设计口径记档**）；`wall_age` 墙钟域判据实测生效（LH 第二遍墙钟 15min vs 绝对 45min、
+  NY 15min vs 75min，2min/7d 窗按墙钟读，C1-B 成立）。整点区对照（America/New_York 双遍同槽去重、
+  Europe/Amsterdam 与既有钉桩一致）。缺 tzdb 的机器仍会如实 skip（需 `pip install tzdata`，
+  doctor `tz_data` 项体检）；
+  ④ 本机/CI runner 的时钟漂移未评估（gap6 §7 原样继承）：调度按本机墙钟，NTP 漂移 >2min 会自然
+  表现为 catch-up，Atlas 不额外校时；
+  ⑤ `pid_alive` 是 C1b 接口占位（恒 None），Windows ctypes `OpenProcess`/`GetExitCodeProcess!=259`
+  探针**未实现**，只钉了接口契约与「不确定→推迟」分流测——把探针提进 MVP 属实现私自越线。
+  ⑥ **cron 最小 env 的私有知识缺口（impl_report 实测提出、team-lead 拍板 1+2，本轮已处置）**：
+  cron/schtasks 父 env 不继承交互式 shell `export` 的 `ATLAS_KNOWLEDGE_DIR` → 无人值守会**静默**
+  回退包内虚构知识跑真实 flow（回退本就合法，engine/dsl 不报错，故必须主动防）。处置=成品行内嵌
+  `ATLAS_KNOWLEDGE_DIR`（解析不到放刺眼占位串不留空）+ `add`/`edit` 当场 `WARN: knowledge_source=builtin`
+  并记进台账 `knowledge_source` 字段；判据唯一仍是 `versioning.private_knowledge_root`，调度域不新建
+  可用性判定（拒处置 3 的 defer——那要「哪个是真实业务库」新判据，红线 #12 味道）。**离线测已钉**成品行含键、
+  WARN 触发/不触发两态、台账记录/刷新；**残余已 2026-11-06 真机冒烟收口（三态判别，任务 #6）**：
+  A=无 .env 上下文（cwd 他盘）+成品行内嵌 `set \"ATLAS_KNOWLEDGE_DIR=…\"` → 子进程态 doctor
+  `knowledge.source=private`、sha1 与交互对照逐字节同（7887bc61f421）；B=无 set 子句、cwd 项目根
+  靠 `.env`→load_dotenv → 同为 private（env_prefix=ISERVICE_ 一并证实加载）；C=双无对照 →
+  `builtin`（sha1 4a4ca672722e）。两道防线各自独立成立；`dispatch.child_env` 是 tick 进程
+  `os.environ` 的逐键拷贝（tick 侧 env 已由 A/B 实证，拷贝腿由离线 base 注入测钉死），无人值守
+  静默回退包内虚构知识的路径被成品行+.env 双闸堵住；台账 `knowledge_source` 实值 private（add 当场记）。
+- **C12 真机栏三项已闭合，但取证路径改了（2026-11-06 后续波次）**：原写「需烧真实写会话」，
+  实做时先否掉了打共享 SIT 这条路——**在共用环境上制造 502/半开连接等于施压，那是攻击面不是取证**；
+  而「idem 真实追单」若真打两次 SIT 建单，验的是「ICS 后端认不认我们自造的键」，设计从未主张
+  （design_c12 §3.5「引擎只传递键，脚本侧去重兑现归业务」），花真实写会话确认一个已知否定答案、
+  还在测试环境留重复单据，收益为负。改用 **本地 127.0.0.1 真监听 sink + 真 requests + 真 socket +
+  真 subprocess**，覆盖的恰是要验那一层（请求真的离开进程、对端真的没给出可判定响应）：
+  ② hang/真 502/真 408 三形态服务端 **accept 各 =1**（requests 无隐式重试，成立）；
+  ① 自定义腿真发出后抛 RuntimeError → `DeliveryUncertain`、accept=1、seq=1、**UI 降级=0**
+  （拦降级且不重发，成立）；③ 同 where 两次 token 同值 `6c11963e291bb9ea`、第二次
+  `deduped:true` 未二次建单，**对照** honors=False 时不注入键→另建 SP000002（证明去重依据是键
+  不是巧合），len=16 避开 ≥32-hex 净化刀。**撞到一条新事实**：通用 POST 腿遇真·断连抛的是
+  `ConnectionError`，不在引擎降级腿捕获的 `(NotImplementedError, RuntimeError)` 内 ⇒ 不双发（红线
+  安全）但台账拿不到 `delivery_uncertain` 标记；本波未顺手改（补捕获会连带把**只读** Task 的断连
+  从「直接失败」变成「再跑一次 UI」），已登记待拍板，详见 design_c12 §10。
+- **rc3 经 OS 调度器与 rc130 映射的取证边界**：`schtasks` 实跑 `sys.exit(3)` 载荷，
+  `Get-ScheduledTaskInfo.LastTaskResult=3`（OS 侧如实携带，任务删后全表 Atlas 残留 0）——这补上了
+  「dispatch 把 child rc3 读成 waiting」链条里唯一未实测的一环。子进程 **rc130→interrupted** 则
+  按**构造证据**成立而非真机实测：`build_command` 钉死子命令是 `atlas run`，`cli.main` 顶层
+  `except KeyboardInterrupt: return 130`（`raise SystemExit(main())`）⇒ 只要 KI 送到 Python 层，
+  码值必为 130。**没有**在本机复现「Ctrl-C 广播打死子进程」：`CREATE_NEW_PROCESS_GROUP` 会默认禁用
+  该组 CTRL_C_EVENT，改 AllocConsole+同组广播两次仍打不到子进程（沙箱控制台限制），故
+  OS 硬杀形态（`0xC000013A`）**未取证、也不猜**——不给它加分支，真遇到时它会落 failed（保守方向）。
+- **W3（C5 边界账本）的未验证项**（design_c5 §8；账本/分类器本体全离线钉死，无需真机）：
+  ① 跨文件搬移启发式 Jaccard≥0.8 在**真实重构 diff** 上的误报率未测——首批以 absorbed 区域小面
+  运行，命中进人审不误杀（结构性误判的代价=多一次人审，可接受）；漏判代价由 C3 哨兵兜底，
+  二者互为交叉验证；
+  ② `decision_log.by` 取团队/人名自由文本，身份真实性不在账本校验范围；
+  ③ merge 前分类是**流程义务**：gate 是否在吸收动作前真跑，靠 AGENTS §2 纪律与人审记录——
+  无 git 钩子自动强制（红线 #15：Dockerfile/CI 本就未实测，不借机扩面）。
 - **Cookie 烘焙域判据与 401 保活盲区对抗探针（#141）**：探针实锤三面可达缺陷——
   ① `bake_from_playwright` 旧判据 `"." in domain` 只挡裸 TLD（com），挡不住二级公共后缀：
   cookie `domain=com.cn` 对 host=`ics.example.com.cn` 命中并带前导点存入，凭据会发向任意
@@ -751,6 +1138,9 @@ assert actor.ctx["data"]["value"] == 1
   | TC10~TC13 | 2 passed / 2 skipped（TC11 税率、TC13 PT 锁死） |
   | TC14~TC17 | 3 passed / 1 skipped（TC15 税率） |
 
+  **2026-11-06 真机复跑（任务 #6，最终树）**：5 passed / 11 skipped / 1 failed——偏差全部归因 SIT 主数据
+  漂移（备件价格 SPMM-150 联锁放大 TC2~9、PT 字典 90DI 消失使 TC13 从历史 skip 变 failed、税率 NPE SPM-653
+  依旧），非引擎/迁移缺陷；逐批实数与处置建议在 `docs/gaps/impl_pi/c3-baseline.md` §9。
 - **Atlas 自身执行路径（不经旧 pytest，真实 SIT）**：
   - `examples/atlas_core_verify.yaml`：5 个只读 Task 全部 `ok:true`，两轮 `passed`。
   - `examples/atlas_save_verify.yaml`：9 个 Task（含 `click_save` / `wait_save_result`）全部 `ok:true`。

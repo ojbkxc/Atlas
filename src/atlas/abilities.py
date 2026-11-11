@@ -47,6 +47,12 @@ class CallApi(Ability):
                                     "X-Requested-With": "XMLHttpRequest"})
         self.last_response: ApiResponse | None = None
         self.last_timing_ms = 0.0
+        # C12 插桩点（design_c12 §3.1）：「attempted = 请求进入发送路径」的唯一观测面，
+        # 口径不是「服务端已收到」——保守方向覆盖 502/断连/半包全部歧义态。消费方是
+        # engine 的写降级闸（delivery.safe_to_auto_reexecute）；requests 默认 HTTPAdapter
+        # 无重试（max_retries=0），「以后引重试库把 seq 悄悄 +N」由
+        # tests/test_delivery_retry.py 的装配断言 + 源码扫描拦（防线前置，不靠人记）。
+        self.request_seq = 0
         # 会话保活：检测到 auth_expired 时触发回调重新烘焙 Cookie
         self._keepalive_callback = None
         self._keepalive_interval = 0  # 0 = 不主动轮询，只在响应触发时保活
@@ -99,6 +105,9 @@ class CallApi(Ability):
     def request(self, method: str, path: str, *, body: Any = None,
                 query: dict | None = None, timeout: float = 30.0,
                 headers: dict | None = None) -> ApiResponse:
+        # C12 口径：进入发送路径即计数（**组包校验之前**）——「没发出」必须可证，
+        # base_url 坏/坏 body 类型这类发送前拒绝也算「已尝试」，fail-closed 方向。
+        self.request_seq += 1
         if path.startswith(("http://", "https://")):
             url = path
         else:

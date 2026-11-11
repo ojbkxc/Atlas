@@ -4,13 +4,12 @@
 低置信度项单列报告，绝不把猜测冒充确定。
 """
 from __future__ import annotations
-import json
 import re
 from typing import Any
 
 from .model import (Endpoint, Param, BodySpec, ResponseSpec,
-                    CONFIDENCE_HIGH, CONFIDENCE_MEDIUM, CONFIDENCE_LOW)
-from .markdown import _extract_json_blocks, _match_close
+                    CONFIDENCE_LOW)
+from .markdown import _extract_json_blocks
 
 _METHOD_PATH = re.compile(r"(?i)\b(GET|POST|PUT|PATCH|DELETE)\s+(/\S+)")
 _PARAM_LINE = re.compile(

@@ -8,13 +8,22 @@ from atlas.review import ReviewQueue, evidence_card
 
 
 def _seed(tmp_path):
-    """塞两类草稿：一条 pitfall、一条 selector_candidate。"""
+    """塞两类草稿：一条 pitfall、一条 selector_candidate。
+
+    C2（design_c2 勘误补丁 3）：seed 草稿携带 evidence.verification 真三元组喂晋级闸。
+    verdict=fail 合法——坑点/候选草稿的证据是「失败被真实复现过」，闸只查完备形态不要求
+    必须绿（红线 #7 本意）。**只喂闸，不放宽任何断言**：各测的期望值一字未改。
+    """
     journal = ExperienceJournal(tmp_path)
+    verification = {"command": "python -m pytest tests/test_review_queue.py -k tc3",
+                    "exit_code": 1, "assertions": 12, "verdict": "fail"}
     p = journal.append_draft(journal.draft(task="click_save", exc=TimeoutError("save hung"),
-                                           pitfall_id="demo-014"))
+                                           pitfall_id="demo-014",
+                                           evidence={"verification": verification}))
     journal.append_draft({"id": "sel12345678ab", "task": "Save 按钮", "kind": "selector_candidate",
                           "role": "button", "name": "Save", "failure_class": "exploration",
-                          "status": "pending_review", "created_at": "x"})
+                          "status": "pending_review", "created_at": "x",
+                          "evidence": {"verification": verification}})
     return p, journal
 
 
@@ -27,6 +36,146 @@ def test_draft_has_deterministic_id_and_dedup(tmp_path):
     journal.append_draft(d2)
     rows = [json.loads(l) for l in path.read_text(encoding="utf-8").splitlines() if l.strip()]
     assert len(rows) == 1 and rows[0]["seen"] == 2  # 同坑复发不增加审核负担
+
+
+def test_reregister_same_id_merges_into_decided_row(tmp_path):
+    """#118 去重纪律跨决定态（终验#8 探针重复行事故）：同 id 再登记恰一条。
+
+    旧实现合并判据带 status == "pending_review"——已批准/已驳回行不挡追加，
+    二次登记直写旁路式地出第二条同 id 行（磁盘实锤三条探针草稿各两份），且
+    reject/approve 的按 id 全行翻转随重复行污染历史决定状态。现决定态行照常
+    聚合：只增 seen、刷新 evidence（#118 兼容面：缺省 evidence 键不抹已有证据），
+    status 不回翻——批准/驳回是终态记录，复登记不得伪装成新的待审素材。
+    """
+    journal = ExperienceJournal(tmp_path)
+    queue_path = tmp_path / "experience_drafts.jsonl"
+    for decided_status in ("rejected", "approved"):
+        base = {"id": f"m-{decided_status}", "task": "t", "status": "pending_review",
+                "evidence": {"snapshot": "v1"}}
+        journal.append_draft(base)
+        queue = ReviewQueue(tmp_path)
+        rows = queue.rows()
+        target = next(r for r in rows if r["id"] == base["id"])
+        target["status"] = decided_status                       # 人审处置落定
+        queue._rewrite(rows)
+        journal.append_draft({**base, "status": "pending_review",
+                              "evidence": {"snapshot": "v2"}})  # 同候选再登记
+        rows = [json.loads(l) for l in
+                queue_path.read_text(encoding="utf-8").splitlines() if l.strip()]
+        hits = [r for r in rows if r["id"] == base["id"]]
+        assert len(hits) == 1, f"{decided_status} 行不挡幂等：绝不追加第二条"
+        assert hits[0]["status"] == decided_status, "决定态不回翻成 pending"
+        assert hits[0]["seen"] == 2 and hits[0]["evidence"] == {"snapshot": "v2"}
+    # 决定态聚合不进 pending 列表——复登记不制造第二条审核负担
+    assert [r["id"] for r in ReviewQueue(tmp_path).pending()] == []
+
+
+def test_reject_only_flips_pending_not_decided_history(tmp_path):
+    """防回退（终验#8 清塔误伤）：同 id 一行 approved 一行 pending，reject 只翻 pending。
+
+    旧 reject 按 id 翻转全部同 id 行：驳回同名 pending 重复行时，把先前已批准的
+    历史行也静默改写成 rejected（磁盘实锤：11-04 approve_selector 两条在 11-06
+    清塔后 decided_at/status 全被覆盖）。决定态是终态记录，不可被后续同名操作
+    回翻——与 append_draft「决定态不回翻」、reject_kind 的 _is_pending 过滤同纪律，
+    单条 reject 是同族漏网。重复行形态由手工构造（append_draft 幂等修复后新文件
+    不会再出同 id 重复行，legacy 存量仍需这条防线）。
+    """
+    row = {"id": "dup1111111", "task": "Save 按钮", "kind": "selector_candidate",
+           "role": "button", "name": "Save", "failure_class": "exploration",
+           "created_at": "2026-11-04T01:23:19"}
+    approved = {**row, "status": "approved", "component_ref": "probe_page.save",
+                "decided_at": "2026-11-04T01:23:19"}
+    pending = {**row, "status": "pending_review"}       # 重复直写产物：同 id 新行
+    (tmp_path / "experience_drafts.jsonl").write_text(
+        json.dumps(approved, ensure_ascii=False) + "\n"
+        + json.dumps(pending, ensure_ascii=False) + "\n", encoding="utf-8")
+    queue = ReviewQueue(tmp_path)
+    queue.reject("dup1111111", reason="probe 素材")
+    rows = queue.rows()
+    old = next(r for r in rows if "component_ref" in r)
+    new = next(r for r in rows if r.get("reject_reason") == "probe 素材")
+    assert old["status"] == "approved", "已批准历史行纹丝不动（不被同名驳回回翻改写）"
+    assert old["decided_at"] == "2026-11-04T01:23:19" and "reject_reason" not in old
+    assert new["status"] == "rejected"                 # pending 行正常被驳回
+    assert queue.stats()["approved"] == 1 and queue.stats()["rejected"] == 1
+
+
+_VERIF = {"command": "python -m pytest tests/test_review_queue.py -k dup",
+          "exit_code": 1, "assertions": 3, "verdict": "fail"}
+
+
+def _dup_pair(tmp_path, pending_row: dict) -> str:
+    """手工构造同 id 两行：先驳回的历史行（驳回留痕在案）+ 直写产物 pending 行。
+
+    append_draft 幂等修复后新文件不会再出同 id 重复行；此形态专测 legacy 存量
+    上的批准动作——与 test_reject_only_flips_pending_not_decided_history 互为镜像。
+    """
+    old = {**pending_row, "status": "rejected", "reject_reason": "先前驳回",
+           "decided_at": "2026-11-04T00:00:00"}
+    (tmp_path / "experience_drafts.jsonl").write_text(
+        json.dumps(old, ensure_ascii=False) + "\n"
+        + json.dumps(pending_row, ensure_ascii=False) + "\n", encoding="utf-8")
+    return pending_row["id"]
+
+
+def _split_history(queue):
+    """返回 (被驳回保留的历史行, 被批准翻转的 pending 行)。"""
+    rows = queue.rows()
+    old = next(r for r in rows if r["status"] == "rejected")
+    new = next(r for r in rows if r["status"] == "approved")
+    return old, new
+
+
+def test_approve_pitfall_only_flips_pending_not_rejected_history(tmp_path):
+    """③镜像防回退：同 id rejected+pending 两行，批准坑点只翻 pending——
+    已驳回历史行的 reject_reason/decided_at 不得被同名批准静默回翻改写。"""
+    rid = _dup_pair(tmp_path, {
+        "id": "ap-pitfall001", "task": "click_save", "kind": "pitfall",
+        "exception_type": "TimeoutError", "failure_class": "timeout", "pitfall_id": "",
+        "status": "pending_review", "created_at": "x",
+        "evidence": {"verification": _VERIF}})
+    queue, kb = ReviewQueue(tmp_path), _kb(tmp_path)
+    queue.approve(kb, rid, remedy="点保存前先等 .app-main 出现")
+    old, new = _split_history(queue)
+    assert old["reject_reason"] == "先前驳回" and old["decided_at"] == "2026-11-04T00:00:00"
+    assert "pitfall_ref" not in old, "驳回历史行不得被批注批准痕迹"
+    assert new["pitfall_ref"], "pending 行正常批准入知识"
+    assert queue.stats()["approved"] == 1 and queue.stats()["rejected"] == 1
+
+
+def test_approve_selector_only_flips_pending_not_rejected_history(tmp_path):
+    """③镜像防回退：selector_candidate 批准只翻 pending；知识侧照常写入（批准语义不变）。"""
+    rid = _dup_pair(tmp_path, {
+        "id": "ap-sel000001", "task": "button:Save", "kind": "selector_candidate",
+        "role": "button", "name": "Save", "failure_class": "exploration",
+        "status": "pending_review", "created_at": "x",
+        "evidence": {"verification": _VERIF}})
+    queue, kb = ReviewQueue(tmp_path), _kb(tmp_path)
+    queue.approve(kb, rid, remedy="button.demo-save", component="order_header",
+                  element="save_new")
+    old, new = _split_history(queue)
+    assert old["reject_reason"] == "先前驳回" and old["decided_at"] == "2026-11-04T00:00:00"
+    assert "selector_ref" not in old, "驳回历史行不回翻也不得被挂批准引用"
+    assert new["selector_ref"] == "order_header.save_new"
+    saved = json.loads((kb.root / "components.json").read_text(encoding="utf-8"))
+    assert saved["components"]["order_header"]["selectors"]["save_new"] == "button.demo-save"
+
+
+def test_approve_overlay_only_flips_pending_not_rejected_history(tmp_path):
+    """③镜像防回退：bu_overlay 批准只翻 pending；坐标照常写 overlay 库。"""
+    rid = _dup_pair(tmp_path, {
+        "id": "ap-ovl000001", "task": "overlay:ou", "kind": "bu_overlay",
+        "failure_class": "bu_overlay", "status": "pending_review", "created_at": "x",
+        "evidence": {"other_bu": "BU-B", "key": "ou", "base_value": "A",
+                     "other_value": "B", "verification": _VERIF}})
+    queue, kb = ReviewQueue(tmp_path), _kb(tmp_path)
+    queue.approve(kb, rid, remedy="C")
+    old, new = _split_history(queue)
+    assert old["reject_reason"] == "先前驳回" and old["decided_at"] == "2026-11-04T00:00:00"
+    assert "overlay_ref" not in old
+    assert new["overlay_ref"] == "BU-B.ou"
+    saved = json.loads((kb.root / "bu_overlays.json").read_text(encoding="utf-8"))
+    assert "C" in json.dumps(saved, ensure_ascii=False)
 
 
 def test_resolve_by_prefix_and_approve_writes_knowledge(tmp_path):
@@ -308,9 +457,11 @@ def test_template_rows_shape_per_kind(tmp_path):
     queue = ReviewQueue(tmp_path)
     sel_rows = queue.template_rows("selector_candidate")
     # 模板必须带 task 上下文：只有 id 的模板人无法辨认（真机 --apply 暴露的缺口）
+    # gap13：selector_candidate 行另带 role/name（用候选原值预填，免手抄成 CSS）
     assert sel_rows == [{"id": "sel12345678ab", "task": "Save 按钮",
                          "kind": "selector_candidate",
-                         "component": "", "element": "", "selector": ""}]
+                         "component": "", "element": "", "selector": "",
+                         "role": "button", "name": "Save"}]
     pit_rows = queue.template_rows("pitfall")
     assert set(pit_rows[0]) == {"id", "task", "kind", "remedy"}
 
@@ -552,7 +703,11 @@ def test_cli_review_approve_selector_via_component_flags(tmp_path, capsys, monke
     _seed_cli_reports(tmp_path, {"id": "sel12345678ab", "task": "Save 按钮",
                                  "kind": "selector_candidate", "role": "button",
                                  "name": "Save", "failure_class": "exploration",
-                                 "status": "pending_review", "created_at": "x"})
+                                 "status": "pending_review", "created_at": "x",
+                                 # C2 补丁 3：喂晋级闸的真三元组（候选的证据=失败/探索复现）
+                                 "evidence": {"verification": {
+                                     "command": "python -m pytest tests/test_review_queue.py -k sel",
+                                     "exit_code": 1, "assertions": 3, "verdict": "fail"}}})
     kb_root = tmp_path / "kb"
     kb_root.mkdir()
     monkeypatch.setenv("ATLAS_KNOWLEDGE_DIR", str(kb_root))   # 真实用户配私有目录的路径
@@ -568,6 +723,77 @@ def test_cli_review_approve_selector_via_component_flags(tmp_path, capsys, monke
     saved = json.loads((kb_root / "components.json").read_text(encoding="utf-8"))
     assert saved["components"]["order_header"]["selectors"]["save_new"] == \
         ".app-main button:has(i.demoicon--save)"
+
+
+def _seed_cli_selector_reports(tmp_path):
+    """CLI 轨的 selector_candidate 草稿（带候选 role/name 与晋级闸三元组）。"""
+    _seed_cli_reports(tmp_path, {"id": "sel12345678ab", "task": "Save 按钮",
+                                 "kind": "selector_candidate", "role": "button",
+                                 "name": "Save", "failure_class": "exploration",
+                                 "status": "pending_review", "created_at": "x",
+                                 "evidence": {"verification": {
+                                     "command": "python -m pytest -k sel",
+                                     "exit_code": 1, "assertions": 3, "verdict": "fail"}}})
+
+
+def test_cli_review_approve_with_role_name_flags(tmp_path, capsys, monkeypatch):
+    """gap13 CLI 全链路：--role/--name 直接批准 ARIA 候选，人不必手抄 CSS。"""
+    from atlas.cli import main
+    _seed_cli_selector_reports(tmp_path)
+    kb_root = tmp_path / "kb"
+    kb_root.mkdir()
+    monkeypatch.setenv("ATLAS_KNOWLEDGE_DIR", str(kb_root))
+    rc = main(["--root", str(tmp_path), "review", "--approve", "sel1",
+               "--component", "order_header", "--element", "save_btn",
+               "--role", "button", "--name", "Save"])
+    assert rc == 0
+    assert json.loads(capsys.readouterr().out)["approved"] == "order_header.save_btn"
+    saved = json.loads((kb_root / "components.json").read_text(encoding="utf-8"))
+    assert saved["components"]["order_header"]["selectors"]["save_btn"] == {
+        "role": "button", "name": "Save"}
+
+
+def test_cli_review_approve_with_json_remedy(tmp_path, capsys, monkeypatch):
+    """--remedy 直接吃 JSON 对象：与 --role/--name 落到同一判据（同库同形态）。"""
+    from atlas.cli import main
+    _seed_cli_selector_reports(tmp_path)
+    kb_root = tmp_path / "kb"
+    kb_root.mkdir()
+    monkeypatch.setenv("ATLAS_KNOWLEDGE_DIR", str(kb_root))
+    rc = main(["--root", str(tmp_path), "review", "--approve", "sel1",
+               "--component", "c", "--element", "e",
+               "--remedy", '{"label": "客户编码"}'])
+    assert rc == 0
+    saved = json.loads((kb_root / "components.json").read_text(encoding="utf-8"))
+    assert saved["components"]["c"]["selectors"]["e"] == {"label": "客户编码"}
+
+
+def test_cli_review_approve_malformed_json_remedy_is_named_rc2(tmp_path, capsys, monkeypatch):
+    """写坏花括号不许被当成 CSS 字面量静默入库——那是一份永远定位不到的'知识'。"""
+    from atlas.cli import main
+    _seed_cli_selector_reports(tmp_path)
+    kb_root = tmp_path / "kb"
+    kb_root.mkdir()
+    monkeypatch.setenv("ATLAS_KNOWLEDGE_DIR", str(kb_root))
+    rc = main(["--root", str(tmp_path), "review", "--approve", "sel1",
+               "--component", "c", "--element", "e", "--remedy", '{"role": "button"'])
+    assert rc == 2
+    assert "合法 JSON" in capsys.readouterr().err
+    assert not (kb_root / "components.json").exists()
+
+
+def test_cli_review_approve_remedy_and_role_conflict_rc2(tmp_path, capsys, monkeypatch):
+    """两种意图并存不猜谁赢：点名 rc2，不写库。"""
+    from atlas.cli import main
+    _seed_cli_selector_reports(tmp_path)
+    kb_root = tmp_path / "kb"
+    kb_root.mkdir()
+    monkeypatch.setenv("ATLAS_KNOWLEDGE_DIR", str(kb_root))
+    rc = main(["--root", str(tmp_path), "review", "--approve", "sel1",
+               "--component", "c", "--element", "e", "--remedy", ".x",
+               "--role", "button", "--name", "Save"])
+    assert rc == 2
+    assert "不能同时给" in capsys.readouterr().err
 
 
 def test_cli_review_approve_trace_step_exits_two(tmp_path, capsys):
@@ -671,3 +897,99 @@ def test_approve_overlay_null_evidence_not_crash(tmp_path):
     kb = _kb(tmp_path)
     with pytest.raises(ValueError, match="目标 BU"):   # 不再是 AttributeError
         queue.approve_to_overlay(kb, "ovl000000001", remedy="BU-B值")
+
+
+# ---------- gap13：ARIA 候选直接入库（不再手抄 CSS） ----------
+
+class _FakePage:
+    def __init__(self):
+        self.calls = []
+
+    def get_by_role(self, role, name=None, **kw):
+        self.calls.append((role, name, kw))
+        return ("role", role, name)
+
+    def locator(self, css):
+        self.calls.append(css)
+        return ("css", css)
+
+
+def _sel_id(queue):
+    return next(r["id"] for r in queue.pending() if r["kind"] == "selector_candidate")
+
+
+def test_approve_aria_candidate_stores_description_and_resolves(tmp_path):
+    """闭合 gap12 的缝：探索产出的 role+name 候选原样入库，且能解析回 locator。
+
+    旧行为：批准只收 CSS 字符串，人必须把无障碍名手抄成 CSS——抄错=第二份漂移知识。
+    """
+    from atlas.knowledge import SelectorRegistry
+    _seed(tmp_path)
+    queue, kb = ReviewQueue(tmp_path), _kb(tmp_path)
+    record = queue.approve(kb, _sel_id(queue), remedy={"role": "button", "name": "Save"},
+                           component="order_header", element="save_btn")
+    assert record["selector"] == {"role": "button", "name": "Save"}   # 落盘用户形态（可再解析）
+    saved = json.loads((kb.root / "components.json").read_text(encoding="utf-8"))
+    assert saved["components"]["order_header"]["selectors"]["save_btn"] == {
+        "role": "button", "name": "Save"}
+    reg = SelectorRegistry(saved)
+    page = _FakePage()
+    assert reg.resolve(page, "order_header", "save_btn") == ("role", "button", "Save")
+    assert page.calls[0] == ("button", "Save", {"exact": True})   # 精确匹配，不误点「Save and close」
+    # 留痕用 canonical 文本（dict 不可切片：旧写法 selector[:120] 会 TypeError）
+    line = json.loads((tmp_path / "review_decisions.jsonl")
+                      .read_text(encoding="utf-8").splitlines()[0])
+    assert line["selector"] == 'role=button[name="Save"]'   # dict 不可切片：留痕走 canonical
+
+
+def test_approve_rejects_malformed_description_before_writing(tmp_path):
+    """坏形态在**落盘前**点名：知识文件里绝不出现跑不了的定位描述。"""
+    from atlas import locators
+    _seed(tmp_path)
+    queue, kb = ReviewQueue(tmp_path), _kb(tmp_path)
+    with pytest.raises(locators.LocatorSpecError) as ei:
+        queue.approve(kb, _sel_id(queue), remedy={"role": "button", "css": ".x"},
+                      component="c", element="e")
+    assert "多个定位键" in str(ei.value)
+    assert not (kb.root / "components.json").exists()   # 零半状态：连文件都不建
+
+
+def test_save_component_selector_normalizes_css_description(tmp_path):
+    """{"css": ...} 归一成字符串：存量形态仍是字符串，产物/读侧零涟漪。"""
+    kb = _kb(tmp_path)
+    out = kb.save_component_selector("c", "e", {"css": ".btn"}, approved=True, source="test")
+    assert out["selector"] == ".btn"
+    saved = json.loads((kb.root / "components.json").read_text(encoding="utf-8"))
+    assert saved["components"]["c"]["selectors"]["e"] == ".btn"
+
+
+def test_template_prefills_role_name_and_apply_uses_it(tmp_path):
+    """模板预填候选的 role/name：人只决定写进哪个组件元素，--apply 即入库。"""
+    _seed(tmp_path)
+    queue, kb = ReviewQueue(tmp_path), _kb(tmp_path)
+    row = next(r for r in queue.template_rows("selector_candidate"))
+    assert row["role"] == "button" and row["name"] == "Save" and row["selector"] == ""
+
+    # 未填 component/element 的行仍失败并点名（批量批准 ≠ 自动批准）
+    result = queue.apply(kb, [row])
+    assert result["applied"] == 0 and result["failed"]
+    assert not (kb.root / "components.json").exists() or \
+        json.loads((kb.root / "components.json").read_text(encoding="utf-8"))["components"] == {}
+
+    # 填上组件/元素：role/name 照原值入库
+    result = queue.apply(kb, [{**row, "component": "order_header", "element": "save_btn"}])
+    assert result["applied"] == 1 and not result["failed"]
+    saved = json.loads((kb.root / "components.json").read_text(encoding="utf-8"))
+    assert saved["components"]["order_header"]["selectors"]["save_btn"]["role"] == "button"
+
+
+def test_apply_selector_column_wins_over_prefilled_role(tmp_path):
+    """人显式写了 CSS 就是显式选择：不被预填的 role/name 盖掉。"""
+    _seed(tmp_path)
+    queue, kb = ReviewQueue(tmp_path), _kb(tmp_path)
+    row = next(r for r in queue.template_rows("selector_candidate"))
+    result = queue.apply(kb, [{**row, "component": "c", "element": "e",
+                               "selector": ".app-main button:has(i)"}])
+    assert result["applied"] == 1
+    saved = json.loads((kb.root / "components.json").read_text(encoding="utf-8"))
+    assert saved["components"]["c"]["selectors"]["e"] == ".app-main button:has(i)"

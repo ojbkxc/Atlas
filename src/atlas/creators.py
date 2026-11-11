@@ -11,12 +11,19 @@ from .probes import DOCUMENT_NUMBER_KEYS, ScriptedCreator, find_document_number
 
 def make_scripted_creator(script: Path, *, python: str | None = None,
                           required_env: tuple[str, ...] = (),
-                          timeout: int = 300) -> ScriptedCreator:
+                          timeout: int = 300,
+                          honors_idempotency: bool = False,
+                          idem_entity: str = "") -> ScriptedCreator:
     """把“已验证的建单脚本”包装成 creator。
 
     约定：脚本接收 `where` 的 JSON（stdin），stdout 最后一行输出 JSON：
         {"remark": "...非人工创建", "orderNo": "SP..."}
     Atlas 不解析脚本内部实现，也不猜接口；只校验返回结构与备注标记。
+
+    `honors_idempotency`（C12/design_c12 §3.5，透传给 ScriptedCreator）：**人声明**
+    脚本兑现 `atlas_idem` 键时，stdin JSON 里多注入该键（值=delivery.idempotency_token
+    的 16-hex 把手）；缺省 False 时进脚本的字节形态与旧版逐字相同。引擎只传递键，
+    脚本侧去重兑现归业务（红线 #11），本波无任何默认 True 的调用方。
     """
     script = Path(script)
     if not script.is_file():
@@ -29,6 +36,9 @@ def make_scripted_creator(script: Path, *, python: str | None = None,
         env = dict(os.environ)
         env.setdefault("PYTHONUTF8", "1")
         try:
+            # `atlas_idem` 的唯一注入点在 ScriptedCreator._with_idem（#92 单点，本函数
+            # 不做第二次判据）：缺省 honors_idempotency=False 时这里的 where 与旧版逐字
+            # 相同 → stdin JSON 逐字节不变（design_c12 §3.5）。
             payload = json.dumps(where, ensure_ascii=False)
         except (TypeError, ValueError) as exc:
             # #117 面2：where 含不可 JSON 序列化的值（YAML 日期对象、Path、集合……）——
@@ -55,7 +65,8 @@ def make_scripted_creator(script: Path, *, python: str | None = None,
         except json.JSONDecodeError as exc:
             raise RuntimeError(f"建单脚本最后一行不是合法 JSON：{lines[-1][:200]}") from exc
 
-    return ScriptedCreator(_run, required_env=required_env)
+    return ScriptedCreator(_run, required_env=required_env,
+                           honors_idempotency=honors_idempotency, idem_entity=idem_entity)
 
 
 def _first_unserializable_key(where, prefix=""):

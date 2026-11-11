@@ -1,0 +1,141 @@
+{
+  "schema_version": 1,
+  "risk_model": {
+    "basis": "structural_drift",
+    "thresholds": {
+      "structural_medium": 30,
+      "structural_high": 250
+    },
+    "note": "行数不是风险本体：表层样式/文案大 diff = cosmetic；跨文件搬移/结构改写 = structural。阈值与分区形态派生自 pi fork-ownership 实测口径（research_pi/pi-inventory.md M11、pi-patterns.md §3；全仓实测 969 cosmetic / 1379 structural）。本文件是数据账本，引擎运行时永不解析（红线 #11）——只有 atlas doctor 与 scripts/boundary_classify.py 消费。"
+  },
+  "regions": [
+    {
+      "id": "engine-core",
+      "region": "engine-owned",
+      "paths": ["src/atlas/*.py", "src/atlas/generator/*.py"],
+      "disposition": "",
+      "decision_log": []
+    },
+    {
+      "id": "scheduling-kernel",
+      "region": "engine-owned",
+      "paths": ["src/atlas/scheduling/"],
+      "disposition": "",
+      "decision_log": [
+        {
+          "date": "2026-11-06",
+          "decision": "absorb",
+          "rationale": "吸收自 pi 调度语义（gap6 §3.1-C1，research_pi/pi-patterns.md §2 scheduled-tasks-spec），按 Atlas 形态缩小为被 OS cron/schtasks 调起的一次性薄命令：纯 stdlib 调度核、零业务字面量（cron 表达式/时区/flow 路径都是台账里的用户数据）。主干资产，不标 optional；心跳 TTL 为权威、探针后置未实现（gap6 §9 S2），不确定按推迟——不把双跑风险写成已消除。",
+          "by": "pi-absorb-w2"
+        }
+      ]
+    },
+    {
+      "id": "liteflow-compile-semantics",
+      "region": "absorbed",
+      "paths": ["src/atlas/dsl.py"],
+      "disposition": "reduce",
+      "decision_log": [
+        {
+          "date": "2026-11-05",
+          "decision": "retain",
+          "rationale": "原子编译/md5 缓存/^ 指针报错/{{slot}} 模板/dispatch 路由已按 Atlas 形态吸收，不回退；与上游 LiteFlow 的剩余语义差有意保留，后续吸收轮次只缩小不放大（disposition=reduce 的含义）。",
+          "by": "atlas-liteflow-absorb"
+        }
+      ]
+    },
+    {
+      "id": "legacy-case-bridge",
+      "region": "absorbed",
+      "paths": ["src/atlas/plugins/demo/legacy_case.py"],
+      "disposition": "accepted",
+      "decision_log": [
+        {
+          "date": "2026-11-04",
+          "decision": "accept-debt",
+          "rationale": "桥接语义依赖旧 runner 播种，消除=重写 30 条用例执行面，暂付代价；说不清怎么消除的债才算 accepted（C17 债标价纪律）。",
+          "by": "case-porter"
+        }
+      ]
+    },
+    {
+      "id": "jmx-import-semantics",
+      "region": "absorbed",
+      "paths": ["scripts/import_jmeter.py"],
+      "disposition": "reduce",
+      "decision_log": [
+        {
+          "date": "2026-11-06",
+          "decision": "retain",
+          "rationale": ".jmx 解析语义吸收自 JMeter 巡检工程（elementProp 分组/HeaderManager 层级并入/${__P()} 占位识别，gap6 C4 以真实巡检工程实测背书）；JMeter 上游格式漂移不整体跟进，只按需缩小差异。",
+          "by": "pi-absorb-w1"
+        }
+      ]
+    },
+    {
+      "id": "private-knowledge",
+      "region": "private-knowledge",
+      "paths": ["flows/iservice/", "knowledge/"],
+      "optional": true,
+      "disposition": "",
+      "decision_log": [
+        {
+          "date": "2026-11-04",
+          "decision": "retain",
+          "rationale": "真实账号/内网域名/客户号/BU 坐标迁移产物，gitignore 排除、只留在受控磁盘，本地 commit 不 push；CI 与干净克隆没有属正常——全区域缺失时 doctor 只 warn 不计 rc（评审 C5-B）。",
+          "by": "case-porter"
+        }
+      ]
+    },
+    {
+      "id": "demo-business-assets",
+      "region": "private-knowledge",
+      "paths": ["src/atlas/plugins/demo/"],
+      "disposition": "",
+      "decision_log": [
+        {
+          "date": "2026-11-06",
+          "decision": "retain",
+          "rationale": "业务内容进插件（AGENTS 规则 1）：包内为虚构 demo 数据，充当私有知识库缺失时的逐文件读回退；legacy_case.py 路径特异度更高、单独归 absorbed，本区域不与之冲突。",
+          "by": "impl_bounds"
+        }
+      ]
+    },
+    {
+      "id": "markdown-docs",
+      "region": "engine-owned",
+      "paths": ["docs/**/*.md", "*.md"],
+      "style_paths": true,
+      "disposition": "",
+      "decision_log": []
+    },
+    {
+      "id": "repo-tooling",
+      "region": "engine-owned",
+      "paths": ["scripts/*.py"],
+      "disposition": "",
+      "decision_log": []
+    },
+    {
+      "id": "test-suite",
+      "region": "engine-owned",
+      "paths": ["tests/*.py"],
+      "disposition": "",
+      "decision_log": []
+    },
+    {
+      "id": "example-assets",
+      "region": "engine-owned",
+      "paths": ["examples/", "flows/*.yaml"],
+      "disposition": "",
+      "decision_log": [
+        {
+          "date": "2026-11-06",
+          "decision": "retain",
+          "rationale": "虚构 demo flow 与示例脚本属引擎自有资产；真实迁移产物在 flows/iservice/（子树前缀特异度更高，归 private-knowledge，互不冲突）。",
+          "by": "impl_bounds"
+        }
+      ]
+    }
+  ]
+}

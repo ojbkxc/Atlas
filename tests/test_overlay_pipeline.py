@@ -22,6 +22,22 @@ def sample_file(tmp_path):
     return path
 
 
+def _feed_gate(tmp_path, row_id):
+    """C2 补丁 3（design_c2 勘误）：给待审坐标草稿补**真** evidence.verification 三元组
+    喂晋级闸——复现命令就是产生该 diff 的 overlay 比对，断言数=本次 diff 键数，verdict=fail
+    诚实记录「差异真实存在」。只喂闸，不放宽任何断言、不绕闸。"""
+    queue = ReviewQueue(tmp_path)
+    rows = queue.rows()
+    for r in rows:
+        if r.get("id") == row_id:
+            ev = r.setdefault("evidence", {})
+            ev["verification"] = {
+                "command": "atlas overlay ov.json --diff BU-A 'BU-B (sample)'",
+                "exit_code": 1, "assertions": 3, "verdict": "fail",
+            }
+    queue._rewrite(rows)
+
+
 def test_load_overlays_shape_validation(tmp_path):
     with pytest.raises(ValueError, match="口径"):
         (tmp_path / "bad.json").write_text('[1, 2]', encoding="utf-8")
@@ -61,6 +77,7 @@ def test_approve_overlay_writes_private_store_and_logs(tmp_path):
     to_tower(journal, path, "BU-A", "BU-B (sample)")
     queue = ReviewQueue(tmp_path)
     row = next(r for r in queue.pending("bu_overlay") if r["task"] == "overlay:ou")
+    _feed_gate(tmp_path, row["id"])   # C2 补丁 3：补真三元组喂晋级闸（不放宽断言）
     kb_root = tmp_path / "kb"
     record = queue.approve(KnowledgeBase(kb_root), row["id"], remedy="BU-B Admin")
     assert record["bu"] == "BU-B (sample)" and record["key"] == "ou"

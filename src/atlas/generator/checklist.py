@@ -2,7 +2,7 @@
 from __future__ import annotations
 from typing import Any
 
-from .dsl_utils import scan_placeholders, has_placeholder
+from .dsl_utils import scan_placeholders
 
 
 class ChecklistError(Exception):

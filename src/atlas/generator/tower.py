@@ -6,7 +6,6 @@
 """
 from __future__ import annotations
 import hashlib
-from typing import Any
 
 
 def to_tower(journal, *, task: str, flow_id: str, evidence: dict) -> dict:

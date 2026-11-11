@@ -386,3 +386,164 @@ def test_force_refuses_overwrite(tmp_path):
     # 加 --force → rc 0
     rc3 = main(["gen", str(p), "--out", str(out), "--force"])
     assert rc3 == 0
+
+
+# ---- 快模式 --fast（gap9 C.3：CLI 面离线测；零网络零浏览器零真实产物依赖） ----
+
+FAST_DOC = "## GET /api/list\n\n请求示例：\n```json\n{\"a\":1}```\n\n响应示例：\n```json\n{\"resultCode\":\"BUG-000\"}```\n"
+
+
+def _fast_doc(tmp_path) -> Path:
+    p = tmp_path / "src.md"
+    p.write_text(FAST_DOC, encoding="utf-8")
+    return p
+
+
+def _fast_pipeline_ready() -> bool:
+    """快模式产物发射面是否就绪：#2 emit_fast 落地 + #3 emit_pytest_package 收 fast 参。
+    cli-impl 只按契约名接线（gap9 D 表），并行期测自动休眠、队友落地后自动激活，不复制产物。"""
+    import inspect
+    try:
+        import atlas.generator.emit_fast  # noqa: F401
+    except ImportError:
+        return False
+    from atlas.generator.emit_pytest import emit_pytest_package
+    return "fast" in inspect.signature(emit_pytest_package).parameters
+
+
+def test_fast_default_off_in_options():
+    # 缺省关：不传 flag 的存量调用形态与语义逐字不变（#115）
+    assert GenOptions().fast is False
+    assert GenOptions(with_pytest=True).fast is False
+
+
+def test_gen_fast_without_with_pytest_rc2(tmp_path, capsys):
+    # C.3：--fast 单用 → 一行 stderr + rc 2；不隐式打开 --with-pytest（不静默改行为）
+    p = _fast_doc(tmp_path)
+    rc = main(["gen", str(p), "--fast", "--check-only"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "--fast" in err and "--with-pytest" in err
+    assert "Traceback" not in err  # 用户输入错误口径，不裸 traceback
+
+
+def test_generate_programmatic_fast_rejected(tmp_path):
+    # 程序化入口与 CLI 同一把判据闸（GenOptions.validate 唯一实现，不留第二份 if——#92）
+    p = _fast_doc(tmp_path)
+    with pytest.raises(SourceError) as ei:
+        generate(p, tmp_path / "out", GenOptions(fast=True))
+    assert "--with-pytest" in str(ei.value)
+
+
+def test_fast_flag_passthrough_chain(tmp_path, monkeypatch):
+    # flag→GenOptions→emit_pytest_package 透传链（stub 捕获调用，不依赖 #2/#3 落地时序）。
+    # README 快模式段同样 stub：真实段懒加载 emit_fast.ENV_KEYS（#2 未落地时不该把测打红，
+    # 落地后的真实渲染由 test_fast_artifacts_fileset 激活覆盖）。
+    import atlas.generator as gen_pkg
+    import atlas.generator.emit_pytest as ep
+    p = _fast_doc(tmp_path)
+    calls: list[dict] = []
+
+    def _stub(**kw):
+        calls.append(kw)
+        return [str(Path(kw["out_dir"]) / "test_stub.py")]
+
+    monkeypatch.setattr(ep, "emit_pytest_package", _stub)
+    monkeypatch.setattr(gen_pkg, "_fast_readme_section", lambda: "\n## 快模式（--fast）stub\n")
+    assert main(["gen", str(p), "--out", str(tmp_path / "on"),
+                 "--with-pytest", "--fast"]) == 0
+    assert calls and calls[-1].get("fast") is True
+    assert Path(calls[-1]["out_dir"]).name == "pytest"  # 产物目录口径不变（C.4）
+    assert "快模式（--fast）" in (tmp_path / "on" / "README.md").read_text(encoding="utf-8")
+    assert main(["gen", str(p), "--out", str(tmp_path / "off"),
+                 "--with-pytest"]) == 0
+    assert calls[-1].get("fast", False) is False  # 不传 flag → 存量语义
+    assert "快模式" not in (tmp_path / "off" / "README.md").read_text(encoding="utf-8")
+
+
+@pytest.mark.skipif(not _fast_pipeline_ready(),
+                    reason="待 gap9 #2/#3 落地后激活（快底座由 emit_fast/emit_pytest 产出，cli 不代写）")
+def test_fast_artifacts_fileset(tmp_path):
+    # flag 生效 → 产物文件集变化点名（C.4：_atlas_fast.py + conftest.py 进包；reports/ 生成时不建）
+    p = _fast_doc(tmp_path)
+    out = tmp_path / "out"
+    assert main(["gen", str(p), "--out", str(out), "--with-pytest", "--fast"]) == 0
+    pkg = out / "pytest"
+    names = {f.name for f in pkg.iterdir()}
+    assert {"_atlas_fast.py", "conftest.py"} <= names
+    assert "_atlas_support.py" in names and any(n.startswith("test_") for n in names)
+    assert not (pkg / "reports").exists()  # 运行期产物目录，生成阶段不创建
+    readme = (out / "README.md").read_text(encoding="utf-8")
+    assert "快模式（--fast）" in readme
+    # env 清单渲染自唯一来源 emit_fast.ENV_KEYS（本 README 不手抄第二份清单——#92）
+    from atlas.generator.emit_fast import ENV_KEYS
+    for k in ENV_KEYS:
+        assert k in readme
+
+
+def test_no_fast_keeps_existing_package_shape(tmp_path):
+    # 正向对照：flag 不传 → 存量产物形态不含快模式文件、README 无快模式段，且两次跑逐字节相同
+    p = _fast_doc(tmp_path)
+    out = tmp_path / "out"
+    assert main(["gen", str(p), "--out", str(out), "--with-pytest"]) == 0
+    pkg = out / "pytest"
+    names = {f.name for f in pkg.iterdir()}
+    assert "_atlas_fast.py" not in names and "conftest.py" not in names
+    assert "_atlas_support.py" in names
+    assert "快模式" not in (out / "README.md").read_text(encoding="utf-8")
+    first = {n: (pkg / n).read_bytes() for n in names}
+    assert main(["gen", str(p), "--out", str(out), "--with-pytest", "--force"]) == 0
+    second = {n: (pkg / n).read_bytes() for n in names}
+    assert first == second
+
+
+def test_cli_scaffold_generator_zero_artifact_template_text():
+    # gap9 D 表：我独占的三个文件零产物模板文本（模板首行指纹扫描），判据零复制
+    root = Path(__file__).resolve().parents[1] / "src" / "atlas"
+    for rel in ("cli.py", "scaffold.py", "generator/__init__.py"):
+        text = (root / rel).read_text(encoding="utf-8")
+        assert "快模式底座（自包含" not in text, rel      # C.1 _FAST_SUPPORT_SOURCE 首行指纹
+        assert "快模式 fixtures（" not in text, rel        # C.1 _FAST_CONFTEST_SOURCE 首行指纹
+        assert "sole_page" not in text, rel                # 产物 fixture 名不进接线层
+    cli_src = (root / "cli.py").read_text(encoding="utf-8")
+    assert "需与 --with-pytest 同用" not in cli_src        # 组合判据消息只在 GenOptions.validate 一处
+
+
+# ---- F-9 正向对照 + 契约面钉测（lead 拍板 b 后补，2026-11-09） ----
+
+def test_fast_pure_api_without_components_emits(tmp_path, monkeypatch):
+    # F-9 正向对照：纯 API 源 + 无组件库 + fast=True 必须 rc0 并正常出产物——
+    # 闸门（判据在 emit-impl 的 _fast_ui_gates）不得把能用路径一起杀掉（#115）。
+    # 负例（UI 腿+无组件库→拒绝）在 CLI 面不可达：gen 的 endpoints 源恒 is_api=True，
+    # 该面由 emit-impl 在 flow 渲染层钉测（F-9 owner 裁决）。
+    import atlas.generator.emit_pytest as ep
+    monkeypatch.setattr(ep, "_default_components", lambda: {})
+    p = _fast_doc(tmp_path)
+    out = tmp_path / "out"
+    assert main(["gen", str(p), "--out", str(out), "--with-pytest", "--fast"]) == 0
+    pkg = out / "pytest"
+    names = {f.name for f in pkg.iterdir()}
+    assert "atlas_pages.py" not in names  # 无组件库 → 无页对象库（也不出坏引用）
+    assert any(n.startswith("test_") for n in names)
+    assert {"_atlas_support.py", "_atlas_fast.py", "conftest.py"} <= names
+    assert not (pkg / "reports").exists()  # 运行期目录生成时不建（C.4）
+
+
+def test_gen_fast_help_mentions_pairing(tmp_path, monkeypatch, capsys):
+    # docs-closer 依赖的字面钉：--fast help 须含「须配 --with-pytest」（CLAUDE.md 同款口径）
+    p = _fast_doc(tmp_path)
+    monkeypatch.setenv("COLUMNS", "300")  # 防 argparse 折行把判据字面劈成两段
+    with pytest.raises(SystemExit):
+        main(["gen", "--help"])
+    out = capsys.readouterr().out
+    assert "--fast" in out and "须配 --with-pytest" in out
+
+
+def test_emit_pytest_package_fast_kwarg_signature():
+    # fast_kw 透传形态的「等价」不能只是看起来一样（lead 点名）：签名级钉
+    # emit_pytest_package 收 fast 参且缺省 False——缺省漂成 True/改名，我的条件透传就静默失配
+    import inspect
+    from atlas.generator.emit_pytest import emit_pytest_package
+    params = inspect.signature(emit_pytest_package).parameters
+    assert "fast" in params, "C.2 契约参 fast 缺失——fast_kw 透传形态失效"
+    assert params["fast"].default is False

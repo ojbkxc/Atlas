@@ -12,7 +12,7 @@ from pathlib import Path
 
 from .composition import compose_for_goal
 from .core import Task
-from .failures import CONTROL_FLOW, exception_message
+from .failures import AwaitingHuman, CONTROL_FLOW, DeliveryUncertain, exception_message
 
 
 class RiskLevel(str, Enum):
@@ -116,7 +116,21 @@ class AtlasAgent:
             # healing/recorder 同源，agent 是漏改的第 4 处——GeneratorExit 是生成器侧的
             # 终止信号，旧三元组硬编码把它记成「执行失败」，终态口径与 classify_failure
             # (GeneratorExit)=interrupted 自相矛盾，#92 改一漏一必漂移）。
-            outcome = "interrupted" if isinstance(exc, CONTROL_FLOW) else "执行失败"
+            # C9/C12 追加（2026-11-06）：这两类同样**不是「执行失败」**，此前一把泛捕获
+            # 把它们都记成「执行失败」，journal 里看不出该去找人还是该查 bug——
+            # · AwaitingHuman：业务终态「等人」，处置动作是找人，重跑或查代码都是白费；
+            # · DeliveryUncertain：写请求已发出、结果未知，处置动作是**人工核实系统里有没有
+            #   这条数据**，记成「执行失败」会诱导操作者直接重放整段计划 = 写双跑（C12 红线）。
+            # 判定次序：控制流 → 两类显式终态 → 其余执行失败（三类都在同一把捕获里如实留痕后原样重抛）
+            # outcome 只进 reason 文案（Decision 无该字段，不构成 schema 变更）。
+            if isinstance(exc, CONTROL_FLOW):
+                outcome = "interrupted"
+            elif isinstance(exc, AwaitingHuman):
+                outcome = "等待人工"
+            elif isinstance(exc, DeliveryUncertain):
+                outcome = "投递不确定（写可能已发出，需人工核实后再决定是否重放）"
+            else:
+                outcome = "执行失败"
             # #129 面B：异常文本走 failures.exception_message 单一真相——旧实现手拼
             # f"{type(exc).__name__}: {exc}"，业务异常 __str__ 自身崩（#126 面A 真实可达）
             # 时在 except 块里当场炸：①顶掉用例真因（#89 定性器先于被定性对象死）；

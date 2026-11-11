@@ -4,7 +4,6 @@
 create() 一律 NotImplementedError；不生成 creator。
 """
 from __future__ import annotations
-from typing import Any
 
 from .model import Endpoint
 from .emit_flow import _build_requires

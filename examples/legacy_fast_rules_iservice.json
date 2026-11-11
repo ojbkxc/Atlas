@@ -1,0 +1,161 @@
+{
+  "version": 1,
+  "description": "UI AUTO TEST iservice 旧仓等待点语义规则（gap11 安全提速）。用法：ATLAS_FAST_WAITS=mask ATLAS_FAST_SITE_RULES=<本文件绝对路径> atlas legacy --fast --keyword ...。命中规则的等待点按 JS/URL 条件放行（绝不更长，超时睡满剩余）；未命中点仍走通用档。规则只读旧仓 DOM，不修改旧仓代码。",
+  "rules": [
+    {
+      "file": "login.py",
+      "line": 159,
+      "func": "_hover_menu_li",
+      "kind": "never",
+      "note": "hover 后的 500ms 是菜单动画/事件初始化窗口：真机第 6 组证明 popover 元素可见≠可交互（后续 li.evaluate 30s 超时）→ 睡满"
+    },
+    {
+      "file": "login.py",
+      "line": 362,
+      "func": "do_login",
+      "kind": "never",
+      "note": "登录成功后的 2000ms 是应用初始化窗口：菜单元素出现（54ms）时应用尚未就绪，后续操作会超时 → 睡满"
+    },
+    {
+      "file": "login.py",
+      "line": 484,
+      "func": "switch_to_lang",
+      "kind": "never",
+      "note": "语言切换点击后：证据（3 组真机）表明任何提前都会让 get_current_lang 读到空串（切换可能整页 reload，遮罩先于重载消失/误报）→ 显式睡满，与其他点分开记账（rule:never）"
+    },
+    {
+      "file": "login.py",
+      "line": 489,
+      "func": "switch_to_lang",
+      "kind": "mask_cycle",
+      "appear_ms": 1000,
+      "note": "语言切换后的固定缓冲：同样等遮罩出现→消失；无遮罩=睡满（不赌）"
+    },
+    {
+      "file": "sales_order_default_pt.py",
+      "line": 233,
+      "func": "step_1",
+      "kind": "never",
+      "note": "hash 复位后的 800ms：短等待，通用档会提前（act=400）但收益小、无可靠就绪信号 → 睡满"
+    },
+    {
+      "file": "sales_order_default_pt.py",
+      "line": 237,
+      "func": "step_1",
+      "kind": "never",
+      "note": "reload 后的 6000ms 是整页重建窗口：菜单元素出现≠应用就绪（第 6 组 30s 超时）→ 睡满"
+    },
+    {
+      "file": "sales_order_default_pt.py",
+      "line": 287,
+      "func": "step_1",
+      "kind": "url",
+      "contains": "saleOrderManagement/spm_sale_order",
+      "note": "点菜单后等路由到 Sales Order 列表页（下一行正是该 URL 断言）"
+    },
+    {
+      "file": "sales_order_default_pt.py",
+      "line": 344,
+      "func": "step_3",
+      "kind": "js",
+      "js": "() => Array.from(document.querySelectorAll('.el-dialog__wrapper')).some(function (x) { return x.style.display !== 'none' && /Customer Selection/i.test(((x.querySelector('.el-dialog__title') || {}).textContent) || ''); })",
+      "note": "点客户放大镜后等 Customer Selection 弹窗出现（随后本就有 wait_for_function 等它）"
+    },
+    {
+      "file": "sales_order_default_pt.py",
+      "line": 405,
+      "func": "step_3",
+      "kind": "js",
+      "js": "() => { const norm = function (s) { return (s || '').replace(/[ \\u00a0]+/g, ' ').trim(); }; const dlg = Array.from(document.querySelectorAll('.el-dialog__wrapper')).find(function (x) { return x.style.display !== 'none' && /Customer Selection/i.test(((x.querySelector('.el-dialog__title') || {}).textContent) || ''); }); if (!dlg) return false; let code = ''; Array.from(dlg.querySelectorAll('.el-form-item')).forEach(function (fi) { const l = fi.querySelector('.el-form-item__label'); const t = norm(l && l.textContent); if (l && (t.indexOf('客户代码') >= 0 || t.indexOf('Customer Code') >= 0 || t.indexOf('ForMeg.customerCode') >= 0)) { const inp = fi.querySelector('input'); if (inp && inp.value) code = inp.value; } }); if (!code) return false; return Array.from(dlg.querySelectorAll('.el-table__body-wrapper tbody tr')).some(function (r) { return (r.textContent || '').indexOf(code) >= 0; }); }",
+      "note": "点查询后等弹窗表格出现输入框里的客户代码。真机教训：mask_cycle 在遮罩消失即放行（act≈1.3s），但查询结果那时还没渲染（表格仍是默认行）→ step 3 前移；必须等目标行本身出现"
+    },
+    {
+      "file": "sales_order_default_pt.py",
+      "line": 473,
+      "func": "step_3",
+      "kind": "js",
+      "js": "() => !Array.from(document.querySelectorAll('.el-dialog__wrapper')).some(function (x) { return x.style.display !== 'none' && /Customer Selection/i.test(((x.querySelector('.el-dialog__title') || {}).textContent) || ''); })",
+      "note": "Confirm 后轮询等弹窗关闭（循环内每拍 2000ms，条件即下一拍要判的事）"
+    },
+    {
+      "file": "sales_order_default_pt.py",
+      "line": 485,
+      "func": "step_3",
+      "kind": "js",
+      "js": "() => !Array.from(document.querySelectorAll('.el-dialog__wrapper')).some(function (x) { return x.style.display !== 'none' && /Customer Selection/i.test(((x.querySelector('.el-dialog__title') || {}).textContent) || ''); })",
+      "note": "弹窗关闭后的固定缓冲（条件与上一轮询同源）"
+    },
+    {
+      "file": "pages.py",
+      "line": 220,
+      "func": "open_doc_list",
+      "kind": "js",
+      "js": "() => document.querySelectorAll('.el-table__body tbody tr').length > 0 || !!document.querySelector('.el-table__empty-block, .el-table__empty-text')",
+      "note": "hash 复位后等列表页表格出现（列表就绪标志；空列表算就绪）"
+    },
+    {
+      "file": "pages.py",
+      "line": 297,
+      "func": "open_doc_list",
+      "kind": "js",
+      "js": "() => document.location.href.indexOf('#') >= 0 && (document.querySelectorAll('.el-table__body tbody tr').length > 0 || !!document.querySelector('.el-table__empty-block, .el-table__empty-text'))",
+      "note": "点菜单后等列表页表格出现（原 4000ms 盲等；导航语义=目标列表渲染完）"
+    },
+    {
+      "file": "pages.py",
+      "line": 309,
+      "func": "open_doc_list",
+      "kind": "js",
+      "js": "() => document.querySelectorAll('.el-table__body tbody tr').length > 0 || !!document.querySelector('.el-table__empty-block, .el-table__empty-text')",
+      "note": "hash 直达后等列表表格出现"
+    },
+    {
+      "file": "pages.py",
+      "line": 390,
+      "func": "select_customer",
+      "kind": "js",
+      "js": "() => Array.from(document.querySelectorAll('.el-dialog__wrapper')).some(function (x) { return x.style.display !== 'none' && /Customer Selection/i.test(((x.querySelector('.el-dialog__title') || {}).textContent) || ''); })",
+      "note": "点客户放大镜后等 Customer Selection 弹窗出现（与 case 文件同构，lib/pages 版）"
+    },
+    {
+      "file": "pages.py",
+      "line": 547,
+      "func": "select_customer",
+      "kind": "js",
+      "js": "() => !Array.from(document.querySelectorAll('.el-dialog__wrapper')).some(function (x) { return x.style.display !== 'none' && /Customer Selection/i.test(((x.querySelector('.el-dialog__title') || {}).textContent) || ''); })",
+      "note": "Confirm 后等 Customer Selection 弹窗关闭"
+    },
+    {
+      "file": "pages.py",
+      "line": 443,
+      "func": "select_customer",
+      "kind": "js",
+      "js": "() => { const dlgs = Array.from(document.querySelectorAll('.el-dialog__wrapper')).filter(function (x) { return x.style.display !== 'none'; }); const scope = dlgs.length ? dlgs[dlgs.length - 1] : document; const vals = Array.from(scope.querySelectorAll('input')).map(function (i) { return (i.value || '').trim(); }).filter(function (v) { return v.length >= 2; }); if (!vals.length) return false; const rows = Array.from(scope.querySelectorAll('.el-table__body tbody tr')); return rows.some(function (r) { var t = r.textContent || ''; return vals.some(function (v) { return t.indexOf(v) >= 0; }); }); }",
+      "note": "点查询后等弹窗表格出现输入框里的查询值（与 case 文件 :405 同一模式；不等遮罩，等数据）"
+    },
+    {
+      "file": "pages.py",
+      "line": 899,
+      "func": "select_source_order",
+      "kind": "js",
+      "js": "() => { const dlgs = Array.from(document.querySelectorAll('.el-dialog__wrapper')).filter(function (x) { return x.style.display !== 'none'; }); const scope = dlgs.length ? dlgs[dlgs.length - 1] : document; const vals = Array.from(scope.querySelectorAll('input')).map(function (i) { return (i.value || '').trim(); }).filter(function (v) { return v.length >= 2; }); if (!vals.length) return false; const rows = Array.from(scope.querySelectorAll('.el-table__body tbody tr')); return rows.some(function (r) { var t = r.textContent || ''; return vals.some(function (v) { return t.indexOf(v) >= 0; }); }); }",
+      "note": "来源单查询后等表格出现来源单号"
+    },
+    {
+      "file": "pages.py",
+      "line": 1139,
+      "func": "open_draft_detail",
+      "kind": "js",
+      "js": "() => { const dlgs = Array.from(document.querySelectorAll('.el-dialog__wrapper')).filter(function (x) { return x.style.display !== 'none'; }); const scope = dlgs.length ? dlgs[dlgs.length - 1] : document; const vals = Array.from(scope.querySelectorAll('input')).map(function (i) { return (i.value || '').trim(); }).filter(function (v) { return v.length >= 2; }); if (!vals.length) return false; const rows = Array.from(scope.querySelectorAll('.el-table__body tbody tr')); return rows.some(function (r) { var t = r.textContent || ''; return vals.some(function (v) { return t.indexOf(v) >= 0; }); }); }",
+      "note": "单据查询后等表格出现单号"
+    },
+    {
+      "file": "pages.py",
+      "line": 1311,
+      "func": "ensure_warehouse",
+      "kind": "js",
+      "js": "() => { const dlgs = Array.from(document.querySelectorAll('.el-dialog__wrapper')).filter(function (x) { return x.style.display !== 'none'; }); const scope = dlgs.length ? dlgs[dlgs.length - 1] : document; const vals = Array.from(scope.querySelectorAll('input')).map(function (i) { return (i.value || '').trim(); }).filter(function (v) { return v.length >= 2; }); if (!vals.length) return false; const rows = Array.from(scope.querySelectorAll('.el-table__body tbody tr')); return rows.some(function (r) { var t = r.textContent || ''; return vals.some(function (v) { return t.indexOf(v) >= 0; }); }); }",
+      "note": "仓库查询后等表格出现 WH Code"
+    }
+  ]
+}

@@ -7,6 +7,7 @@ from .core import Channel, TaskMetadata
 from .actor import Actor
 from .config import AtlasConfig, load_dotenv
 from .contracts import ContractRegistry
+from .credential_gate import sanitize_url
 from .dsl import TaskRegistry
 from .plugin_api import resolve_plugin
 from .plugins.demo import make_demo_provider
@@ -172,7 +173,11 @@ class DemoRuntime:
                 return
             except Exception:
                 continue
-        raise RuntimeError(f"顶栏指示器 {indicator} reload 2 次后仍未出现，URL={page.url}")
+        # C4② 之一：SSO 回调/登录跳转的 URL query 常带 ticket/code/state——框架自己把
+        # page.url 写进异常文本，就是确定发生的泄漏面（该异常会进 runs.jsonl/草稿/终端）。
+        # 净化用 credential_gate 的逐键刀：业务参数（docNo/page/ou）保留（#85 取证证据面）。
+        raise RuntimeError(f"顶栏指示器 {indicator} reload 2 次后仍未出现，"
+                           f"URL={sanitize_url(page.url)}")
 
     def __exit__(self, exc_type, exc, tb) -> None:
         # 回收链落地：红线 3「create 要受配额限制并保留可回收信息」。旧实现 save_for_recycle

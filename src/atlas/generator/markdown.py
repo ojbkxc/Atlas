@@ -185,10 +185,13 @@ def parse_markdown(text: str) -> list[Endpoint]:
         req_json = None
         resp_spec = ResponseSpec()
         for sample, preceding in _extract_json_with_context(block):
+            # 关键词匹配用 low（lead 核出的真 bug：low 此前算而不用，英文大写开头的
+            # "Response:"/"Request Body" 在原文面永远匹配不上，落进 else 分支瞎猜
+            # 请求/响应=假阴性同族 #102；中文关键词无大小写，在 low 里照样命中）
             low = (preceding or "").lower()
-            if any(k in preceding for k in ("响应", "返回", "response")):
+            if any(k in low for k in ("响应", "返回", "response")):
                 resp_spec = _parse_response_json([sample]) or resp_spec
-            elif any(k in preceding for k in ("请求", "参数", "request", "body")):
+            elif any(k in low for k in ("请求", "参数", "request", "body")):
                 req_json = sample if req_json is None else req_json
             else:
                 # 无上下文：第一个对象当请求，数组当响应

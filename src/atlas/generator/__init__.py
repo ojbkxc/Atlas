@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 import yaml
 
@@ -21,6 +20,11 @@ from .emit_contract import emit_contracts
 from .emit_probe import emit_probe_skeleton
 from .checklist import check_flow, ChecklistError, scan_placeholders_only
 from .dsl_utils import slugify
+
+# 门面公开契约（lead 对 A-05 的裁决=补 `__all__` 认门面，而非删两条错误类 import）：
+# rc 归因靠 FlowEmitError/ChecklistError 这两族，它们属**用户可见 API**，不是死代码。
+# 只列契约名——`Any` 那类死导入走 A-04 删掉，不许混进门面。
+__all__ = ["GenOptions", "generate", "FlowEmitError", "ChecklistError"]
 
 
 @dataclass
@@ -37,7 +41,19 @@ class GenOptions:
     check_only: bool = False
     to_tower: bool = False
     with_pytest: bool = False
+    fast: bool = False                # gap9 快模式 pytest 产物（须配 with_pytest；判据见 validate）
     source_type: str = "auto"
+
+    def validate(self) -> None:
+        """flag 组合判据**唯一实现**（CLI 与 generate() 共用这一把闸，不留第二份 if——#92）。
+
+        --fast 不隐式打开 --with-pytest（#115：静默改行为会把用户显式决定偷换成默认）：
+        快模式产物是 pytest 回归包的增量形态，单独 --fast 没有作用对象，当场点名拒绝。
+        """
+        if self.fast and not self.with_pytest:
+            raise SourceError(
+                "--fast 需与 --with-pytest 同用（快模式产物是 pytest 回归包的扩展形态，"
+                "--fast 不会隐式打开 --with-pytest）")
 
 
 @dataclass
@@ -78,6 +94,7 @@ def generate(source_path: Path, out_dir: Path | None = None,
     （仅 check-only 路径需要）。
     """
     options = options or GenOptions()
+    options.validate()   # 与 CLI 同一把判据闸（GenOptions.validate，gap9 C.3）
     endpoints, stype = parse_source(source_path, options.source_type)
     result = GenResult(source_type=stype, scenario=options.scenario)
     global_headers = _load_headers(options.headers_file)
@@ -145,6 +162,33 @@ def generate(source_path: Path, out_dir: Path | None = None,
     if not options.check_only and out_dir is not None:
         written = _write_outputs(out_dir, batch_flows, result, probe_name,
                                  source_path, options)
+        # --with-pytest：可选产出「可独立运行」的 pytest 回归代码包（只生成不执行，红线 #9）。
+        # 形态评审见 docs/gaps/gap7-regression-code-eval.md：pytest 用例 + 页对象库（派生自组件库）
+        # + 自包含底座（仅标准库，可脱离 Atlas 运行）。批量场景一 flow 一包。
+        # --fast（gap9）：透传给 emit_pytest_package，由其在包内追加 _atlas_fast.py + conftest.py
+        # 快底座（底座模板判据单一来源=atlas.generator.emit_fast，本文件零模板文本）。
+        # 存量形态零涟漪（#115）：fast=False 的调用形态逐字不变——kw 仅在 True 时带上，
+        # emit_pytest_package 落地 fast 参数（缺省 False）后两种写法产出字节等价。
+        if options.with_pytest:
+            from .emit_pytest import emit_pytest_package, PytestEmitError
+            fast_kw = {"fast": True} if options.fast else {}
+            try:
+                if len(batch_flows) > 1:
+                    for flow in batch_flows:
+                        pkg_dir = out_dir / "pytest" / slugify(
+                            str(flow.get("id") or "flow"), fallback="flow")
+                        written.extend(emit_pytest_package(
+                            out_dir=pkg_dir, flow=flow, force=True, **fast_kw))
+                else:
+                    written.extend(emit_pytest_package(
+                        out_dir=out_dir / "pytest", endpoints=endpoints,
+                        flow_id=(batch_flows[0]["id"] if batch_flows else options.flow_id),
+                        global_headers=merged_headers, naming=options.naming,
+                        force=True, **fast_kw))
+            except (PytestEmitError, ValueError) as exc:
+                # FastEmitError 同为 ValueError 子类（gap9 C.2 裁决：emit_pytest 统一转 ValueError）——
+                # 底座/conftest 目录冲突这类「写出失败」一律点名，不静默出半截包。
+                raise SourceError(f"--with-pytest 产物写出失败：{exc}") from exc
     result.written = written
 
     return result
@@ -268,7 +312,7 @@ def out_flow_hint(flows: list[dict]) -> str:
 def _build_readme(source_path: Path, flows: list[dict], result: GenResult,
                   probe_name: str, options: GenOptions) -> str:
     flow_ids = ", ".join(f["id"] for f in flows)
-    return (
+    readme = (
         f"# atlas gen 产物\n\n"
         f"来源：{source_path}\n\n"
         f"**横幅：本产物只生成不执行。鉴权值、写操作、建单须人工确认后手动 `atlas run`。**\n\n"
@@ -282,4 +326,30 @@ def _build_readme(source_path: Path, flows: list[dict], result: GenResult,
         f"## Allure 汇入\n\n"
         f"主路径：`atlas run` → reports/runs.jsonl → `atlas allure reports/runs.jsonl --out reports/allure-results`\n"
         f"生成器不自己写 Allure（生成阶段无结果，写了=伪造）。\n"
+    )
+    if options.fast:
+        readme += _fast_readme_section()
+    return readme
+
+
+def _fast_readme_section() -> str:
+    """快模式产物 README 段（gap9 C.4）。env 旋钮清单唯一来源 = emit_fast.ENV_KEYS，
+    此处只渲染不复制——清单出现第二份手抄本即 #92 漂移温床。"""
+    from .emit_fast import ENV_KEYS   # 懒加载：仅 --fast 路径触碰（判据闸已保证 with_pytest=True）
+    env_lines = "\n".join(
+        f"- `{k}`：{'未设（缺配即 EnvBlocked，产物如实拒绝）' if v is None else v}"
+        for k, v in sorted(ENV_KEYS.items()))
+    return (
+        "\n## 快模式（--fast）\n\n"
+        "`pytest/` 包内含快底座 `_atlas_fast.py` + `conftest.py`：单浏览器/单登录、语义等待、\n"
+        "零成功截图、用例看门狗、写操作闸、Atlas 兼容 runs.jsonl。\n\n"
+        "依赖栈：`pytest + playwright`（playwright 为 Atlas 既有运行时依赖，非新增；\n"
+        "产物禁用 allure-pytest / pytest-playwright / pytest-timeout / requests，见 gap9 F9）。\n\n"
+        "人审接线后消费命令（`<pkg>` 为 `pytest/`，批量场景为 `pytest/<flow id>/`）：\n\n"
+        "1. `pytest <pkg> -q`\n"
+        "2. `atlas allure <pkg>/reports/runs.jsonl --out <pkg>/reports/allure-results`\n\n"
+        "运行期旋钮（默认值；唯一清单在 `atlas.generator.emit_fast.ENV_KEYS`）：\n\n"
+        f"{env_lines}\n\n"
+        "**红线警示**：写操作腿默认被 `ATLAS_FAST_ALLOW_WRITES` 闸拦下记 env_blocked（放行是人的显式\n"
+        "决定）；生产环境保护仍由 Atlas engine 兜底；UI 腿选择器须人审接线，产物只生成不执行。\n"
     )

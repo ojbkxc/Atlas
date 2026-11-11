@@ -11,10 +11,26 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-GATE = ("python -m pytest -q && "
-        "python -m compileall -q src scripts examples && "
-        "python examples/smoke_browser.py && "
-        "echo LINUX_ACCEPTANCE_PASSED")
+# argv 形态逐步门禁（X2 跨平台硬约束：命令不进 shell 字符串，禁 shell 直通参数）。
+# 语义与原 `a && b && c && echo MARKER` 逐条对齐：任一步非零当场返回该步 rc、
+# 后续不跑；全部通过才打印标记行（echo 恒 rc0，故全过时整体 rc 亦为 0）。
+# 命令名保留 "python" 字面（PATH 解析与 shell 版一致，行为语义零变）。
+GATE_STEPS = (
+    ["python", "-m", "pytest", "-q"],
+    ["python", "-m", "compileall", "-q", "src", "scripts", "examples"],
+    ["python", "examples/smoke_browser.py"],
+)
+GATE_MARKER = "LINUX_ACCEPTANCE_PASSED"
+
+
+def run_gate() -> int:
+    """Linux 离线门禁：逐步 argv 执行，首个非零即返回；全过打印标记。"""
+    for argv in GATE_STEPS:
+        rc = subprocess.run(argv, cwd=ROOT).returncode
+        if rc != 0:
+            return rc
+    print(GATE_MARKER)
+    return 0
 
 
 def probe() -> dict:
@@ -34,7 +50,7 @@ def main() -> int:
     print(json.dumps(info, ensure_ascii=False, indent=2))
     if info["platform"].startswith("linux"):
         print("已在 Linux 上运行，执行离线门禁：")
-        return subprocess.run(GATE, shell=True, cwd=ROOT).returncode
+        return run_gate()
     if info["docker"]:
         print("检测到 Docker，构建并运行 Linux 验收容器：")
         build = subprocess.run(["docker", "compose", "build"], cwd=ROOT)

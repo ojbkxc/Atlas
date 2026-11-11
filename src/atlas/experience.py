@@ -42,15 +42,44 @@ class ExperienceJournal:
                                     exception_type=type(exc).__name__,
                                     pitfall_id=pitfall_id, kind=kind, evidence=evidence)
 
+    def draft_flow(self, *, case: str, digest: dict, evidence: dict | None = None) -> dict:
+        """跑绿的 flow → pending_review 的 flow_candidate 草稿（落库线「跑成功→自动固化」）。
+
+        identity = harvest:flow:<flow 摘要>：同一份 flow 重跑 id 不变，append_draft 既有
+        语义自动只增 seen、刷新最新证据（不堆重复行）；flow 内容改了=新资产=新 id 新行。
+        failure_class="success" 是草稿侧标签（classify_failure 不产它，explore 的
+        "exploration" 同款先例），塔的 pending_by_class 由此分得开成功固化与失败草稿。
+        只造草稿不写知识（红线 #9/#10）：晋级走 review 塔的人审批准。
+        """
+        identity = f"harvest:flow:{digest.get('md5', '') if isinstance(digest, dict) else digest}"
+        row = {"id": hashlib.sha1(identity.encode()).hexdigest()[:12],
+               "task": case, "exception_type": "", "failure_class": "success",
+               "pitfall_id": "", "kind": "flow_candidate", "status": "pending_review",
+               "created_at": time.strftime("%Y-%m-%dT%H:%M:%S")}
+        merged_evidence = dict(evidence or {})
+        if isinstance(digest, dict):
+            merged_evidence.setdefault("flow_digest", dict(digest))
+        row["evidence"] = merged_evidence
+        return row
+
     def append_draft(self, experience: dict) -> Path:
         if experience.get("status") != "pending_review":
             raise ValueError("经验日志只接受 pending_review 草稿")
         self.root.mkdir(parents=True, exist_ok=True)
         path = self.root / "experience_drafts.jsonl"
         # 同 id 已在队列则只增 seen 计数，不产生第二条审核负担。
+        # 幂等判据跨决定态（终验#8 事故修复）：旧条件只认同 id 的 pending_review 行，
+        # 已批准/已驳回的历史行不挡再登记——同一份探索 trace 处置后二次
+        # explore --compile，append_draft 找不到 pending 同 id 行、直写旁路式地追加出
+        # 重复行（aaa919a656d3/1f52715010fc/6aae7590ce3c 各两份，磁盘复现）。重复行还
+        # 放大 reject/approve 的按 id 全行翻转：一条新 pending 的驳回会把旧已批准行的
+        # 审核状态改写（跨决定历史污染）。现同 id 命中一律只增 seen、刷新 evidence，
+        # 绝不追加第二条；决定态行的 status 不回翻（批准/驳回本身是终态记录，
+        # seen/evidence 是聚合计数与最新证据，不伪装成新的待审素材）。
         existing = self._read_queue(path)
+        draft_id = experience.get("id")
         for row in existing:
-            if row.get("id") == experience.get("id") and row.get("status") == "pending_review":
+            if draft_id and row.get("id") == draft_id:
                 row["seen"] = row.get("seen", 1) + 1
                 # #118：同 id 再登记时刷新证据——bu_overlay 的 id 按「键+两侧 BU」定，
                 # 坐标文件修正后（如 BU-B 的 ou B→C）id 不变而 evidence 变；旧实现只增

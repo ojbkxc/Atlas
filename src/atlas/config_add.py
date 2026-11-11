@@ -16,7 +16,7 @@ import json
 import re
 from pathlib import Path
 
-from .config import ENV_PREFIX_DEFAULT, ENV_URL_SUFFIXES, env_url_keys
+from .config import ENV_PREFIX_DEFAULT, ENV_URL_SUFFIXES
 
 
 class ConfigAddError(Exception):

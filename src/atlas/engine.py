@@ -1,16 +1,83 @@
 from __future__ import annotations
 import os
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
+from . import delivery, waits
 from .actor import Actor
 from .config import AtlasConfig
 from .contracts import ContractRegistry
 from .core import Channel, Task, write_produces
 from .abilities import CallApi
-from .failures import CONTROL_FLOW, FailureClass, api_evidence, classify_failure
+from .failures import (CONTROL_FLOW, AwaitingHuman, DeliveryUncertain, FailureClass,
+                       api_evidence, classify_failure, exception_brief)
 from .knowledge import KnowledgeBase
 from .recorder import RunRecorder
+
+def _interrupt_main() -> None:
+    """向主线程投递 KeyboardInterrupt（UI AUTO TEST `_case_watchdog` 同款机制）。
+
+    卡死的 Playwright 同步调用不会自己返回；`_thread.interrupt_main` 让主线程在下一个
+    字节码边界抛出 KeyboardInterrupt，engine 按 CONTROL_FLOW 记 interrupted 终态——
+    「不会永远卡住」，且**绝不伪装 pass**（红线 #7）。零依赖（#4：只用 stdlib，不引
+    pytest-timeout）。单独成函数以便离线测试注入替身。"""
+    import _thread
+    _thread.interrupt_main()
+
+
+class CaseWatchdog:
+    """用例级超时兜底（对齐 UI AUTO TEST 的 `_case_watchdog`）。
+
+    后台 daemon 线程：超过 `timeout_seconds` 仍未结束 → 触发 `on_timeout`（默认
+    `_interrupt_main`），让挂死的交互调用尽快抛出、engine 记 interrupted 终态。
+    默认 `timeout<=0` **不启动**（零回归）。
+
+    结束判据（二者之一即停，绝不误伤后续代码/下一个用例）：`is_done()` 返回真
+    （recorder 已 close，dsl 在 finally 关闭）或 `stop()` 被显式调用。`on_timeout`
+    可注入，供离线测试验证「到点触发 / 未到点不触发 / 已结束不触发」而不真的中断进程。
+
+    边界（与 UI AUTO TEST 一致的固有语义，非缺陷）：`_thread.interrupt_main` 在**下一个
+    字节码边界**投递 KeyboardInterrupt——Python 级挂起（步骤间、活跃循环）能被打断，但
+    阻塞式 C 调用（如卡死的 Playwright 同步 dispatch）只在其返回字节码时才响应。看门狗是
+    「尽力不永远卡住」的兜底，不是可抢占的硬杀；更强的整树强杀由 CLI 的 `--case-timeout`
+    子进程超时层负责（两者互补，互不替代）。
+    """
+    def __init__(self, timeout_seconds: float, *, is_done: Callable[[], bool],
+                 on_timeout: Callable[[], None] = _interrupt_main, tick: float = 0.5):
+        self.timeout_seconds = float(timeout_seconds)
+        self._is_done = is_done
+        self._on_timeout = on_timeout
+        self._tick = max(0.02, float(tick))
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self.fired = False
+
+    def start(self) -> "CaseWatchdog":
+        if self.timeout_seconds <= 0:
+            return self
+        self._thread = threading.Thread(target=self._run, name="atlas-case-watchdog",
+                                        daemon=True)
+        self._thread.start()
+        return self
+
+    def _run(self) -> None:
+        waited = 0.0
+        while waited < self.timeout_seconds:
+            if self._stop.wait(self._tick):
+                return
+            waited += self._tick
+            if self._is_done():
+                return
+        if self._stop.is_set() or self._is_done():
+            return
+        self.fired = True
+        self._on_timeout()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not None and self._thread.is_alive():
+            self._thread.join(timeout=1.0)
 
 def cdp_maybe_pause(case_id: str, step_index: int, task_name: str) -> None:
     """CDP 冻场钩子：步骤执行**前**冻住，供 playwright-cli attach 接管（对齐旧项目语义）。
@@ -73,6 +140,31 @@ class ExecutionEngine:
         self.case_id = case_id
         self._step_index = 0
         self.results: list[StepResult] = []
+        # 用例级看门狗（默认关闭）：只在 recorder 在位（有明确的「用例结束」信号——
+        # recorder.close 由 dsl.run 在 finally 调用）且 case_timeout>0 时启动。
+        self._watchdog: CaseWatchdog | None = None
+        timeout = getattr(config, "case_timeout", 0)
+        if self.recorder is not None and timeout and timeout > 0:
+            self._watchdog = CaseWatchdog(timeout, is_done=self._case_done).start()
+
+    def _case_done(self) -> bool:
+        """看门狗的「用例已结束」判据：recorder 关闭即 flow 跑完（dsl 在 finally close）。
+        recorder 缺失时保守视为已完成（不误伤后续代码）。"""
+        rec = self.recorder
+        return rec is None or bool(getattr(rec, "_closed", False))
+
+    def stop_case_guard(self) -> None:
+        """显式停止看门狗（幂等）；正常路径由 recorder.close 触发自动停止。"""
+        if self._watchdog is not None:
+            self._watchdog.stop()
+
+    def _retry_eligible(self, task: Task, exc: BaseException) -> bool:
+        """步骤级重试准入：只读 Task + 可恢复交互类/导航瞬态失败。写操作绝不自动重试
+        （副作用双跑），断言/业务/契约/会话/环境/控制流一律不重试——判据委托
+        `waits.is_recoverable` 单一真相（#92），引擎不留第二份名单。"""
+        if not task.metadata.read_only:
+            return False
+        return waits.is_recoverable(exc)
 
     def execute(self, actor: Actor, task: Task) -> StepResult:
         # 冻场钩子必须在 perform 之前：步骤坏了就再也回不到案发现场。
@@ -84,6 +176,10 @@ class ExecutionEngine:
         # 「API 坏→降级→UI 成功」步骤 ok=True 零痕迹，事后区分不出「UI 本来就该走」
         # 与「API 真的坏了」（#106，与 #102 静默 0 条/#105 假阴性同族红线）。
         degraded_cursor = len(actor.ctx.get("_auto_degraded_to_ui", []))
+        # dispatch 留痕游标（#106 同族补网）：路由决策只落 ctx["_dispatch_routes"]，
+        # 全仓零消费方写盘——runs.jsonl 里看得见 "dispatch:<gate>" 步骤却看不到取值与
+        # 去向，「为何走此路径」事后无盘可查。与降级同一游标口径：perform 后搬运新增条目。
+        routes_cursor = len(actor.ctx.get("_dispatch_routes", []))
         # record 预置 None：__enter__ 失败时 with 从未绑定，
         # except 路径的 _flush_degradations 对非 dict 安全跳过，不留崩。
         record: Any = None
@@ -98,6 +194,7 @@ class ExecutionEngine:
                     self.config.validate_write(str(actor.ctx.get("remark", "非人工创建")))
                 result = self._perform(actor, task)
                 degraded_cursor = self._flush_degradations(actor, record, degraded_cursor)
+                routes_cursor = self._flush_routes(actor, record, routes_cursor)
                 if task.metadata.channel in {Channel.API, Channel.AUTO} and CallApi in actor.abilities:
                     record["api_ms"] = actor.api.last_timing_ms
                 # _GuardedTask skip 在 perform 期间追加 _steps_skipped，只能在 perform 后判断
@@ -121,6 +218,15 @@ class ExecutionEngine:
             # 外层 _perform 可能「已降级但 UI 仍失败」才抛：成功路径的 flush 没跑到，
             # 降级条目滞留 ctx。失败步骤同样要留痕，否则 runs.jsonl 连「API 坏→退 UI 也失败」都查不到。
             degraded_cursor = self._flush_degradations(actor, record, degraded_cursor)
+            # 「同刻超时」取证（design_c9 §9 那一格，2026-11-06 离线钉死）：看门狗已 fire
+            # 与本步抛错**两件事可以同时为真**——KI 是投递给主线程的，任务在 KI 落地前先自己
+            # 抛了 AwaitingHuman / DeliveryUncertain / 普通异常，捕获到的就是后者。旧实现只在
+            # CONTROL_FLOW 分支内补这个标记，于是超时证据被**赢的那个终态静默吞掉**：台账只剩
+            # waiting/failed，看不出「这一步其实也撞上了看护超时」，而这正是排查「为什么这条
+            # 总在超时边缘」时最想要的一条信息。标记与终态正交，一律在分支之前打。
+            if (isinstance(record, dict) and self._watchdog is not None
+                    and self._watchdog.fired):
+                record["case_timeout"] = True
             if isinstance(exc, CONTROL_FLOW):
                 # #114 面B：中断是终止信号不是业务失败（#70/#108 同口径）。
                 # recorder 已按 classify 把 step 记成 interrupted（旧记 unknown——
@@ -128,8 +234,77 @@ class ExecutionEngine:
                 # 这里如实进 results 后原样重抛。但绝不走下面的诊断链：
                 # 坑点草稿登记器会把 Ctrl-C 收进待审塔（remedy 无从修复中断，纯噪音），
                 # 取证截图给「操作者按了 Ctrl-C」拍现场照毫无意义。
+                # 「人按 Ctrl-C」与「看门狗超时中断」的区分由上面的 case_timeout 标记承担
+                # （interrupted 终态不变——超时也不伪装 pass/failed）。
                 self.results.append(StepResult(task.name, False, FailureClass.INTERRUPTED.value))
                 raise
+            if isinstance(exc, AwaitingHuman):
+                # C9 显态（design_c9 §3 engine 行）：与 #114 面 B **同型**——如实进 results
+                # 后原样重抛，不走 heal / `evidence.classify` / 坑点匹配 / journal 草稿 /
+                # session 取证。理由同一条：remedy 无从「修复」等人，给等待现场拍取证照是纯噪音。
+                # 差别一处：CONTROL_FLOW 是宿主终止（dsl 记 interrupted 并继续上抛退出），
+                # AwaitingHuman 是业务终态（dsl 记 waiting 后由 CLI 转 rc3，进程收尾照常）。
+                # 步骤的 fail_class="waiting" 由 recorder.step 的 classify_failure 单点继承
+                # 自动产出，这里不裸写字符串（#92）。
+                # **位置钉死（评审必改 C9-B）**：必须在 CONTROL_FLOW 之后、下面那个 flaky
+                # 重试块（`retries = max(0, ...)` 起，gap-fill 波新增、两份设计都没评估过它）
+                # 之**前**。
+                # 落在重试块之后会怎样：reason 文案里带「timeout/超时」字样的 AwaitingHuman
+                # 先被 `waits.is_recoverable` 判成可重试（classify→INTERACTION 那条腿按文本走），
+                # 于是「等人」被就地重跑若干遍——等待现场被反复触发、run 记录多出 retried 噪音，
+                # 而重试永远等不来人。回归测：test_waiting_operational.py::
+                # test_engine_awaiting_human_never_retried（step_retry>0 × AwaitingHuman → perform 恰 1 次）。
+                self.results.append(StepResult(task.name, False, FailureClass.WAITING.value))
+                raise
+            # C12（design_c12 §3.2）：投递不确定**不是控制流**——不短路诊断链，它照常走
+            # 坑点草稿/取证/归因（真失败，红线 #7 保持 failed，不借任何终态洗绿）。这里只
+            # 在失败路径就地补一个布尔键（判据来自类型而非字符串；与 healed 更正同协作口径
+            # ——recorder 与引擎共享同一 dict，就地补键不新开 step），runs.jsonl 事后能
+            # 分辨「写降级被 C12 拦」与一般 interaction 失败。写任务进不了下面的 flaky
+            # 重试与 heal（read_only 门在先），故该标记落定即终态，不会被就地更正翻掉。
+            if isinstance(exc, DeliveryUncertain) and isinstance(record, dict):
+                record["delivery_uncertain"] = True
+            # 步骤级 flaky 重试（默认关闭）：仅「只读 Task + 可恢复交互类失败」。
+            # 写操作绝不自动重试（副作用双跑）；断言失败绝不重试（红线 #7：重试不是把
+            # 失败放宽成通过）。判据与 waits.retry 的选择器同源（waits.is_recoverable）。
+            retries = max(0, int(getattr(self.config, "step_retry", 0)))
+            if retries and self._retry_eligible(task, exc):
+                cursors = [degraded_cursor, routes_cursor]
+                attempts_made = [0]
+
+                def _one_attempt():
+                    attempts_made[0] += 1
+                    result = self._perform(actor, task)
+                    # 与主路径同一契约：降级/路由决策并入同一条 record，产出严格写入。
+                    cursors[0] = self._flush_degradations(actor, record, cursors[0])
+                    cursors[1] = self._flush_routes(actor, record, cursors[1])
+                    write_produces(actor.ctx, task, result)
+                    return result
+
+                try:
+                    waits.retry(_one_attempt, attempts=retries,
+                                interval_ms=getattr(self.config, "step_retry_interval_ms", 0),
+                                retry_on=waits.is_recoverable)
+                except BaseException as retry_exc:
+                    degraded_cursor = self._flush_degradations(actor, record, cursors[0])
+                    routes_cursor = self._flush_routes(actor, record, cursors[1])
+                    if isinstance(retry_exc, CONTROL_FLOW):
+                        self.results.append(StepResult(task.name, False,
+                                                       FailureClass.INTERRUPTED.value))
+                        raise
+                    exc = retry_exc   # 用最后一次失败继续走诊断/草稿路径
+                else:
+                    # 重试成功：就地更正同一条 record（与 heal 成功同纪律）——第一次尝试
+                    # recorder 已写 ok=False+fail_class，不更正就会让 atlas summary 冒出
+                    # phantom 失败类；补 `retried` 计数保证「重试过」可审计（#106 教训）。
+                    if isinstance(record, dict):
+                        record["retried"] = attempts_made[0]
+                        record["ok"] = True
+                        record.pop("fail_class", None)
+                    if self.session:
+                        self._record_shot(record, self.session.capture(task.name, True))
+                    self.results.append(StepResult(task.name, True))
+                    return self.results[-1]
             healed = False
             # heal 模式：只读 Task 且命中已审核知识才重跑一次；写操作绝不自动重试。
             if self.healer and self.config.mode == "heal" and self.healer.can_auto_heal(task, exc):
@@ -137,6 +312,9 @@ class ExecutionEngine:
                     result = self._perform(actor, task)
                     # 重试也可能「API 坏→降级→UI 成功」：降级证据并入同一条 record（就地更正用）。
                     degraded_cursor = self._flush_degradations(actor, record, degraded_cursor)
+                    # 重试同样可能补上路由决策（第一次 perform 在 select 前抛错就没落条目）：
+                    # 就地更正同一条 record，不新开步骤。
+                    routes_cursor = self._flush_routes(actor, record, routes_cursor)
                     # 与主路径同一契约：谎报 produces 不得让「自愈成功」静默写入脏 ctx——
                     # 此处抛错会被内层 except 捕获、healed=False，原异常继续走失败路径。
                     write_produces(actor.ctx, task, result)
@@ -172,7 +350,8 @@ class ExecutionEngine:
                                  pitfall.get("id") if pitfall else None)
             if self.journal:
                 self.journal.append_draft(self.journal.draft(task=task.name, exc=exc,
-                                                             pitfall_id=outcome.pitfall_id or ""))
+                                                             pitfall_id=outcome.pitfall_id or "",
+                                                             evidence=self._verification()))
             if self.session:
                 self._record_shot(record, self.session.capture(task.name, False))
             self.results.append(outcome)
@@ -209,6 +388,53 @@ class ExecutionEngine:
             record.setdefault("degraded_to_ui", []).extend(entries[cursor:])
         return len(entries)
 
+    @staticmethod
+    def _flush_routes(actor: Actor, record: Any, cursor: int) -> int:
+        """把本步骤 perform 新增的 dispatch 路由决策并入 step 记录，返回新游标。
+
+        决策原本只活在 ctx["_dispatch_routes"]（dsl.py _RouterTask），全仓无消费方写盘
+        ——与 #106 的降级留痕同族断点：runs.jsonl 里 "dispatch:<gate>" 步骤 ok=True 却
+        看不出走的哪条分支，事后审计「这轮为何走此路径」无盘可查。只搬运、绝不改变
+        路由决策与 ctx 内容（dsl 侧语义零漂移）；未选中分支保持零记录（那是规格，
+        见 test_dsl_template_dispatch 钉桩），留痕挂在路由节点自身的步骤上。
+        """
+        entries = actor.ctx.get("_dispatch_routes", [])
+        if isinstance(record, dict) and len(entries) > cursor:
+            record.setdefault("dispatch", []).extend(
+                dict(item) for item in entries[cursor:])
+        return len(entries)
+
+    def _verification(self, passed: bool = False) -> dict:
+        """C2 三元组唯一产出点：失败草稿与跑绿固化（落库线）共用同一把刀。
+
+        失败路径（design_c2 §3.3，engine 归 impl_report 落）：失败草稿带
+        「刚发生的失败复现」三元组，供审核塔的晋级闸（`review.verification_problems`）判用。
+        成功路径（dsl._harvest_passed_flow 调用 passed=True）：跑绿的 flow_candidate 草稿
+        带真实成功复现三元组——exit_code/verdict 由**真实终态派生**，绝不反着写
+        （红线 #7 双向同一条：没绿不许装绿，绿了也不许装红）。
+
+        诚实可得才填，拿不到的不猜：
+        - `command`：本次 run 的真实复现命令（case_id 即 flow id / 兼容旧用例名形态）；
+        - `exit_code`：失败路径走到这里就是 1；跑绿固化是 0（dsl 只在 status=="passed" 调）；
+        - `assertions`：**核盘结论**（评审 C2-B 要求的实测项）——recorder 的 op 字面值是
+          `task.metadata.channel.value`（ui/api/auto/hybrid），**不存在 `op=="assert"`**，
+          照设计文本硬取恒 0 且无信息。实盘可得口径是「assert 块执行的 Task 名」：
+          `dsl._run_asserts` 把 dict 形态的 assert 编译成 Task 走 engine.execute，step 名
+          即该 Task 名（如 `assert_api`）；字符串表达式形态不落 step，统计不到就如实 0
+          （0 恰是 GREEN 类反模式的可见信号，不编数、不放宽）；
+        - `verdict`：失败路径恒 "fail"——绝不写 "pass"（红线 #7：没绿就不许装绿）。
+        """
+        steps = getattr(self.recorder, "steps", None) or []
+        assertions = sum(1 for item in steps
+                         if isinstance(item, dict)
+                         and str(item.get("step", "")).lower().startswith("assert"))
+        env = str(getattr(self.config, "env", "") or "")
+        return {"verification": {
+            "command": f"atlas run {self.case_id} --env {env}",
+            "exit_code": 0 if passed else 1,
+            "assertions": assertions,
+            "verdict": "pass" if passed else "fail"}}
+
     def _perform(self, actor: Actor, task: Task) -> Any:
         # auto 不偷偷绕过已实现的 UI 业务逻辑；只有 Task 明确提供 API 操作才可走 API。
         # 自定义 API Task 保留自己的请求/断言逻辑，不被通用 POST 覆盖。
@@ -217,15 +443,49 @@ class ExecutionEngine:
         if task.metadata.channel == Channel.API or (
                 task.metadata.channel == Channel.AUTO and task.metadata.api_operation
                 and getattr(task, "supports_api", False)):
+            # C12（design_c12 §3.2 + 评审必改 C12-A）：降级重跑前先问「API 腿是否可能
+            # 已经把请求发出去了」。插桩面只有 CallApi 通用 POST 的 request_seq；
+            # 自定义 `_perform_api` 腿（下方 `_perform_via_api` 的现成分支判据，
+            # :426-427 同源）走插件自有传输（demo_api 等）——CallApi 在场而 seq 恒不动
+            # ≠「未发出」（磁盘实锤：SelectCustomerTask read_only=False + tasks.py:186
+            # 请求发出后才 raise NIE），故对写任务按 attempted=True fail-closed；
+            # 读语义 API 腿由 Task **显式声明** `api_leg_side_effect_free`（选项 (a)，
+            # 评审 C12-A 拍板；声明位归 Task/插件，引擎不猜——红线 #9/#11）。
+            seq_before = actor.api.request_seq if CallApi in actor.abilities else None
+            custom_leg = bool(getattr(task, "supports_api", False)
+                              and hasattr(task, "_perform_api"))
             try:
                 return self._perform_via_api(actor, task)
             except (NotImplementedError, RuntimeError) as exc:
                 # API 路径未实现或失败：auto 降级 UI，api 直接抛
                 if task.metadata.channel == Channel.API:
                     raise
-                # 降级 UI 时不静默吞掉，记入 ctx 供调试
+                if custom_leg:
+                    if getattr(task, "api_leg_side_effect_free", False):
+                        attempted, leg_note = False, ""
+                    else:
+                        # fail-closed：声明缺省 = 传输面未知，写任务按「已发出」计
+                        attempted = True
+                        leg_note = "（自定义 API 腿，传输不经 CallApi，无法证明未发出）"
+                elif seq_before is None:
+                    # 无插桩面：无法证明没发出，就视为已发出（§2 fail-closed 分流）
+                    attempted, leg_note = True, ""
+                else:
+                    attempted = actor.api.request_seq != seq_before
+                    leg_note = "" if not attempted else f"（seq {seq_before}->{actor.api.request_seq}）"
+                if not delivery.safe_to_auto_reexecute(
+                        read_only=task.metadata.read_only, attempted=attempted, exc=exc):
+                    raise DeliveryUncertain(
+                        f"投递不确定：API 尝试已发出请求{leg_note}且任务非只读，"
+                        f"禁止自动降级重跑；结果请人工核实后再决定是否重放："
+                        f"cause={type(exc).__name__}") from exc   # 原异常作 __cause__ 保留（#90）
+                # 降级 UI 时不静默吞掉，记入 ctx 供调试（C4②：reason 走 failures 单一真相
+                # 的净化摘要——旧实现裸 `str(exc)` 是净化进不来的死角，API 失败文本常带
+                # 回调 URL 的 ticket/code。用 exception_brief 而非 exception_message：
+                # 该字段既有形态是裸消息体（runs.jsonl 已落盘的取值形态不改，设计 C4 §4
+                # 「形态不变」），加类型名会翻新存量断言。
                 actor.ctx.setdefault("_auto_degraded_to_ui", []).append(
-                    {"task": task.name, "reason": str(exc)[:200]})
+                    {"task": task.name, "reason": exception_brief(exc)[:200]})
         return task.perform(actor)
 
     def _perform_via_api(self, actor: Actor, task: Task) -> Any:

@@ -66,6 +66,21 @@ def _asset_path(root: Path, key: str, default: str) -> Path:
     value = Path(os.environ.get(key, default))
     return (root / value).resolve() if not value.is_absolute() else value.resolve()
 
+def _int_env(key: str, default: int, *, minimum: int = 0) -> int:
+    """整数环境项解析（flaky 兜底旋钮的单一读取点）：缺省/空白 → default；
+    非法值（非整数或低于 minimum）点名键名 raise ValueError——坏配置不静默当默认值
+    （#79/#80 口径：用户输入错误宁可点名，不猜）。"""
+    raw = os.environ.get(key)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        raise ValueError(f"{key} 必须是整数，收到 {raw!r}") from None
+    if value < minimum:
+        raise ValueError(f"{key} 不能小于 {minimum}，收到 {value}")
+    return value
+
 def check_legacy_paths(root: Path, web: str) -> None:
     """旧项目根/web 子目录存在性预检——判据与消息的单一真相。
 
@@ -140,6 +155,25 @@ class AtlasConfig:
     @property
     def slow_mo(self) -> int:
         return 300 if self.mode == "debug" and not self.headless else 0
+
+    # ---- flaky 兜底（默认全部保守：重试 0 次 / 超时关闭 → 既有行为逐字不变，零回归）----
+    @property
+    def step_retry(self) -> int:
+        """步骤级 flaky 重试次数（ATLAS_STEP_RETRY，默认 0=不重试）。仅对「只读 Task +
+        可恢复的交互类失败」生效；写操作与断言失败永不重试（红线 #7：重试不放宽断言）。"""
+        return _int_env("ATLAS_STEP_RETRY", 0)
+
+    @property
+    def step_retry_interval_ms(self) -> int:
+        """步骤级重试间隔毫秒（ATLAS_STEP_RETRY_INTERVAL_MS，默认 500）。"""
+        return _int_env("ATLAS_STEP_RETRY_INTERVAL_MS", 500)
+
+    @property
+    def case_timeout(self) -> int:
+        """用例级超时秒数（ATLAS_CASE_TIMEOUT，默认 0=关闭）。>0 时启用后台看门狗，
+        超时向主线程投递 KeyboardInterrupt → 记 interrupted 终态（绝不伪装 pass）。
+        默认关闭保证零回归；UI AUTO TEST 的对齐值建议 600。"""
+        return _int_env("ATLAS_CASE_TIMEOUT", 0)
 
     def external_project(self, key: str, default: str) -> Path:
         return _asset_path(self.root, key, default)

@@ -345,3 +345,178 @@ def test_imported_patrol_flow_runs_end_to_end_with_auth_header(tmp_path):
     assert result["status"] == "passed"
     assert captured == [("POST", "http://ics/web/legacy-web-mdm/findCust",
                          {"isc-app": "iservice", "Authorization": "Bearer t"})]
+
+
+# ── C4① 字面敏感头闸（迁移产出侧）：设计 §6.3 三条 + X4 ASCII + C4-C ────
+
+import pytest  # noqa: E402
+import yaml  # noqa: E402
+from scripts.import_jmeter import main as jmeter_main  # noqa: E402
+
+LITERAL_UUID = "b5360b2f-1c2d-3e4f-5a6b-7c8d9e0f1a2b"
+# JMeter 回退段的字面秘密形态（UUID 同款，和 @UUID@ 区分开便于分别断言）
+DEFAULT_SECRET = "c8d9e0f1-2a3b-4c5d-6e7f-8091a2b3c4d5"
+
+_CREDENTIAL_JMX = """<?xml version="1.0" encoding="UTF-8"?>
+<jmeterTestPlan version="1.2">
+  <hashTree>
+    <HeaderManager testname="HTTP Header Manager">
+      <collectionProp name="HeaderManager.headers">
+        <elementProp name="" elementType="Header">
+          <stringProp name="Header.name">isc-app</stringProp>
+          <stringProp name="Header.value">iservice</stringProp>
+        </elementProp>
+        <elementProp name="" elementType="Header">
+          <stringProp name="Header.name">isc-axios-sessionid</stringProp>
+          <stringProp name="Header.value">@UUID@</stringProp>
+        </elementProp>
+        <elementProp name="" elementType="Header">
+          <stringProp name="Header.name">Authorization</stringProp>
+          <stringProp name="Header.value">Bearer ${__P(new_accessToken,)}</stringProp>
+        </elementProp>
+      </collectionProp>
+    </HeaderManager>
+    <hashTree/>
+    <HTTPSamplerProxy testname="查客户">
+      <stringProp name="HTTPSampler.path">/web/legacy-web-mdm/findEntireCustDetails</stringProp>
+      <stringProp name="HTTPSampler.method">POST</stringProp>
+      <stringProp name="Argument.value">{"customerCode":"${__P(cust_no,@DEFAULT@)}","pageSize":"@BIZ@"}</stringProp>
+    </HTTPSamplerProxy>
+    <hashTree/>
+  </hashTree>
+</jmeterTestPlan>
+"""
+
+
+def _credential_jmx():
+    return (_CREDENTIAL_JMX
+            .replace("@UUID@", LITERAL_UUID)
+            .replace("@DEFAULT@", DEFAULT_SECRET)
+            .replace("@BIZ@", "${__P(page_size,20)}"))
+
+CLEAN_JMX = """<?xml version="1.0" encoding="UTF-8"?>
+<jmeterTestPlan version="1.2">
+  <hashTree>
+    <HeaderManager>
+      <collectionProp name="HeaderManager.headers">
+        <elementProp name="" elementType="Header">
+          <stringProp name="Header.name">isc-app</stringProp>
+          <stringProp name="Header.value">iservice</stringProp>
+        </elementProp>
+      </collectionProp>
+    </HeaderManager>
+    <hashTree/>
+    <HTTPSamplerProxy testname="查客户">
+      <stringProp name="HTTPSampler.path">/web/x/find</stringProp>
+      <stringProp name="HTTPSampler.method">POST</stringProp>
+    </HTTPSamplerProxy>
+    <hashTree/>
+  </hashTree>
+</jmeterTestPlan>
+"""
+
+
+def _write_jmx(tmp_path, text, name="p.jmx"):
+    jmx = tmp_path / name
+    jmx.write_text(text, encoding="utf-8")
+    return jmx
+
+
+@pytest.fixture
+def argv(monkeypatch):
+    def _set(*args):
+        monkeypatch.setattr("sys.argv", ["import_jmeter.py", *args])
+    return _set
+
+
+def test_gate_writes_placeholder_to_file_and_never_the_value(tmp_path, argv, capsys):
+    """582 复现形态：字面 sessionid 必须只剩占位；值不进 YAML 文件、不进 stdout/stderr。"""
+    jmx = _write_jmx(tmp_path, _credential_jmx())
+    out = tmp_path / "flow.yaml"
+    argv(str(jmx), "-o", str(out), "--flow-id", "ics-patrol")
+    assert jmeter_main() == 0
+    yaml_text = out.read_text(encoding="utf-8")
+    captured = capsys.readouterr()
+    assert LITERAL_UUID not in yaml_text
+    assert LITERAL_UUID not in captured.out + captured.err
+    assert "${ATLAS_HDR_1}" in yaml_text
+    assert "isc-app: iservice" in yaml_text, "业务识别头不许被误伤（BUG-920 防线）"
+    assert "Bearer ${__P(new_accessToken,)}" in yaml_text, "已外部化值不重复告警"
+    assert "isc-axios-sessionid" in captured.err and "ATLAS_HDR_1" in captured.err
+    assert "值放 .env" in captured.err
+
+
+def test_without_output_flag_refuses_full_yaml_but_rc_zero(tmp_path, argv, capsys):
+    """无 -o 且闸命中：终端只拿摘要+指引（YAML 全文进回滚缓冲/CI 日志也是泄漏面）。"""
+    jmx = _write_jmx(tmp_path, _credential_jmx())
+    argv(str(jmx))
+    assert jmeter_main() == 0
+    captured = capsys.readouterr()
+    assert "steps:" not in captured.out, "闸命中时不得再打 YAML 全文"
+    assert LITERAL_UUID not in captured.out + captured.err
+    assert "摘要" in captured.out and "-o" in captured.out
+
+
+def test_no_credential_headers_stdout_unchanged(tmp_path, argv, capsys):
+    """闸零命中 → stdout 维持旧行为：YAML 全文照打、不冒告警（#115 不把正常路径翻成改写）。"""
+    jmx = _write_jmx(tmp_path, CLEAN_JMX)
+    argv(str(jmx))
+    assert jmeter_main() == 0
+    captured = capsys.readouterr()
+    assert "steps:" in captured.out and "task: api_call" in captured.out
+    assert "isc-app: iservice" in captured.out, "业务识别头原样保留（BUG-920 防线）"
+    assert "ATLAS_HDR" not in captured.out
+    assert "WARN" not in captured.err, "零命中时不该冒出告警清单"
+
+
+def test_placeholder_default_value_is_masked_in_stderr(tmp_path, argv, capsys):
+    """C4-C：`${__P(name,DEFAULT)}` 的回退段是字面凭据的藏身处（JMeter 语法把默认值嵌在
+    括号里），旧实现 `val[:80]` 原样打回 stderr。字面秘密形态的值段被抹，**变量名与结构
+    保留**——这份清单是给人接 env 用的，抹掉变量名等于销毁接线依据。"""
+    jmx = _write_jmx(tmp_path, _credential_jmx())
+    out = tmp_path / "flow.yaml"
+    argv(str(jmx), "-o", str(out))
+    assert jmeter_main() == 0
+    err = capsys.readouterr().err
+    assert DEFAULT_SECRET not in err, "字面秘密形态的 DEFAULT 段不得进 stderr"
+    assert "cust_no" in err and "<redacted>" in err
+    # YAML 产物里占位符原样保留（闸只管敏感头），人审接 env 后照常可跑
+    assert DEFAULT_SECRET in out.read_text(encoding="utf-8")
+
+
+def test_business_shaped_default_stays_verbatim(tmp_path, argv, capsys):
+    """业务形态默认值（`20`）按「不猜」口径原样列出——判据只认字面秘密形态。"""
+    jmx = _write_jmx(tmp_path, _credential_jmx())
+    out = tmp_path / "flow.yaml"
+    argv(str(jmx), "-o", str(out))
+    assert jmeter_main() == 0
+    err = capsys.readouterr().err
+    assert "page_size,20" in err, "业务默认值被抹=接线依据丢失"
+
+
+def test_stderr_and_stdout_are_gbk_encodable(tmp_path, argv, capsys):
+    """X4：GBK 控制台真崩点（旧 `⚠`）——迁移产出的每条终端行都必须可 GBK 编码。"""
+    jmx = _write_jmx(tmp_path, _credential_jmx())
+    out = tmp_path / "flow.yaml"
+    argv(str(jmx), "-o", str(out))
+    assert jmeter_main() == 0
+    captured = capsys.readouterr()
+    for stream in (captured.out, captured.err):
+        stream.encode("gbk")   # 不抛即通过（旧实现此处 UnicodeEncodeError）
+    assert "WARN:" in captured.err
+
+
+def test_missing_jmx_still_rc1(tmp_path, argv):
+    argv(str(tmp_path / "nope.jmx"))
+    assert jmeter_main() == 1
+
+
+def test_apply_header_gate_delegates_to_single_implementation(tmp_path):
+    """闸的实现只有一把：脚本侧函数必须直接委派 credential_gate，不复制名单（#92/M13）。"""
+    from atlas import credential_gate
+    from scripts import import_jmeter
+
+    flow = {"steps": [{"headers": {"Cookie": "sid=" + LITERAL_UUID}}]}
+    hits = import_jmeter.apply_header_gate(flow)
+    assert hits == [(1, "Cookie", "ATLAS_HDR_1")]
+    assert flow["steps"][0]["headers"]["Cookie"] == credential_gate.placeholder_for(1)

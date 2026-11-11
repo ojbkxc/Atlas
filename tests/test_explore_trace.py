@@ -1,7 +1,12 @@
 """探索 trace→草稿编译与生产防线。浏览器实会话不在离线测试面，按纪律另行真实验证。"""
 import json
+from pathlib import Path
+from types import SimpleNamespace
+
+import atlas.explore as explore
 from atlas.experience import ExperienceJournal
-from atlas.explore import compile_trace, extract_candidates
+from atlas.explore import compile_trace, extract_candidates, start
+from atlas.review import ReviewQueue
 from atlas.cli import main
 
 
@@ -63,6 +68,41 @@ def test_compile_trace_dedups_selector_across_checkpoints(tmp_path):
     summary = compile_trace(trace, journal)
     assert summary["steps"] == 2
     assert summary["selector_candidates"] == 1  # Save 只报一次，第二个 checkpoint 不重复占塔
+
+
+def test_recompile_after_decision_exactly_one_row_per_candidate(tmp_path):
+    """终验#8 防回退：同一探针候选登记两次→队列恰一条（跨决定态幂等）。
+
+    旧 append_draft 同 id 合并只认 pending_review 行：首轮草稿处置（批准/驳回）后
+    二次 explore --compile 同一 trace，追加出同 id 第二行——磁盘实锤三条探针草稿
+    （aaa919a656d3/1f52715010fc/6aae7590ce3c）各两份。重复行还放大 reject/approve
+    按 id 的全行翻转，把已批准的历史状态改写（跨决定历史污染）。现同 id 命中一律
+    只增 seen、刷新 evidence：恰一条、决定态不回翻、pending 行照常可审。
+    """
+    snap = tmp_path / "001.aria.yaml"
+    snap.write_text('- button "Confirm"\n', encoding="utf-8")
+    trace = tmp_path / "trace.jsonl"
+    trace.write_text(json.dumps({"checkpoint": 1, "url": "https://sit.example/list",
+                                 "snapshot_file": str(snap)}) + "\n", encoding="utf-8")
+    journal = ExperienceJournal(tmp_path)
+    compile_trace(trace, journal)
+    # 人先处置 trace_step（对应终验清塔真实动作），selector_candidate 留 pending
+    queue = ReviewQueue(tmp_path)
+    step_row = next(r for r in queue.rows() if r["kind"] == "trace_step")
+    queue.reject(step_row["id"], reason="probe 素材暂不成 flow")
+    # 二次编译同一份 trace：候选「再登记」，队列仍恰两条（每 id 一条）
+    compile_trace(trace, journal)
+    rows = [json.loads(l) for l in
+            (tmp_path / "experience_drafts.jsonl").read_text(encoding="utf-8").splitlines() if l.strip()]
+    assert len(rows) == 2, "同 id 再登记绝不追加第二条（#118 去重纪律跨决定态）"
+    assert len({r["id"] for r in rows}) == 2
+    by_kind = {r["kind"]: r for r in rows}
+    assert by_kind["trace_step"]["status"] == "rejected"      # 终态记录不回翻成待审
+    assert by_kind["trace_step"]["seen"] == 2                 # 复登记只计数
+    assert by_kind["selector_candidate"]["status"] == "pending_review"
+    assert by_kind["selector_candidate"]["seen"] == 2         # pending 合并计数不丢
+    assert [r["id"] for r in queue.pending("selector_candidate")] == \
+        [by_kind["selector_candidate"]["id"]]                 # 塔内仍恰一条可审
 
 
 def test_compile_trace_survives_torn_utf8_bytes(tmp_path):
@@ -144,3 +184,164 @@ def test_explore_compile_via_cli(tmp_path, capsys):
     assert main(["--root", str(tmp_path), "explore", "--compile", str(trace)]) == 0
     out = json.loads(capsys.readouterr().out)
     assert out["selector_candidates"] == 1 and out["next"].startswith("atlas review")
+
+
+# ---------- start() 的 cmd 文件通道（无头模式，协议见 explore.py 模块 docstring） ----------
+
+class _FakePage:
+    def __init__(self):
+        self.url = "https://sit.example/list"
+
+    def title(self):
+        return "Fake Console"
+
+    def aria_snapshot(self):
+        return '- button "Save"\n- textbox "Remark"\n'
+
+
+def _fake_explore_session(tmp_path, monkeypatch):
+    """离线替身：DemoRuntime 换成不碰浏览器的假会话，轮询间隔归零，CDP env 隔离。"""
+    closed = []
+
+    class _Runtime:
+        def __init__(self, config, login=True, account=None):
+            self.account = account or "fake"
+            self.actor = SimpleNamespace(page=_FakePage())
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            closed.append(True)
+            return False
+
+    monkeypatch.setattr("atlas.runtime.DemoRuntime", _Runtime)
+    monkeypatch.setattr(explore, "_CMD_POLL_INTERVAL", 0.0)   # 测试不真睡
+    monkeypatch.delenv("CDP_DEBUG", raising=False)            # start() setdefault 写回，结束还原
+    config = SimpleNamespace(is_production=False,
+                             reports_dir=tmp_path / "reports",
+                             artifacts_dir=tmp_path / "artifacts")
+    return config, closed
+
+
+def test_explore_cmd_file_blank_line_records_checkpoint(tmp_path, monkeypatch):
+    """无头主缺陷回归：stdin 不可用（console 立刻 EOF）时 cmd 文件空行照样落 checkpoint。
+
+    旧实现 console=input 在 Windows 后台管道上直接 EOF 崩会话 → 0 checkpoint、
+    trace 为空、--compile 没输入。cmd 文件通道下：空行=回车=checkpoint，消费后
+    文件清空；console EOF 只表示「暂无输入」不再顶掉会话。会话启动即清空 cmd
+    文件（残留 stop 不许串场），所以驱动命令由 fake console 兼任写入（=会话起来
+    后外部驱动才写，与真实时序一致）。"""
+    cmd = tmp_path / "explore.cmd"
+    config, closed = _fake_explore_session(tmp_path, monkeypatch)
+    calls = {"n": 0}
+
+    def fake_console(prompt):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            cmd.write_text("\n", encoding="utf-8")   # 外部驱动此刻请求一个 checkpoint
+            raise EOFError                            # 无头 stdin：读取立刻 EOF（缺陷现场）
+        return "stop"
+
+    trace = start(config, trace=tmp_path / "trace.jsonl",
+                  console=fake_console, cmd_file=cmd)
+    rows = [json.loads(l) for l in trace.read_text(encoding="utf-8").splitlines() if l.strip()]
+    assert [r["checkpoint"] for r in rows] == [1]     # trace 行格式不动（compile 契约）
+    assert rows[0]["url"] == "https://sit.example/list"
+    assert rows[0]["title"] == "Fake Console"
+    assert rows[0]["snapshot_lines"] == 2
+    assert Path(rows[0]["snapshot_file"]).is_file()
+    assert cmd.read_text(encoding="utf-8") == ""      # 命令已消费清空，绝不二次执行
+    assert closed == [True]                           # 会话正常收尾，不是崩出去
+
+
+def test_explore_cmd_file_stop_ends_session(tmp_path, monkeypatch):
+    """stop 命令经 cmd 文件干净结束会话：0 checkpoint 不留半截，文件不残留，runtime 收尾。"""
+    cmd = tmp_path / "explore.cmd"
+    config, closed = _fake_explore_session(tmp_path, monkeypatch)
+    calls = {"n": 0}
+
+    def fake_console(prompt):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            cmd.write_text("STOP\n", encoding="utf-8")   # 大小写不敏感
+            raise EOFError
+        raise AssertionError("stop 消费后会话应已结束，console 不应被再次等待")
+
+    trace = start(config, trace=tmp_path / "trace.jsonl",
+                  console=fake_console, cmd_file=cmd)
+    assert trace == tmp_path / "trace.jsonl"
+    assert not trace.exists() or trace.read_text(encoding="utf-8") == ""   # 0 checkpoint
+    assert calls["n"] == 1
+    assert closed == [True]
+    assert cmd.read_text(encoding="utf-8") == ""       # stop 已消费，不残留不重触发
+
+
+def test_explore_cmd_file_via_env_var(tmp_path, monkeypatch):
+    """ATLAS_EXPLORE_CMD_FILE 环境变量接线：cli.py 一行不改即可开无头通道。"""
+    cmd = tmp_path / "env_channel.cmd"
+    monkeypatch.setenv("ATLAS_EXPLORE_CMD_FILE", str(cmd))
+    config, closed = _fake_explore_session(tmp_path, monkeypatch)
+    calls = {"n": 0}
+
+    def fake_console(prompt):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            cmd.write_text("\n", encoding="utf-8")
+            raise EOFError
+        return "stop"
+
+    trace = start(config, trace=tmp_path / "trace.jsonl", console=fake_console)
+    rows = [json.loads(l) for l in trace.read_text(encoding="utf-8").splitlines() if l.strip()]
+    assert [r["checkpoint"] for r in rows] == [1]
+    assert cmd.read_text(encoding="utf-8") == ""
+    assert closed == [True]
+
+
+def test_explore_cmd_file_and_console_coexist(tmp_path, monkeypatch):
+    """两通道共存：cmd 文件两个空行=两个 checkpoint，console 回车=第三个；文件里
+    已到达的命令先处理（先到者），通道间不互抢不漏记。"""
+    cmd = tmp_path / "explore.cmd"
+    config, closed = _fake_explore_session(tmp_path, monkeypatch)
+    calls = {"n": 0}
+
+    def fake_console(prompt):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            cmd.write_text("\n\n", encoding="utf-8")   # 外部驱动连按两次回车
+            raise EOFError
+        if calls["n"] == 2:
+            return ""                                   # 人在 console 上回车 → 第三个
+        return "stop"
+
+    trace = start(config, trace=tmp_path / "trace.jsonl",
+                  console=fake_console, cmd_file=cmd)
+    rows = [json.loads(l) for l in trace.read_text(encoding="utf-8").splitlines() if l.strip()]
+    assert [r["checkpoint"] for r in rows] == [1, 2, 3]
+    for i in (1, 2, 3):
+        assert (tmp_path / "artifacts" / "exploration" / "trace" / f"{i:03d}.aria.yaml").is_file()
+    assert calls["n"] == 3
+    assert cmd.read_text(encoding="utf-8") == ""
+    assert closed == [True]
+
+
+def test_explore_cmd_file_unknown_command_named_not_executed(tmp_path, monkeypatch, capsys):
+    """未知命令不冒充 checkpoint 也不无限残留：stderr 点名（ASCII WARN: 前缀）后清空。"""
+    cmd = tmp_path / "explore.cmd"
+    config, closed = _fake_explore_session(tmp_path, monkeypatch)
+    calls = {"n": 0}
+
+    def fake_console(prompt):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            cmd.write_text("status?\n", encoding="utf-8")
+            raise EOFError
+        return "stop"
+
+    trace = start(config, trace=tmp_path / "trace.jsonl",
+                  console=fake_console, cmd_file=cmd)
+    assert not trace.exists() or trace.read_text(encoding="utf-8") == ""   # 未落任何 checkpoint
+    err = capsys.readouterr().err
+    assert "WARN" in err and "status?" in err
+    assert cmd.read_text(encoding="utf-8") == ""
+    assert closed == [True]

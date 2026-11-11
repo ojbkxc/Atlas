@@ -21,6 +21,24 @@ class LegacyCase:
         return self.project_root / self.web_dir
 
 class LegacyAdapter:
+    # gap11 快垫片注入面的键名/模块名单点（形态归 support-impl #17，漂了只改这里）：
+    # `-p` 注入的插件模块 + 运行期开关白名单（透传语义=这些键必须可达子进程）。
+    FAST_PLUGIN_MODULE = "atlas.fastplugin"
+    FAST_ENV_SWITCHES = ("ATLAS_FAST_WAITS", "ATLAS_FAST_NO_STEP_SHOTS",
+                         "ATLAS_FAST_WAITS_STATS", "ATLAS_FAST_MIN_MS",
+                         "ATLAS_FAST_SETTLE_ANCHOR", "ATLAS_FAST_SITE_RULES")
+    # gap11 #30 曾在此代置位 `ATLAS_FAST_WAITS=mask`（「打了旗标就该生效」）。#36（2026-11-10
+    # 真机三轮 A/B + 8 组档位探针）**撤回等待腿的默认置位**：`mask`/`mask+xhr` 在真机上
+    # **间歇**把失败点前移（同码同配置有时过、有时挂），`mutation` 安全但零节省（等于关掉），
+    # `min_ms=3000` 只是把语义等待退化成「更短的固定等待」。按 G11-1 硬规则（失败点前移即
+    # 判行为变更），一个会**间歇改变行为**的档位不能以「默认开 + 风险声明」发给使用者。
+    # 因此：**截图抑制保留默认**（G11-2 非破坏差分已判成立，且它不改变任何等待），
+    # **等待垫片改为显式 opt-in**——要快自己在 env 设 `mask|mask+xhr|mutation`。
+    # 显式设置恒优先（含 off/0/false 退旧行为），默认只补 unset/空值；不默认
+    # STATS/MIN_MS/ANCHOR（stats 随 waits 开自然产出，调参键留人自决——红线 #12）。
+    # 证据：`reports/gap11_ab_r3_20261110/SUMMARY3.md` + 同目录 `probe_*.log`（不得删除）。
+    FAST_DEFAULTS = (("ATLAS_FAST_NO_STEP_SHOTS", "1"),)
+
     def __init__(self, config: AtlasConfig, project_root: Path | None = None):
         self.config = config
         self.root = (project_root or config.legacy_project).resolve()
@@ -33,12 +51,42 @@ class LegacyAdapter:
         return LegacyCase(self.root, path, case_id, self.config.legacy_web)
 
     def pytest_command(self, node: str | None = None, headed: bool = False,
-                       keyword: str = "") -> list[str]:
-        command = [sys.executable, "-m", "pytest", node or self.config.legacy_test_node,
-                   "-v", "-s", "--headed" if headed else "--headless"]
+                       keyword: str = "", fast: bool = False) -> list[str]:
+        # fast=False 的产出与旧实现逐字节相同（gap11 口径③：不给 --fast 行为不变，
+        # 既有测钉死）；-p 前置于收集参数——插件要早注册，fixture 才赶得上收集期。
+        head = [sys.executable, "-m", "pytest"]
+        if fast:
+            head += ["-p", self.FAST_PLUGIN_MODULE]
+        command = head + [node or self.config.legacy_test_node,
+                          "-v", "-s", "--headed" if headed else "--headless"]
         if keyword:
             command += ["-k", keyword]
         return command
+
+    def fast_child_env(self, base: "dict | None" = None) -> dict:
+        """`--fast` 的子进程 env（gap11）。判据只在 `run_pytest(fast=True)` 一处消费。
+
+        ① PYTHONPATH 相对项转绝对：真实坑——`PYTHONPATH=src` 按**父进程 cwd** 生效，
+           而子进程 cwd 是旧仓 web 目录（`iservice`），相对项在那边解析成不存在的目录，
+           `import atlas` 当场崩、`-p atlas.fastplugin` 连加载都到不了；
+        ② 兜底保证本仓 atlas 的 import 根（包目录的父级，src 布局即 <root>/src）在场——
+           插件住在 atlas 包里，旧仓导不到 atlas 就没有垫片；
+        ③ `FAST_ENV_SWITCHES` 清单开关经 base/os.environ 原样透传（只加不改写）；
+        ④ `FAST_DEFAULTS` 仅对 unset/空值置默认（显式含 off 优先）。#36 后默认清单只剩
+           截图抑制——等待垫片是显式 opt-in（`ATLAS_FAST_WAITS` 不代置位，理由见类注释）。
+        """
+        env = dict(os.environ if base is None else base)
+        parts = [item for item in str(env.get("PYTHONPATH", "")).split(os.pathsep) if item]
+        parts = [item if Path(item).is_absolute() else str(Path(item).resolve())
+                 for item in parts]
+        atlas_root = str(Path(__file__).resolve().parent.parent)
+        if atlas_root not in parts:
+            parts.insert(0, atlas_root)
+        env["PYTHONPATH"] = os.pathsep.join(parts)
+        for key, fallback in self.FAST_DEFAULTS:
+            if not env.get(key):
+                env[key] = fallback
+        return env
 
     @property
     def exec_dir(self) -> Path:
@@ -59,12 +107,24 @@ class LegacyAdapter:
         config.legacy_project），行为与原两分支逐字等价，通过路径零涟漪（#115）。"""
         check_legacy_paths(self.root, self.config.legacy_web)
 
-    def run_pytest(self, node: str | None = None, headed: bool = False, keyword: str = "") -> int:
+    def run_pytest(self, node: str | None = None, headed: bool = False, keyword: str = "",
+                   fast: bool = False) -> int:
         import subprocess
         self.check_exec_dir()
         env = dict(os.environ)
-        # Atlas 的 observability 不偷偷替换旧引擎，默认保持同事项目结果与速度。
-        return subprocess.run(self.pytest_command(node, headed, keyword),
+        if fast:
+            # Atlas 的 observability 不偷偷替换旧引擎：垫片只经 `-p` 显式 opt-in；
+            # env 的 PYTHONPATH 绝对化/插件根注入也仅在此腿发生（fast=False 逐字节不变）
+            env = self.fast_child_env(env)
+            if not env.get("ATLAS_FAST_WAITS"):
+                # #36：--fast 默认只开截图抑制。等待腿在真机 A/B 上被判「间歇让失败点前移」，
+                # 不再默认开；但「以为开了其实没开」的教训（#30）要求这里必须出声。
+                print("NOTE: 等待垫片未启用（--fast 默认只抑制成功截图）。"
+                      "要提速请显式设 ATLAS_FAST_WAITS=mask|mask+xhr|mutation——"
+                      "注意真机 A/B 显示 mask/mask+xhr 在数据敏感链路上会间歇改变失败点，"
+                      "启用后必须重跑失败点对齐验证（docs/gaps/gap11-legacy-fast-compat.md §G）。")
+        # 默认保持同事项目结果与速度。
+        return subprocess.run(self.pytest_command(node, headed, keyword, fast=fast),
                               cwd=self.exec_dir, env=env).returncode
 
 class LegacyStep(Task):

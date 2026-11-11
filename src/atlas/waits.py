@@ -20,11 +20,26 @@ TimeoutError 这类**永远不可能自愈**的抛错被烧满超时窗口后谎
 timeout=0 是「无超时」文档语义、负值由驱动归 1，底层不抛——窗口耗尽的 TimeoutError
 契约由本模块自己保证（timeout_ms<=0 的调用方拿到的正是带归因的 TimeoutError，
 探针实测），不伪造底层报错。
+
+真实 flaky 兜底（对齐 UI AUTO TEST 的轮询重试语义）：`retry()` 是通用重试助手，
+`is_recoverable()` 是「可重试/不可重试」判据的**单一真相**——只重试导航瞬态与交互类
+失败，断言失败、业务/数据错误、契约违规、会话失效、环境阻塞、控制流一律不重试
+（红线 #7：重试只兜 flaky，绝不把失败放宽成通过，否则是掩盖缺陷）。引擎的步骤级
+重试与这里的判据同源，不留第二份名单（#92）。
+
+**为什么本模块的表格/遮罩入参仍是 CSS 字符串，而不是 gap13 的结构化定位描述**：
+`.el-table` / `.el-loading-mask` 是**框架结构类**（Element UI 的渲染约定），不是业务元素，
+也没有稳定的无障碍名——用 `get_by_role` 定位不到，硬套「ARIA 优先」只会把能等的等待改成
+等不到。业务元素的定位（可被 aria snapshot 复核、可进组件库人审）走 `atlas.locators`；
+两者判据对象不同，不为好看而强行统一（红线 #12）。如实写在这里，而不是悄悄改成
+`get_by_role` 再等真机才发现等不到。
 """
 from __future__ import annotations
-from typing import Any
+import time
+from typing import Any, Callable
 
-from .failures import exception_text
+from .failures import (CONTROL_FLOW, NEVER_AUTO_RETRY, FailureClass, classify_failure,
+                       exception_text)
 
 # 导航瞬态判据（Playwright 官方报错文案）：执行上下文因导航销毁、导航中止当前调用
 # （"Execution context was destroyed, most likely because of a navigation" /
@@ -42,6 +57,72 @@ def _is_transient(exc: BaseException) -> bool:
     单一真相（#127/#129 纪律：坏 __str__ 不顶归因，不再手拼第三份 f-string）。"""
     text = exception_text(exc)
     return any(mark in text for mark in _TRANSIENT_MARKS)
+
+
+def is_recoverable(exc: BaseException) -> bool:
+    """「此异常值得重试」的**单一真相**（引擎步骤级重试与 retry() 同源，#92 不留第二份）。
+
+    只认两类可能随重试自愈的失败：
+    - 导航瞬态（`_is_transient`：reload/切 OU 期执行上下文销毁、frame detached）；
+    - 交互类（`classify_failure` 判 INTERACTION：timeout / not visible / click /
+      locator / intercept / element 等 UI 交互抖动）。
+
+    其余一律 False——断言失败（ASSERTION）、业务/数据错误（DATA/CONTRACT）、会话失效
+    （SESSION）、环境阻塞（ENV_BLOCKED）、无法归因（UNKNOWN）、控制流（CONTROL_FLOW）
+    都不重试。**红线 #7**：断言失败重试不是「兜 flaky」而是「掩盖缺陷」——把一次真实
+    失败重跑成通过，等于放宽断言。控制流（Ctrl-C/SystemExit/GeneratorExit）不是失败，
+    更不该被重试吞掉（#114/#108）。
+    C12-E 追加**类型级**硬闸：`failures.NEVER_AUTO_RETRY`（AwaitingHuman、
+    DeliveryUncertain）无条件 False，且求值位先于文本瞬态判据——「等人」重跑等不来人，
+    「投递不确定」重跑就是写操作双跑（正是 C12 存在的理由），两者的 reason/cause 文案
+    都不该成为判据。
+    """
+    if isinstance(exc, CONTROL_FLOW):
+        return False
+    # C12-E：类型级拒绝先于任何文本判据（`_is_transient` 在 `classify_failure` 之前求值，
+    # 文案里带 "navigation/detached" 的「等人」或「投递不确定」会被误判可重试）。
+    # 判据来自 failures.NEVER_AUTO_RETRY 单点，本函数不抄名单（#92）。
+    if isinstance(exc, NEVER_AUTO_RETRY):
+        return False
+    if _is_transient(exc):
+        return True
+    return classify_failure(exc) == FailureClass.INTERACTION
+
+
+def retry(fn: Callable[[], Any], *, attempts: int = 1, interval_ms: float = 0.0,
+          backoff: float = 1.0, sleep: Callable[[float], Any] | None = None,
+          retry_on: Callable[[BaseException], bool] | None = None) -> Any:
+    """通用重试助手：最多调用 fn `attempts` 次（attempts<=0 视同 1，即不重试）。
+
+    仅在 fn 抛出满足 `retry_on`（默认 `is_recoverable`）的异常时重试；两次尝试之间等待
+    `interval_ms` 毫秒，每次按 `backoff` 指数递增（backoff=1.0 为固定间隔）。**绝不吞异常**：
+    不可重试的异常立即原样传播，重试耗尽也传播最后一次的原异常（红线 #7——重试只是给 flaky
+    多一次机会，失败仍是失败，断言不被放宽）。
+
+    控制流异常（CONTROL_FLOW）**无条件**立即传播，即使调用方传入一个恒 True 的 retry_on
+    ——终止信号不是可重试失败（#114/#108 硬护栏，不依赖调用方正确性）。
+
+    `sleep` 可注入（离线测试传假 sleep，零真实等待）；缺省 `time.sleep`。page 场景的等待
+    仍应优先用 `wait_for_*`/`page.wait_for_timeout`（本助手是**通用**重试，不限于页面）。
+    """
+    total = attempts if isinstance(attempts, int) and attempts > 0 else 1
+    predicate = is_recoverable if retry_on is None else retry_on
+    sleeper = time.sleep if sleep is None else sleep
+    delay = max(0.0, float(interval_ms)) / 1000.0
+    for attempt in range(1, total + 1):
+        try:
+            return fn()
+        except BaseException as exc:
+            if isinstance(exc, CONTROL_FLOW):
+                raise
+            if attempt >= total or not predicate(exc):
+                raise
+            if delay > 0:
+                sleeper(delay)
+            delay *= backoff
+    # 循环要么 return 要么 raise，理论不可达；保留以明示「绝不返回 None 冒充成功」。
+    raise RuntimeError("retry: unreachable")   # pragma: no cover
+
 
 _TABLE_ROWS_JS = """(sel) => {
     const t = document.querySelector(sel);

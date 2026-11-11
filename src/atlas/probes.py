@@ -5,6 +5,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Callable
 from .config import AtlasConfig
+from . import delivery
 from .failures import EnvBlocked
 
 @dataclass
@@ -73,11 +74,20 @@ class CreateQuota:
         self.limit = limit
         self.created: list[dict] = []
 
-    def reserve(self, entity: str, document: dict) -> None:
-        """占用一个建单名额；调用方必须先 reserve 再真正建单。"""
+    def reserve(self, entity: str, document: dict, idem: str = "") -> None:
+        """占用一个建单名额；调用方必须先 reserve 再真正建单。
+
+        `idem`（C12/design_c12 §3.4）：幂等关联把手——**给了才写键**（缺省空串=不写，
+        与 C6 version 参「缺省不写=存量条目形态零涟漪」同先例，#115）。条目读侧
+        （`item.get("idem")`）对无键旧行天然容错（#112）。同 (entity, where) 跨 run
+        同 token：投递不确定失败后，它是下次 find/人工追单的关联把手。
+        """
         if len(self.created) >= self.limit:
             raise EnvBlocked(f"本次运行 create 配额已用完（{self.limit}），请复用数据或调整配额")
-        self.created.append({"entity": entity, "document": document})
+        item = {"entity": entity, "document": document}
+        if idem:
+            item["idem"] = idem
+        self.created.append(item)
 
     def record_document(self, entity: str, document: dict) -> None:
         """建单完成后补记真实单号，供回收；不额外占名额。"""
@@ -153,16 +163,37 @@ class ScriptedCreator:
     用法：
         creator = ScriptedCreator(create_fn, required_env=("DEMO_USERNAME",))
         probe = CallableProbe("SalesOrder", finder, creator)
+
+    C12 幂等键到脚本面（design_c12 §3.5，红线 #11：引擎只传递，脚本侧去重归业务）：
+    `honors_idempotency=True` 是**人的声明**——「本脚本兑现 atlas_idem 键」。缺省
+    False：进 stdin 的 JSON **逐字节形态与旧版一致**（不往脚本不认识的键塞东西，
+    红线 #12 不给未验证能力加功能面），token 仅落配额/回收台账。True：where 里
+    注入 `{IDEM_WHERE_KEY: token}`；`idem_entity` 供与台账 token 同面对齐（缺省空串
+    = where-only 把手，设计未给 entity 通路，接线时可显式传）。canonical 失败让位
+    #61 报错（C12-F）：where 里坏值交给脚本侧 json.dumps 的点名，不另立第二处报错。
     """
-    def __init__(self, create_fn: Callable[[dict], dict], *, required_env: tuple[str, ...] = ()):
+    def __init__(self, create_fn: Callable[[dict], dict], *, required_env: tuple[str, ...] = (),
+                 honors_idempotency: bool = False, idem_entity: str = ""):
         self.create_fn = create_fn
         self.required_env = required_env
+        self.honors_idempotency = honors_idempotency
+        self.idem_entity = idem_entity
+
+    def _with_idem(self, where: dict[str, Any]) -> dict[str, Any]:
+        """声明兑现时把幂等键注入 where（进 stdin 前最后一站）。"""
+        if not self.honors_idempotency:
+            return where
+        try:
+            token = delivery.idempotency_token(self.idem_entity, where)
+        except ValueError:
+            return dict(where)   # C12-F：坏 where 形态让位 creators #61 的键路径点名
+        return {**where, delivery.IDEM_WHERE_KEY: token}
 
     def __call__(self, where: dict[str, Any]) -> dict:
         missing = [key for key in self.required_env if not os.environ.get(key)]
         if missing:
             raise EnvBlocked(f"建单脚本缺少环境变量：{', '.join(missing)}")
-        result = self.create_fn(dict(where))
+        result = self.create_fn(dict(self._with_idem(where)))
         if not isinstance(result, dict):
             raise TypeError("create 脚本必须返回 dict（至少含 remark 与单号）")
         return result
@@ -193,8 +224,20 @@ class DataProvider:
                                  "find_only 禁止造数，请准备主数据或调整条件")
         if self.config.is_production:
             raise PermissionError("生产环境禁止 create，请改用 find_only")
+        # C12（design_c12 §3.4）：幂等关联把手在**占额之前**算——reserve 之后 create 若抛，
+        # 台账行已带 token，回收清单即证据。「同条件同 token」是下次 find/人工追单的把手。
+        # C12-F（评审撞序裁决）：canonical 失败让位 creators #61 的「哪个键什么类型」点名——
+        # 这里 idem 留空继续走，绝不抢那条更可归因的报错；配测钉归属。
+        # 与 #14 的关系（gap6「同源取增量」落点）：#14 保证「超额不建单」（调用前占用），
+        # C12 保证「失败不盲重发」；**现引擎没有任何自动二次 supply 通路**（provision 每
+        # 需求恰调一次，dsl 侧无重试腿——测钉），若业务方手工重触发 supply，配额满即
+        # EnvBlocked 拦在 create 之前。配额先占语义零改动，engine validate_write 零改动。
+        try:
+            idem = delivery.idempotency_token(requirement.entity, requirement.where)
+        except ValueError:
+            idem = ""
         # 配额必须在调用建单脚本**之前**检查，否则超额时已经真实建了一单。
-        self.quota.reserve(requirement.entity, {"where": requirement.where})
+        self.quota.reserve(requirement.entity, {"where": requirement.where}, idem=idem)
         created = probe.create(requirement.where)
         # 建单刚发生就先验形态：裸 creator（不包 ScriptedCreator 的直传函数）返回非 dict 时，
         # 旧实现要到 remark 检查处 created.get 才 AttributeError——根因（返回值形态）被

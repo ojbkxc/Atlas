@@ -1,3 +1,7 @@
+import json
+
+import pytest
+
 from atlas.abilities import CallApi
 from atlas.contracts import Contract
 from atlas.failures import FailureClass, api_evidence
@@ -483,3 +487,59 @@ def test_api_evidence_non_dict_data_never_crashes_classifier():
     # dict data 原路径行为不变（BUG-653 仍归 ENV_BLOCKED）
     assert api_evidence(exc, {"ok": False, "status": 200,
                               "data": {"resultCode": "BUG-653"}}) == FailureClass.ENV_BLOCKED
+
+
+# ---------- gap13：组件库两形态（CSS 字符串 / 结构化描述） ----------
+
+class _LocPage:
+    def __init__(self):
+        self.calls = []
+
+    def locator(self, css):
+        self.calls.append(("locator", css))
+        return ("css", css)
+
+    def get_by_role(self, role, name=None, **kw):
+        self.calls.append(("get_by_role", role, name, kw))
+        return ("role", role, name)
+
+    def get_by_label(self, text, **kw):
+        self.calls.append(("get_by_label", text, kw))
+        return ("label", text)
+
+
+def test_save_component_selector_structured_description_round_trip(tmp_path):
+    """结构化描述入库 → 读回 → 解析成 locator：ARIA 候选不必手抄 CSS（gap13 主判据）。"""
+    kb = KnowledgeBase(tmp_path)
+    out = kb.save_component_selector("销售单", "保存", {"role": "button", "name": "保存"},
+                                     approved=True, source="test")
+    assert out["selector"] == {"role": "button", "name": "保存"}     # 落盘用户形态（可再解析）
+    saved = json.loads((tmp_path / "components.json").read_text(encoding="utf-8"))
+    reg = SelectorRegistry(saved)
+    assert reg.get("销售单", "保存") == {"role": "button", "name": "保存"}
+    assert reg.describe("销售单", "保存") == 'role=button[name="保存"]'
+    page = _LocPage()
+    assert reg.resolve(page, "销售单", "保存") == ("role", "button", "保存")
+    assert page.calls[0] == ("get_by_role", "button", "保存", {"exact": True})
+
+
+def test_save_component_selector_css_forms_stay_strings(tmp_path):
+    """向后兼容：字符串原样落盘；{"css": ...} 归一回字符串（老数据/老读侧零改动）。"""
+    kb = KnowledgeBase(tmp_path)
+    kb.save_component_selector("c", "a", ".legacy > .x", approved=True, source="test")
+    kb.save_component_selector("c", "b", {"css": "#app .btn"}, approved=True, source="test")
+    saved = json.loads((tmp_path / "components.json").read_text(encoding="utf-8"))
+    assert saved["components"]["c"]["selectors"] == {"a": ".legacy > .x", "b": "#app .btn"}
+    page = _LocPage()
+    reg = SelectorRegistry(saved)
+    assert reg.resolve(page, "c", "a") == ("css", ".legacy > .x")     # 老形态照走 page.locator
+
+
+def test_save_component_selector_bad_shape_named_before_writing(tmp_path):
+    """手滑写坏的描述在**落盘前**点名：知识文件里不出现跑不了的定位描述，也不留半状态。"""
+    from atlas import locators
+    kb = KnowledgeBase(tmp_path)
+    for bad in ({"role": "button", "css": ".x"}, {"nmae": "保存"}, {"role": ""}, {}, 12345):
+        with pytest.raises(locators.LocatorSpecError):
+            kb.save_component_selector("c", "e", bad, approved=True, source="test")
+    assert not (tmp_path / "components.json").exists()
