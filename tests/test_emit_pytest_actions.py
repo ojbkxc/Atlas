@@ -288,10 +288,13 @@ def test_real_fast_base_notwired_is_envblocked():
 # ④ 向后兼容：老知识（无 actions）产物逐字节不变（#115 零涟漪）
 # ---------------------------------------------------------------------------
 
-# 下列哈希=改造前（commit 0399723）的输出指纹；任何对「无 actions」路径的偷改都会命中红。
+# 下列哈希=「无 actions」路径的输出指纹；任何对这条路径的**偷改**都会命中红。
+# 基线与例外：`nonfast_noactions` 仍是改造前（commit 0399723）指纹；两条 fast 值于
+# #17（L-HOST/L-PW）重建基线——login 骨架随 fast 页对象**无条件**渲染，加固它必然改动字节
+# （消息去 base_url、三处 raise 包 try/finally 归零凭据），这是授权改动不是漂移，故随源同步。
 _LEGACY_PAGES_HASHES = {
-    "fast_noactions": "5236ab9b1875b9e79aa056d8457ca1bc35a7691b57fe3a68aa767c11fd9a47b5",
-    "fast_single": "7059b5b9dbc5219bb6d731be059337dc65e9eb7b6b345fdc3020ecd4beb191fd",
+    "fast_noactions": "472d0678199022a1ae9b584338fcfa035ca7e719f2d1d7cc8a2c74949373668c",
+    "fast_single": "d8138aff7cbb8c3768d413a5b276567c25febeb87e82f879cd01845ee6f80e82",
     "nonfast_noactions": "da3e581b21c286bfff701d5915288dbc86cbbbd982d176ada467f0eb65088d7a",
 }
 
@@ -301,7 +304,8 @@ def _sha(s):
 
 
 def test_legacy_knowledge_pages_byte_identical():
-    """老 components.json（不写新键）→ fast/非 fast 页对象输出逐字节=改造前。"""
+    """老 components.json（不写新键）→ 页对象输出逐字节=基线指纹（见上表；fast 两条已随
+    #17 login 骨架加固重建基线，nonfast 仍是改造前 0399723）。"""
     comps = {"components": {
         "open_doc_list": {"selectors": {"table": ".el-table"}},
         "customer_selection": {"selectors": {"dialog": ".dlg"}}}}
