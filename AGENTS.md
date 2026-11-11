@@ -2,17 +2,30 @@
 
 ## 0. 定位
 
-Atlas 是可携带的 UI/API 测试自动化平台，不是某个公司的专用脚本集合。业务在插件中，引擎不读取具体客户、单号或业务选择器。
+Atlas 是**可移植 pytest 脚本包的生成器 + 验证器**，不是某个公司的专用脚本集合。**首选交付物是产物包**：
+`atlas export-pytest`/`atlas gen` 产出的 pytest 包可脱离 Atlas 独立运行（零 `import atlas`），Atlas 平台自身是
+**可选**的——只做生成（探索/编排/代码生成）与验证（Allure 报告 / `allure-analyze` / `review-code`），不参与产物运行。
+业务在插件中，引擎不读取具体客户、单号或业务选择器。
 
+**两条不可谈判红线（全波次恒定，不因松绑降级）**：①绝不为变绿而放宽断言、吞异常、把失败改 SKIP；
+②凭据绝不落盘。重构波只降级「非红线」的强制项（生产写、证据闸、知识写回等改为显式开关/opt-in），
+红线**本体与判据一律保留**（见 §1、§3）。
+
+- 产物优先：`export-pytest`/`gen --with-pytest` 生成自包含包（用例 + 共享页对象库 + 仅标准库底座），是首选卖点
 - 核心：Screenplay Actor + `BrowseTheWeb` + `CallApi`
 - 资产：线性 YAML DSL + 旧 `legacy-suite` 双轨
-- 知识：`plugins/{业务}/knowledge/`，是数据而不是散落在引擎里的 if/else
+- 知识：`plugins/{业务}/knowledge/`，是数据而不是散落在引擎里的 if/else（产物只依赖生成期知识）
 - 感知：toolbox 负责看/录/重放；Playwright/DemoApi 负责确定性执行
 - 智能：元数据拼装、知识命中、人审自愈；不是让 agent 自由点击取代回归
 
 ## 1. Never（硬性禁止）
 
 1. **禁止硬编码凭据或真实 `.env` 入库**。沿用 `DEMO_*` 键名，密码只能从环境读取。
+   **唯一显式例外 = 产物失败腿 trace 双确认**：默认关（`ATLAS_FAST_TRACE` 未设=零开销）；
+   仅设 `ATLAS_FAST_TRACE=1` **不足以**开启，须再设 `ATLAS_FAST_TRACE_ACCEPT_SECRETS=1`
+   （=承认 trace.zip 会带网络载荷与 fill 输入值，**含真实密码**）。缺第二键时 trace **不开**、只打
+   `WARN: TRACE-ACK-REQUIRED`；双确认成立时 runs.jsonl 记 `trace_secrets_ack: true`（事后审计可见）。
+   trace.zip 落 `reports/traces/`（gitignore 内，含凭据）——**勿外发/勿入库**。本例外经用户批准。
 2. **禁止生产写操作（默认）**。`prod-*` 的建单、保存、提交、删除**默认**由引擎拒绝。
    重构波把唯一放行通道收敛为显式 env 开关 `ATLAS_ALLOW_PROD_WRITE=1`——**默认关时行为与
    放行前逐字节一致**；打开时 engine 打一行 ASCII 警告并把 `prod_write_allowed` 写进
@@ -25,9 +38,14 @@ Atlas 是可携带的 UI/API 测试自动化平台，不是某个公司的专用
 5. **禁止把 toolbox 当执行底座**。它是感知器官；不能用其替代 Python+Playwright 兼容层。
 6. **禁止步骤内数据兜底**：换客户、循环试备件、降数量、抄历史单都不允许。数据缺失用 `EnvBlocked` 明确终止。
 7. **禁止为变绿而放宽断言、吞异常、把失败改 SKIP**。环境限制、产品缺陷、代码缺陷必须分开。
+   这是**两条红线之一**：重构波的一切松绑**不触及本体与判据**——`classify_failure`/`OPERATIONAL` 家族、
+   fail_class 分流、Allure 状态映射（skipped 带 label 不洗绿）逐字保留，只允许增减**显式 opt-in 开关**
+   （如调度只读档、产物写闸），开关默认必须是「不放宽」的那一侧。
 8. **禁止无界面截图开销进入 run 模式**。成功步骤不默认截图；debug/heal/失败才取证。
 9. **禁止把未验证的 API 当 UI 自动兜底**。`auto` 必须依靠 Task 显式能力，不猜接口、不自动重放写请求。
 10. **禁止无审核的知识/选择器/自愈写回**。冷启动一律人审；未审核项只能写 `pending_review` 草稿。
+    重构波口径：**本体保留**——知识写路径仍只有 `atlas review --approve` 一处（`review.approve` 入口），
+    强制点不移；「晋级要证据」（四元组）降级为显式 opt-in（`--require-evidence`），闸本体不删、可随时取回（见 §3）。
 11. **禁止把业务知识写入通用引擎**。客户、PT、Demo 路由、Vue 双模型属于 Demo 插件；与真实旧项目的目录名/类名/键名差异必须走 `ATLAS_*` 映射（`config.py`），不得把真实字面量写回引擎。真实业务知识/选择器/BU坐标的写回目标是私有目录（`ATLAS_KNOWLEDGE_DIR`，读按文件回退包内虚构默认），批准永不写包内文件。
 12. **禁止为了“全量”造形式代码**：未验证的 API 建单、完整状态机、389 条强契约不得声称已完成。
 13. **禁止绕过 agent 风险阈值**。`AtlasAgent` 默认只自动执行 `read_only`；提阈值或 `--approve` 必须是人的决定，不能由脚本自己传。

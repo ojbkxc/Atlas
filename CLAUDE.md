@@ -4,7 +4,7 @@
 
 ## 项目概览
 
-Python 3.11+ / Playwright(sync) / requests / PyYAML / pytest。Atlas 用 Screenplay 统一 UI 与 API，用业务插件承载知识，用旧项目适配器保护已有资产。
+Python 3.11+ / Playwright(sync) / requests / PyYAML / pytest。**Atlas 定位 = 可移植 pytest 脚本包的生成器 + 验证器：产物优先、平台可选**（红线：不为变绿放宽断言；凭据不落盘）。Atlas 用 Screenplay 统一 UI 与 API，用业务插件承载知识，用旧项目适配器保护已有资产。
 
 - 当前目录：`D:\GitHub\Atlas`
 - 包：`src/atlas`
@@ -49,8 +49,10 @@ atlas explore --auto --goal "…"      # LLM 全自动探索（gap12）：目标
 atlas init <name> --system <s> --module <m>  # 生成新项目骨架
 atlas config add <domain>             # 生成插件骨架或映射片段
 atlas gen <doc> [--scenario a|b|c|d] [--strict] [--check-only] [--to-tower] [--with-pytest [--fast]]  # 文档→测试代码（只生成不执行；--fast 须配 --with-pytest，单用 rc 2）
-atlas export-pytest <flow.yaml> [-o DIR] [--fast] [--force]  # 已存在的 flow→可独立运行 pytest 包（只生成不执行；rc 0/2、3 不使用；--fast UI 腿需 page_object/legacy_pages 声明位）
+atlas export-pytest <flow.yaml> [-o DIR] [--fast] [--force] [--parallel N]  # 已存在的 flow→可独立运行 pytest 包（只生成不执行；rc 0/2、3 不使用；--fast UI 腿需 page_object/legacy_pages 声明位；--parallel>1 须配 --fast，运行需 pytest-xdist，缺依赖运行期点名不静默降级）
 atlas export-pytest <flow.yaml> --fast --compat legacy-suite  # 旧仓可直接吃的布局（class+@pytest.mark.order、产物零 import atlas、垫片按字节 vendored；--compat 须配 --fast，未配对/未知值 rc 2 且零产物）
+# 产物运行期旋钮（产物侧 env，全量以 _atlas_fast.ENV_KEYS 为准）：ATLAS_BROWSER_CHANNEL=chromium|chrome|firefox|webkit（T5 浏览器矩阵，缺省 chromium）；
+#   ATLAS_FAST_PARALLEL>1 分片；ATLAS_FAST_TRACE=1 + ATLAS_FAST_TRACE_ACCEPT_SECRETS=1 双确认才开失败腿 trace（缺第二键只 WARN 不开，zip 含密码勿外发，红线 #2 显式例外）
 atlas schedule add <id> --flow <yaml> --cron '*/30 1-8 * * *' --tz Europe/Amsterdam  # 登记调度任务（默认只读档）
 atlas schedule run <id>               # 跑一轮 tick——给 OS cron / schtasks 调起，Atlas 不做常驻进程
 atlas schedule run <id> --dry-run     # 只体检+决策，不抢租约不派发
@@ -373,6 +375,15 @@ A: **机制已对齐并离线钉死；真机面已有实测（用户拍板只跑
 - **报告链**：产物写 Atlas 兼容 `runs.jsonl`（run 级 reason 只取框架文案），`atlas allure` 直接可吃；
   依赖栈 `pytest + playwright`（playwright 是既有依赖，能力本体就是浏览器驱动；不引 allure-pytest/
   pytest-playwright/pytest-timeout/requests）。
+- **UI 腿可执行（2.2 本波）**：组件库可选键 `actions` 直出可执行页对象方法 `do_<元素>()`；无 `page_object`/
+  `legacy_pages` 声明时按组件库 `actions` 的 `task` 字段 auto-wire（引擎不猜业务命名）；老知识（无 `actions`）
+  产物逐字节不变，未接线动作仍 `NotWired`→env_blocked。
+- **分片（2.3 本波）**：生成期 `--parallel N`（只写进产物 README 用法）/ 运行期 `ATLAS_FAST_PARALLEL>1` 走
+  pytest-xdist——**缺 xdist 运行期点名报错、绝不静默降级为单进程**（档位>1 须配 `--fast`）。
+- **失败腿 trace 归档（2.4 本波，红线 #2 显式例外）**：`ATLAS_FAST_TRACE`（默认关=成功腿零开销）**+**
+  `ATLAS_FAST_TRACE_ACCEPT_SECRETS` **双确认**才开启——仅设前者只打 `WARN: TRACE-ACK-REQUIRED` 不开；
+  开启后失败腿落 `reports/traces/<run_id>.zip`，路径与 `trace_secrets_ack:true` 写进 `runs.jsonl`；**zip 含密码，勿外发/勿入库**。
+- **浏览器矩阵（2.5 本波）**：`ATLAS_BROWSER_CHANNEL=chromium|chrome|firefox|webkit`（缺省 chromium；chrome→系统 Chrome channel）。
 
 边界（谁在什么面说了算）：`atlas gen --fast` 的文档源恒 API 腿——**快 UI 腿只经
 `atlas export-pytest <flow.yaml> --fast` + 显式声明位可达**（`page_object` 已批准组件名 /

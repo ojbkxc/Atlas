@@ -8,18 +8,22 @@
   <img src="https://img.shields.io/badge/self--healing-human--reviewed-orange" alt="Human-reviewed healing">
 </p>
 
-> **Knowledge-driven UI/API test automation — heals with human review, never with weaker assertions.**
+> **Portable pytest package generator — 产出可移植、可独立运行的 pytest 脚本包；绝不为变绿而放宽断言，凭据绝不落盘。**
 >
-> 可携带、知识驱动的 UI/API 测试自动化平台。不为变绿而放宽断言，失败有实证、造数有护栏、生产写操作恒需人工批准。
+> Atlas 的首选交付物是**可移植 pytest 脚本包**：把业务流探索/编排固化成零 `import atlas`、可直接进 CI 与旧仓的测试代码。
+> Atlas 平台自身是**可选的**——它只负责「生成包」与「读产物/运行记录做验证」（报告 + 人审塔），不参与产物的运行。
 
 **为什么是 Atlas：**
 
-- **UI/API 同流混跑**：`BrowseTheWeb` + `CallApi` 双 Ability，浏览器 Cookie 烘焙给 API 共享会话；`channel: auto` 按 Task 显式能力路由，不猜接口。
-- **知识驱动 + 人审自愈**：坑点、选择器、契约是数据而不是引擎里的 if/else；知识命中与修复提案必须人审，**绝不放宽断言**。
-- **旧用例零改写**：`LegacyAdapter` 原样运行既有 pytest 套件，不复制、不改写、不替换原引擎，支持增量迁移。
-- **生产安全护栏**：生产禁写、create 配额前置占用、自动建单强制「非人工创建」标记、Agent 风险分级超阈值必须人工批准。
+- **产物优先（首选卖点）**：`atlas export-pytest <flow.yaml> --fast` 生成自包含 pytest 包（用例 + 共享页对象库 + 仅标准库底座），产物**零 `import atlas`**、脱离 Atlas 机也能跑——生成包就是目的，不是附赠品。
+- **平台可选、可替换**：没有 Atlas 运行时也能跑产物；Atlas 只做生成（探索/编排/代码生成）与验证（Allure 报告 / `allure-analyze` / `review-code` 审源码），永不改产物语义。
+- **两条不可谈判红线**：①**不为变绿而放宽断言、吞异常、把失败改 SKIP**；②**凭据绝不落盘**（含产物失败腿 trace 的**双确认**例外，见「快脚本产出」段）。
+- **UI/API 同流混跑（生成侧）**：`BrowseTheWeb` + `CallApi` 双 Ability，浏览器 Cookie 烘焙给 API 共享会话；`channel: auto` 按 Task 显式能力路由，不猜接口。
+- **旧用例零改写**：`LegacyAdapter` 原样运行既有 pytest 套件，产物亦可对齐旧仓布局（`--compat legacy-suite`），不复制、不改写、不替换原引擎。
+- **知识驱动 + 人审自愈（本体保留）**：坑点、选择器、契约是数据而不是引擎里的 if/else；知识命中与修复提案必须人审，**绝不放宽断言**。
+- **生产安全护栏（默认开，可显式降级）**：生产禁写、create 配额前置占用、自动建单强制「非人工创建」标记、Agent 风险分级超阈值必须人工批准——本轮把生产写唯一放行通道收敛为显式 `ATLAS_ALLOW_PROD_WRITE=1`（默认关=与放行前逐字节一致）。
 
-**引擎与业务解耦，知识即数据**：Demo 只是第一个业务插件，更换业务时替换插件和知识库，不重写 Actor、驱动与执行底座。
+**引擎与业务解耦，知识即数据**：Demo 只是第一个业务插件，更换业务时替换插件和知识库，不重写 Actor、驱动与执行底座——产物包同样只依赖生成期知识，不依赖 Atlas 运行时。
 
 ## 已实现
 
