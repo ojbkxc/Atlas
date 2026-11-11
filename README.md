@@ -1147,6 +1147,9 @@ PYTHONPATH=src python scripts/boundary_classify.py --diff incoming.diff --to-tow
   依旧），非引擎/迁移缺陷；逐批实数与处置建议在 `docs/gaps/impl_pi/c3-baseline.md` §9。
 - **Atlas 自身执行路径（不经旧 pytest，真实 SIT）**：
   - `examples/atlas_core_verify.yaml`：5 个只读 Task 全部 `ok:true`，两轮 `passed`。
+    （注：该 flow 含 `assert_api` 步，**当前不支持 `--fast`/`--with-pytest` 产物导出**——导出器尚无 `assert_api` 的渲染分支，
+    故 `atlas export-pytest examples/atlas_core_verify.yaml --fast` 会 rc 2；随仓样品「flow → 可移植 pytest 包」见
+    `examples/atlas_portable_smoke.yaml`，其 UI 腿走 `legacy_pages` 声明位委托旧套件，可 `--fast` 逐字导出。）
   - `examples/atlas_save_verify.yaml`：9 个 Task（含 `click_save` / `wait_save_result`）全部 `ok:true`。
 - **真实 API 造数 → UI 验证（`examples/api_create_then_ui_verify.py`）**：
   ```
