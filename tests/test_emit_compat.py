@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import json
 import os
 import re
 import subprocess
@@ -1031,3 +1032,56 @@ def test_compat_conftest_get_page_uses_env_indicator():
     assert "_legacy_import(\"lib.login\")" in src        # 委托旧实现，不复制登录表单
     assert "def do_login" not in src                      # 产物不自造登录实现
     assert "page._headless = headless" in src             # 旧仓赋值保留（R-3）
+
+
+def test_compat_conftest_get_page_reads_case_top_level_account(tmp_path, monkeypatch):
+    """§17：产物必须读 **case 顶层 `account`**（旧 yaml `cases[].account` 的实际位置）。
+
+    怎么坏（删掉这条即失去哪道防线）：旧 conftest 只读 `case['session']['account']`，
+    而旧 yaml **没有 session 键**——旧仓靠测试文件显式 `get_page(..., account=TC1_ACCOUNT)`
+    兜住；兼容产物没有该传参位，只抄旧链则 account 恒空 → 回落 env。当「env 账号 ≠ 本 case
+    账号」时（实测 prod_am 需 iservice，本机 ISERVICE_USERNAME 是他人账号）**静默登错账号**：
+    不报错、不 EnvBlocked，跟踪单跑在别人账号上。这格拿真 yaml 形态喂产物 conftest 的
+    `_factory`，断言 account 取自 case 顶层而不是 env。
+    """
+    web = _fake_legacy_web(tmp_path)
+    monkeypatch.setenv("ATLAS_LEGACY_WEB", str(web))
+    out = tmp_path / "pkg"
+    emit_compat_package(out_dir=out, flow=_COMPAT_FLOW)
+    script = (
+        "import json, os, sys\n"
+        f"sys.path.insert(0, {str(out)!r})\n"
+        "import conftest\n"
+        "seen = {}\n"
+        "class _Login:\n"
+        "    @staticmethod\n"
+        "    def do_login(page, base_url, username='', password=''):\n"
+        "        seen['account'] = username\n"
+        "    @staticmethod\n"
+        "    def do_logout(page):\n"
+        "        pass\n"
+        "conftest._legacy_import = lambda name: _Login\n"
+        "class _Page:\n"
+        "    class _Loc:\n"
+        "        @staticmethod\n"
+        "        def count(): return 0\n"          # 未登录 → 走登录腿，暴露传入账号
+        "    def locator(self, sel): return self._Loc()\n"
+        "    def set_default_timeout(self, ms): pass\n"
+        "fixture = next(conftest.get_page.__wrapped__(_Page(), {}))\n"
+        "case = {'account': 'case-acct', '_base_url': 'https://x.example.com/'}\n"
+        "fixture(case, {})\n"
+        "print(json.dumps(seen))\n"
+    )
+    env = {k: v for k, v in os.environ.items()
+           if k in ("SYSTEMROOT", "PATH", "PATHEXT", "COMSPEC", "PYTHONIOENCODING",
+                    "LOCALAPPDATA", "USERPROFILE")}
+    env["ATLAS_LEGACY_WEB"] = str(web)
+    env["ATLAS_FAST_LOGIN_INDICATOR"] = ".user-info"   # 过指示器前置，才轮到账号解析
+    env["ATLAS_FAST_ACCOUNT"] = "env-acct"             # 反向对照：env 有不许盖过 case
+    r = subprocess.run([sys.executable, "-c", script], env=env, capture_output=True,
+                       text=True, encoding="utf-8", errors="replace", timeout=120)
+    assert r.returncode == 0, (r.stdout or "")[-1500:] + (r.stderr or "")[-1500:]
+    seen = json.loads([l for l in r.stdout.splitlines() if l.startswith("{")][-1])
+    assert seen["account"] == "case-acct", (
+        f"账号必须取自 case 顶层（旧 yaml cases[].account），实际 {seen['account']!r}"
+        f"——回落 env 会在 env 账号≠case 账号时静默登错账号")
