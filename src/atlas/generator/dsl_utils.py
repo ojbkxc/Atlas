@@ -21,17 +21,6 @@ def slugify(text: str, *, fallback: str = "flow") -> str:
     return cleaned or fallback
 
 
-def has_placeholder(value: Any) -> bool:
-    """递归判断任意结构是否含 `${...}` 占位符。"""
-    if isinstance(value, str):
-        return bool(_PLACEHOLDER.search(value))
-    if isinstance(value, dict):
-        return any(has_placeholder(v) for v in value.values())
-    if isinstance(value, list):
-        return any(has_placeholder(v) for v in value)
-    return False
-
-
 def scan_placeholders(value: Any, where: str, index: int,
                       found: list[dict]) -> None:
     """递归收集占位符命中项，写入 found（原地累积）。"""
