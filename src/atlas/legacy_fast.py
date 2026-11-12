@@ -182,7 +182,6 @@ _HOOK_INSTALLS = (
     ("mutation", _JS_MUTATION_HOOK, _JS_MUTATION_PRESENT),
 )
 
-LAYERS = ("mask", "xhr", "mutation")
 _TICK_MS = 25                      # 进程侧轮询步长（设计 §A 判据 4：25ms 级）
 _DEFAULT_MIN_MS = 400              # G11-1 修法 2 的默认下限（运行时仍按 requested 截断）
 _DEFAULT_QUIET_MS = 200            # mutation 静默窗默认（受预算截断）
