@@ -66,14 +66,34 @@ class IservicePlugin:
                     continue   # 私有文件写坏/形态不对：跳过，回退包内默认
         raise ValueError(f"契约文件缺失或全部损坏，请检查 {' 或 '.join(str(p) for p in candidates)}")
 
-    def session_defaults(self) -> dict:
+    def session_defaults(self, env: str = "") -> dict:
         """iService 会话默认值（账号/OU/语言/division）唯一数据源；密码永不在这里。
 
-        包内 session.json 是**结构默认**（账号/OU 留空，真实值走 ATLAS_SESSION_* env 或
-        私有知识目录），避免真实账号落库（accounts 属私有信息）。语言固定 English US
-        （iService 全环境强制，见 project_map.json）。
+        **三层优先级**（后者覆盖前者）：
+
+        1. 知识库 `session.json`（包内=结构默认：account/ou 留空）；
+        2. 环境坐标 `envs.json` 的 `environments[env].account/ou`——只在 (1) 为空时兜底。
+           私有库（`ATLAS_KNOWLEDGE_DIR`）里有真实坐标（SIT=`zhangfj73`/`CVT System Admin`、
+           UAT-EU=`KTGT` 系、生产=`iservice` 等）；包内版本**有意只登记 url_key 不含账号**
+           （账号属私有信息，红线 #11）；
+        3. `ATLAS_SESSION_*` 环境变量（`overlay_session` 最后跑，显式 env 恒最优先）。
+
+        为什么必须接进来：旧实现只读 (1)+(3)，私有 `envs.json` 的坐标是**零消费方的死数据**
+        ——`atlas run --env uat-eu` 不传 `--account` 就拿空串去登录（`credential("")` 命中
+        `ISERVICE_PWD_` 这个空值键），失败点漂到旧登录代码里，正是 #103「白烧会话 × 归因漂移」
+        同族。现在环境一指定，账号/OU 自动到位；真跑前仍有 runtime 的空账号闸门兜底。
+
+        `env` 为空（旧调用形态）时行为与改造前逐字节一致——只走 (1)+(3)。
         """
         session = self.knowledge().load("session") or {}
+        if env:
+            environments = (self.knowledge().load("envs") or {}).get("environments") or {}
+            coords = environments.get(env)
+            if isinstance(coords, dict):
+                for key in ("account", "ou"):
+                    current = session.get(key)
+                    if not (isinstance(current, str) and current.strip()) and coords.get(key):
+                        session[key] = coords[key]
         return overlay_session(session)
 
     def tasks(self, legacy_pages_path: Path | None = None) -> list:

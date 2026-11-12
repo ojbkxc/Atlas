@@ -101,6 +101,12 @@ PYTHONPATH=src python -m atlas doctor
   `ATLAS_SESSION_DIVISION` 覆盖为真实值（与 `ATLAS_ENV_PREFIX=ISERVICE_` 一并在环境配置里）；
   或把坐标经人审批准进私有 `bu_overlays.json` 后用 `atlas run <flow> --bu <BU名>` 接入
   （显式 `ATLAS_SESSION_*` env 优先于 `--bu`）。
+  **2026-11-12 起第三层来源接通**：`--env <名>` 会自动读私有 `envs.json` 的
+  `environments.<env>.account/ou`（真实业务插件 `plugins/iservice` 消费；SIT/UAT-EU/PROD-AM/PROD-HK
+  已有实测坐标，UAT-AMER/UAT-HK/PROD-EU 旧仓无套件故如实留空）。优先级：
+  `ATLAS_SESSION_*` > 私有 `session.json` > 私有 `envs.json` 环境坐标 > 包内结构默认。
+  账号仍为空时 `DemoRuntime.__enter__` 在**开浏览器前**点名拒绝（旧行为是拿空串起 Chromium 走 SSO，
+  `credential("")` 命中 `ISERVICE_PWD_` 空值键，白烧会话且归因漂移 #103）。
   示例 flow 里的虚构客户号（如 `CUST0000001`）在真实系统查无属数据事实，不伪装 PASSED。
 
 ## 3. 架构不变量

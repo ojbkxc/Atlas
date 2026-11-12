@@ -53,11 +53,15 @@ class DemoPlugin:
                     continue   # 私有文件写坏/形态不对/契约定义坏：跳过，回退下一来源
         raise ValueError(f"契约文件缺失或全部损坏，请检查 {' 或 '.join(str(p) for p in candidates)}")
 
-    def session_defaults(self) -> dict:
+    def session_defaults(self, env: str = "") -> dict:
         """Demo 会话默认值（账号/OU/语言/division）的唯一数据源；密码永远不在这里。
 
         CLI 与 DemoRuntime 都从这里取，避免业务字面量散落在通用引擎里并多处漂移。
         指向真实业务时用 ATLAS_SESSION_* 环境变量整体覆盖，仓库保持虚构默认。
+
+        `env` 参数为跨插件统一契约（`plugins/iservice` 按环境取 `envs.json` 坐标）；
+        demo 的环境坐标是虚构值且与 `session.json` 同源，不做第三层覆盖——传 env 时
+        行为与不传逐字一致（#115：不把正常路径翻成改写）。
         """
         from .tasks import overlay_session
         # KnowledgeBase.load 已按 私有→包内 逐文件回退，无需再直读包文件

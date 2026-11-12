@@ -251,6 +251,12 @@ python examples/hybrid_readonly.py
 # 运行 DSL，真实注入探针、契约、知识和执行记录；自动建单默认配额 0
 atlas run examples/sales_order.yaml --account demo_user
 
+# 指定环境（真实业务插件）：账号/OU 由私有 knowledge/<域>/envs.json 的环境坐标自动带入
+# 优先级：ATLAS_SESSION_* > session.json > envs.json 环境坐标 > 包内结构默认
+atlas run flows/<suite>/<case>.yaml --env sit        # SIT 坐标已实测（账号/OU 自动到位）
+atlas run flows/<suite>/<case>.yaml --env uat-eu     # UAT 坐标已实测
+atlas run flows/<suite>/<case>.yaml --env prod-amer  # 生产**只读**；账号为空时开浏览器前即拒
+
 # 跑绿固化：整条跑绿后动作序列自动固化为 flow_candidate 草稿进审核塔（等价 flow 内 harvest: true）
 atlas run examples/sales_order.yaml --harvest
 

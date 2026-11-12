@@ -16,6 +16,8 @@ import json
 import re
 from pathlib import Path
 
+import pytest
+
 from atlas.cli import main
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -280,3 +282,120 @@ def test_knowledge_json_all_parse_and_empty_session():
     for spec in envs["environments"].values():
         assert spec["url_key"].startswith("ISERVICE_URL_")
         assert "url" not in spec or spec.get("url") in (None, "")
+
+
+# ── 环境坐标进会话链（2026-11-12）：envs.json 的 account/ou 不再是死数据 ──
+
+def _write_envs(tmp_path: Path, environments: dict) -> Path:
+    root = tmp_path / "kb"
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "envs.json").write_text(json.dumps({"environments": environments},
+                                               ensure_ascii=False), encoding="utf-8")
+    (root / "session.json").write_text(json.dumps({"account": "", "ou": "",
+                                                   "division_code": "",
+                                                   "language": "English US"}),
+                                       encoding="utf-8")
+    return root
+
+
+def test_session_defaults_pulls_environment_coordinates(tmp_path, monkeypatch):
+    """`--env uat-eu` 必须自动带出该环境的账号/OU。
+
+    旧实现只读 session.json（iservice 包内 account/ou 恒空串）→ 真实跑时
+    `credential("")` 命中 `ISERVICE_PWD_` 空值键，白烧一次登录才在 SSO 报错
+    （#103 归因漂移同族）。私有 envs.json 里有真实坐标，但此前零消费方。
+    """
+    from atlas.plugins.iservice.plugin import IservicePlugin
+    root = _write_envs(tmp_path, {
+        "sit": {"url_key": "ISERVICE_URL_SIT", "account": "acct-sit", "ou": "OU-SIT"},
+        "uat-eu": {"url_key": "ISERVICE_URL_UAT_EU", "account": "acct-uat", "ou": "OU-UAT"},
+    })
+    monkeypatch.setenv("ATLAS_KNOWLEDGE_DIR", str(root))
+    plugin = IservicePlugin()
+    assert plugin.session_defaults(env="sit")["account"] == "acct-sit"
+    assert plugin.session_defaults(env="sit")["ou"] == "OU-SIT"
+    assert plugin.session_defaults(env="uat-eu")["account"] == "acct-uat"
+    # 语言不受坐标影响（iService 全环境 English US）
+    assert plugin.session_defaults(env="uat-eu")["language"] == "English US"
+
+
+def test_session_defaults_env_arg_matches_legacy_call_form(tmp_path, monkeypatch):
+    """不传 env 时行为与改造前逐字节一致（存量调用点零涟漪 #115）。"""
+    from atlas.plugins.iservice.plugin import IservicePlugin
+    root = _write_envs(tmp_path, {"sit": {"account": "acct", "ou": "OU"}})
+    monkeypatch.setenv("ATLAS_KNOWLEDGE_DIR", str(root))
+    plugin = IservicePlugin()
+    assert plugin.session_defaults()["account"] == ""      # 不传 env：不取环境坐标
+
+
+def test_session_defaults_env_coords_never_override_existing_session(tmp_path, monkeypatch):
+    """session.json 自己给了值 = 人工决定，环境坐标只兜底不覆盖。"""
+    from atlas.plugins.iservice.plugin import IservicePlugin
+    root = _write_envs(tmp_path, {"sit": {"account": "env-acct", "ou": "env-ou"}})
+    (root / "session.json").write_text(json.dumps(
+        {"account": "manual-acct", "ou": "", "division_code": "", "language": "English US"}),
+        encoding="utf-8")
+    monkeypatch.setenv("ATLAS_KNOWLEDGE_DIR", str(root))
+    defaults = IservicePlugin().session_defaults(env="sit")
+    assert defaults["account"] == "manual-acct"   # 人工值优先
+    assert defaults["ou"] == "env-ou"             # 空的那项才由坐标补
+
+
+def test_session_defaults_env_wins_over_environment_coords(tmp_path, monkeypatch):
+    """ATLAS_SESSION_* 显式 env 恒最优先（overlay_session 最后跑）。"""
+    from atlas.plugins.iservice.plugin import IservicePlugin
+    root = _write_envs(tmp_path, {"sit": {"account": "env-acct", "ou": "env-ou"}})
+    monkeypatch.setenv("ATLAS_KNOWLEDGE_DIR", str(root))
+    monkeypatch.setenv("ATLAS_SESSION_ACCOUNT", "cli-acct")
+    defaults = IservicePlugin().session_defaults(env="sit")
+    assert defaults["account"] == "cli-acct"
+    assert defaults["ou"] == "env-ou"
+
+
+def test_session_defaults_unknown_env_falls_back_quietly(tmp_path, monkeypatch):
+    """未知/无坐标环境（uat-amer/uat-hk 旧仓无实测）如实留空，不臆造、不崩。"""
+    from atlas.plugins.iservice.plugin import IservicePlugin
+    root = _write_envs(tmp_path, {"sit": {"account": "a", "ou": "o"}})
+    monkeypatch.setenv("ATLAS_KNOWLEDGE_DIR", str(root))
+    defaults = IservicePlugin().session_defaults(env="uat-amer")
+    assert defaults["account"] == "" and defaults["ou"] == ""
+
+
+def test_runtime_refuses_empty_account_before_opening_browser(monkeypatch):
+    """空账号必须在开浏览器/登录之前点名拒绝。
+
+    旧行为：`credential("")` 拿空串 → 起 Chromium → 走 SSO → 报一个与配置无关的错
+    （#103「白烧会话 × 归因漂移」）。现闸门在 `__enter__` 最前，且消息点名 env 与两条补救路径。
+    """
+    import atlas.runtime as runtime_mod
+    from atlas.config import AtlasConfig
+    opened = []
+
+    class _Boom:
+        def __init__(self, config):
+            opened.append("browser")
+
+        def __enter__(self):
+            raise AssertionError("闸门应在开浏览器之前触发")
+
+    monkeypatch.setattr(runtime_mod, "BrowserSession", _Boom)
+    monkeypatch.setattr(runtime_mod, "resolve_plugin", lambda: _EmptySessionPlugin())
+    monkeypatch.setattr(runtime_mod, "check_demo_api", lambda cfg: None)
+    monkeypatch.setattr(AtlasConfig, "check_legacy_paths", lambda self: None)
+    config = AtlasConfig.from_root(ROOT)
+    monkeypatch.setenv("ISERVICE_URL_SIT", "https://sit.example/")
+    # 闸门在 __enter__（开浏览器前），构造本身允许（login=False 的 no-login 通路不能误拦）
+    with pytest.raises(ValueError) as ei:
+        with runtime_mod.DemoRuntime(config, login=True, account=""):
+            pass
+    message = str(ei.value)
+    assert "没有可用账号" in message and "--account" in message
+    assert "envs.json" in message, "消息必须点名补数据的落点"
+    assert opened == [], "闸门晚于浏览器启动＝白烧会话"
+
+
+class _EmptySessionPlugin:
+    allowed_api_operations = frozenset()
+
+    def session_defaults(self, env: str = ""):
+        return {"account": "", "ou": "", "division_code": "", "language": "English US"}

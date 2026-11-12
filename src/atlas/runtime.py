@@ -45,8 +45,11 @@ class DemoRuntime:
     def __init__(self, config: AtlasConfig, *, login: bool = True, account: str | None = None,
                  ou: str | None = None, division_code: str | None = None,
                  create_quota: int = 0, language: str | None = None):
-        # 会话默认值来自业务插件唯一数据源（knowledge/session.json），密码永不在此。
-        defaults = resolve_plugin().session_defaults()
+        # 会话默认值来自业务插件唯一数据源（knowledge/session.json + envs.json 的环境坐标，
+        # 最后 ATLAS_SESSION_* 覆盖）。传 env 是为了让 `--env uat-eu` 自动带出该环境的账号/OU
+        # ——旧实现不传，账号恒空串，真实跑时 `credential("")` 命中 `ISERVICE_PWD_` 空值键，
+        # 白烧一次登录才在 SSO 页面报错（#103 归因漂移同族）。
+        defaults = resolve_plugin().session_defaults(env=config.env)
         account = account or defaults["account"]
         ou = ou or defaults["ou"]
         division_code = division_code or defaults["division_code"]
@@ -63,6 +66,17 @@ class DemoRuntime:
     def __enter__(self) -> "DemoRuntime":
         legacy = self.config.legacy_project
         load_dotenv(legacy)  # 沿用同事项目 .env；已有进程变量优先，不复制凭据。
+        # 空账号闸门必须在开浏览器 / 登录之前（#103 同族）：`credential("")` 会命中
+        # `ISERVICE_PWD_` 这类「键在、值为空」的残留键，拿到空密码后照样起 Chromium 走 SSO，
+        # 失败点漂进旧登录代码、消息不提「哪个配置没给」。没指定 --account 且插件/知识库
+        # 也没给出该环境坐标时，这里点名 env 与两条补救路径。
+        if self.should_login and not str(self.account or "").strip():
+            raise ValueError(
+                f"环境 {self.config.env!r} 没有可用账号：插件会话默认值与 envs.json 环境坐标"
+                f"都为空，且未传 --account / ATLAS_SESSION_ACCOUNT。"
+                f"补救：传 --account <账号>，或把账号写进私有知识点"
+                f"（knowledge/<域>/envs.json 的 environments.{self.config.env}.account）"
+            )
         if not self.config.base_url:
             raise ValueError(f"缺少 {self.config.env} 对应的 {self.config.env_url_key} 配置")
         self.config.validate_base_url(self.config.base_url)
