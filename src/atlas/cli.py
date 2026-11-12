@@ -581,10 +581,10 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
     if args.command == "allure":
-        from .allure_report import emit_allure
+        from .allure_report import ALLURE_RESULTS_DIR, emit_allure
         # 默认输出与 config.reports_dir 同源（不赌 CWD）；输入缺省 <root>/reports/runs.jsonl
         runs = args.input if args.input is not None else config.reports_dir / "runs.jsonl"
-        out = args.out if args.out is not None else config.reports_dir / "allure-results"
+        out = args.out if args.out is not None else config.reports_dir / ALLURE_RESULTS_DIR
         try:
             # #139：相对附件按项目根解析（engine 落 runs.jsonl 的就是 root 相对路径）；
             # 旧实现不传，消费侧回落 runs_path.parent=reports/ 做基准——截图明明在

@@ -38,6 +38,8 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+
+from .allure_report import ALLURE_RESULTS_DIR
 from typing import Any
 
 import yaml
@@ -57,7 +59,7 @@ MKT_ID_HEADER = "X-Midea-Mkt-Id"
 # ── 默认路径/文件名 ─────────────────────────────────────────────────────
 CONFIG_FILENAME = "devops-sync.yaml"
 STATE_FILENAME = "devops-sync-state.yaml"
-RESULTS_SUBPATH = ("reports", "allure-results")
+RESULTS_SUBPATH = ("reports", ALLURE_RESULTS_DIR)
 HISTORY_SUBPATH = ("reports", "allure-history")
 MCP_CONFIG_RELPATH = (".agents", "mcp.json")
 

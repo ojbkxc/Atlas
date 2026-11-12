@@ -27,6 +27,8 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Allure 结果集目录名（与 `atlas allure` 默认输出、devops-sync 的读取子路径同值）。
+# 单点定义：消费方 import 这里，不各自手抄字面量（#92 改一漏一）。
 ALLURE_RESULTS_DIR = "allure-results"
 _ATTACHMENT_PREFIX = "atlas-"   # Atlas 产物命名前缀；clean 只清这个
 
