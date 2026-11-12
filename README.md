@@ -3,7 +3,7 @@
 <p align="center">
   <a href="https://github.com/ojbkxc/Atlas"><img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License"></a>
-  <a href="#当前验证边界"><img src="https://img.shields.io/badge/tests-2216%20passed-brightgreen" alt="2216 passed"></a>
+  <a href="#当前验证边界"><img src="https://img.shields.io/badge/tests-2404%20passed-brightgreen" alt="2404 passed"></a>
   <img src="https://img.shields.io/badge/engine-Playwright-45edaa" alt="Playwright">
   <img src="https://img.shields.io/badge/self--healing-human--reviewed-orange" alt="Human-reviewed healing">
 </p>
@@ -543,11 +543,14 @@ PYTHONPATH=src python scripts/boundary_classify.py --diff incoming.diff --to-tow
 
 ## 当前验证边界
 
-- 离线测试：**2216 passed / 0 failed**（Python 3.13；`PYTHONPATH=src python -m pytest -q`，
-  2026-11-10 gap12「LLM 全自动撒手」波实测——0 skipped、`--collect-only` 同为 2216、两次全量同值；
-  其中新文件 `tests/test_llm.py` 11 项（env 门逐键点名 / 错误绝不吞成空串 / 注入 transport 离线可测）
-  与 `tests/test_autopilot.py` 21 项（白名单动作 / 风险门 / 闭环沉淀 / 终止条件 / 生产闸 / 决策留痕 /
-  `explore --auto` CLI 入口）；
+- 离线测试：**2404 passed / 0 failed**（Python 3.13；`PYTHONPATH=src python -m pytest -q`，
+  2026-11-12 重构波「产物优先可移植包」收口后实测——0 skipped、`--collect-only` 同为 2404、
+  冻结态跑前跑后两次快照均 HEAD 一致且工作树 clean；
+  上一收口位为 2216（2026-11-10 gap12「LLM 全自动撒手」波），其间 +188 全部来自重构波：
+  2.2 产物 UI 腿可执行化、2.3 分片、2.4 trace 归档、2.5 浏览器矩阵、2.6 iservice 第二业务插件 + 插件缝、
+  §3 松绑（生产写降级为显式 env 开关 + C2 证据闸 opt-in）、#13 产物凭据闸、#16 无渲染分支点名真因、
+  #17 login 骨架去 base_url + 凭据帧归零，以及本轮 4 项清理（B-01/B-02/B-03 零消费符号删除、
+  3 处 #92 双刀收敛，净 +1 测）；
   上一收口位为 2180（调用点规则 site rules），其间 +9 来自规则层判据格（命中规则按语义条件放行/超时睡满/黑名单点）；
   再上一收口位为 2149（gap11 旧仓兼容快包波），其间 +22 来自默认档修复波（#30/#31 `--fast`/`--compat` 空转修复、
   #33 忙→静判断据与 fail-safe 睡满、#34 配对判据格、#35 产物 README 正误、#36 等待腿撤出默认）；
@@ -555,7 +558,7 @@ PYTHONPATH=src python scripts/boundary_classify.py --diff incoming.diff --to-tow
   同期删减审计清理 ruff 死导入 24→0 且全量不减项），编译、CLI、`contracts --validate`、`doctor` rc0 一并通过。
   其中 pi-absorb W6（C9 `waiting` 显态）新增 `tests/test_waiting_operational.py` **99 项**，
   覆盖「产生→分类→落盘→聚合→报告/退出码」全链与红线 #7 的四道反机制；W5（C12 写不盲重试）
-  同期收口。**计数三处（顶部徽章、本节、AGENTS.md 基线）由 lead 统一收口，波次实施者不各自改数。**
+  同期收口。**计数四处（顶部徽章、本节、AGENTS §2、CLAUDE FAQ）由 lead 统一收口，波次实施者不各自改数。**
   （#136/#137 轮实测时环境已接入真实 `.env`：`base_url_source=legacy.env`、`demo_api=true`、
   `knowledge_pitfalls=104`，doctor 因此 rc0——虚构默认下 rc1 的旧前提仅适用于裸仓库。
   634→637 为 #140 自身补的 3 条感知器官错误形态回归测；637→668 中 #141 自身补 3 条
