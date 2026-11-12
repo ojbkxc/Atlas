@@ -19,6 +19,9 @@ artifacts/
 /knowledge/
 # 迁移产物（真实账号/内网域名/客户号，与 knowledge/ 同级敏感，只留在受控磁盘）
 /flows/iservice/
+# 导出产物（`atlas export-pytest`/`gen --with-pytest` 含真实 URL/账号名/flow 内容/
+# 私有库派生选择器——放受控目录，勿入库）
+/exports/
 /docs/migration-from-ui-auto-test.md
 /docs/legacy-adapter-setup.md
 /docs/knowledge-migration.md
