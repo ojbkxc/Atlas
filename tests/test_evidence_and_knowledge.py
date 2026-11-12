@@ -127,7 +127,7 @@ def test_legal_json_wrong_shape_does_not_poison_read_paths(tmp_path):
     # 共用的定性文本收敛 exception_text 单一真相（#92），回落类型名继续定性，绝不裸抛
     class Nasty(Exception):
         def __str__(self): raise AttributeError("detail 未初始化")
-    from atlas.failures import classify_failure, FailureClass
+    from atlas.failures import classify_failure
     assert classify_failure(Nasty()) is not None
     (priv / "pitfalls.json").write_text(json.dumps({"pitfalls": [
         {"id": "t-name", "trigger": "nasty", "scope": ["demo"]}]}), encoding="utf-8")

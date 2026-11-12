@@ -121,7 +121,6 @@ def test_cli_legacy_missing_project_rc2_not_traceback(tmp_path, monkeypatch, cap
     """与 overlay/recycle/review 同口径：路径类输入错误 → 一行 stderr + rc 2。
     修复前 `atlas legacy --dry-run` 对不存在的目录照样打印命令返回 0（假绿预检），
     非 dry-run 直接裸 traceback。dry-run 文档语义是「只检查路径和命令」，检查必须为真。"""
-    import os
     from atlas.cli import main
     monkeypatch.setenv("ATLAS_LEGACY_PROJECT", str(tmp_path / "missing_legacy"))
     assert main(["--root", str(tmp_path), "legacy", "--dry-run"]) == 2

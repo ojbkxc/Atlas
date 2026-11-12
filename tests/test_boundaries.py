@@ -271,7 +271,7 @@ def test_classify_main_rcs(tmp_path, capsys):
 
 
 def test_classify_main_refuses_broken_ledger(tmp_path, capsys):
-    path = _write_ledger(tmp_path, '{"schema_version": 999}')
+    _write_ledger(tmp_path, '{"schema_version": 999}')
     d = tmp_path / "s.diff"
     d.write_text(_diff("docs/x.md", ["ok"]), encoding="utf-8")
     assert classify_main(["--diff", str(d), "--root", str(tmp_path)]) == 2

@@ -3,7 +3,6 @@
 离线、零网络、零执行。覆盖解析层/生成层/接入层。
 """
 from __future__ import annotations
-import json
 from pathlib import Path
 
 import pytest
@@ -13,9 +12,8 @@ from atlas.cli import main, _full_registry
 from atlas.generator import GenOptions, generate
 from atlas.generator.sources import SourceError, parse_source
 from atlas.generator.emit_flow import FlowEmitError
-from atlas.generator.checklist import ChecklistError
 from atlas.generator.emit_contract import grade_contract, emit_contracts
-from atlas.generator.model import Endpoint, BodySpec, ResponseSpec
+from atlas.generator.model import Endpoint, ResponseSpec
 
 
 # ---- 解析层 ----
@@ -531,7 +529,7 @@ def test_fast_pure_api_without_components_emits(tmp_path, monkeypatch):
 
 def test_gen_fast_help_mentions_pairing(tmp_path, monkeypatch, capsys):
     # docs-closer 依赖的字面钉：--fast help 须含「须配 --with-pytest」（CLAUDE.md 同款口径）
-    p = _fast_doc(tmp_path)
+    _fast_doc(tmp_path)
     monkeypatch.setenv("COLUMNS", "300")  # 防 argparse 折行把判据字面劈成两段
     with pytest.raises(SystemExit):
         main(["gen", "--help"])

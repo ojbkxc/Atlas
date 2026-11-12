@@ -17,7 +17,6 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-import pytest
 
 from atlas.cli import main
 

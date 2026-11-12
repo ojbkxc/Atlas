@@ -232,7 +232,6 @@ def test_heal_retry_degradation_also_recorded(tmp_path):
     自愈归因链不能只看坑点、丢掉驱动它的通道降级事实。"""
     from atlas import Actor
     from atlas.config import AtlasConfig
-    from atlas.core import Channel, TaskMetadata
     from atlas.engine import ExecutionEngine
     from atlas.healing import Healer
     from atlas.knowledge import KnowledgeBase

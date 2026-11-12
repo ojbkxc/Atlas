@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from atlas.scheduling.constants import CATCH_UP_WINDOW_S, ON_TIME_GRACE_S
+from atlas.scheduling.constants import ON_TIME_GRACE_S
 from atlas.scheduling.decision import counts_as_failure, decide_slot, failure_policy
 
 UTC = timezone.utc

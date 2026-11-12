@@ -21,7 +21,7 @@ from atlas.engine import ExecutionEngine
 from atlas.experience import ExperienceJournal
 from atlas.knowledge import KnowledgeBase
 from atlas.recorder import RunRecorder
-from atlas.review import (GATED_KINDS, ReviewQueue, evidence_card, grouped_view,
+from atlas.review import (ReviewQueue, evidence_card, grouped_view,
                           verification_problems)
 
 

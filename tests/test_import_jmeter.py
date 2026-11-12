@@ -350,7 +350,6 @@ def test_imported_patrol_flow_runs_end_to_end_with_auth_header(tmp_path):
 # ── C4① 字面敏感头闸（迁移产出侧）：设计 §6.3 三条 + X4 ASCII + C4-C ────
 
 import pytest  # noqa: E402
-import yaml  # noqa: E402
 from scripts.import_jmeter import main as jmeter_main  # noqa: E402
 
 LITERAL_UUID = "b5360b2f-1c2d-3e4f-5a6b-7c8d9e0f1a2b"

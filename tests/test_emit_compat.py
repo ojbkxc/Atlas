@@ -33,7 +33,7 @@ from atlas.generator.emit_compat import (
     atlas_import_hits, atlas_import_text_hits, compat_combo_problem,
     compat_persist_keys, compat_specs_from_flow, emit_compat_package,
     is_atlas_free, render_compat_conftest, render_compat_pytest_ini,
-    render_compat_readme, vendor_body, vendor_is_current, vendor_provenance,
+    vendor_body, vendor_is_current, vendor_provenance,
     vendor_shim_source,
 )
 from atlas.generator.emit_pytest import PytestEmitError, emit_pytest_package

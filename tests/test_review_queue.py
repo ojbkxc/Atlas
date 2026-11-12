@@ -698,7 +698,6 @@ def test_cli_review_approve_selector_via_component_flags(tmp_path, capsys, monke
     正是「批准写包内 git 资产」的旧行为形态。新模型下真实 DemoPlugin 的写根来自
     ATLAS_KNOWLEDGE_DIR（private_root）——本测试用 setenv 指到 tmp 模拟「已配私有目录」，
     覆盖的是真实接线（env 读取）而非 knowledge() 返回值，比旧 stub 更接近真实用户路径。"""
-    import atlas.cli as cli
     from atlas.plugins.demo import DemoPlugin
     _seed_cli_reports(tmp_path, {"id": "sel12345678ab", "task": "Save 按钮",
                                  "kind": "selector_candidate", "role": "button",

@@ -57,7 +57,6 @@ def test_wait_for_rows_settles_before_counting():
     （demo-012 坑的反向形态，模块 docstring 自己点名的双向异步）。"""
     page = FakePage(evaluations=[5])
     assert wait_for_rows(page, min_rows=1) == 5
-    kinds = [(c[0], c[2] if len(c) > 2 else None) for c in page.calls]
     first_eval = next(i for i, c in enumerate(page.calls) if c[0] == "evaluate")
     mask = page.calls.index(("selector", ".el-loading-mask", "hidden"))
     assert mask < first_eval                      # mask 落定在首拍读行数之前

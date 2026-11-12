@@ -21,7 +21,6 @@
 from __future__ import annotations
 
 import ast
-import importlib.util
 import json
 import re
 import sys

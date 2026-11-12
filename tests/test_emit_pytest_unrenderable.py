@@ -17,7 +17,7 @@ import pytest
 from atlas.cli import main
 from atlas.generator.emit_pytest import (
     PytestEmitError, emit_pytest_from_flow, emit_pytest_package,
-    render_test_module, _specs_from_flow,
+    _specs_from_flow,
     _UNRENDERABLE_TASKS, _reject_unrenderable_task,
 )
 

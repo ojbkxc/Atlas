@@ -79,7 +79,7 @@ def test_cli_default_relaxes_evidence_gate(tmp_path, monkeypatch, capsys):
     这是有意的行为变更——想要旧的硬保证必须显式 `--require-evidence`。"""
     from atlas.cli import main
     draft_id = _seed_unverified(tmp_path)
-    kb = _stub_cli(tmp_path, monkeypatch)
+    _stub_cli(tmp_path, monkeypatch)
     rc = main(["--root", str(tmp_path), "review", "--approve", draft_id,
                "--remedy", "点保存前先等 .app-main 出现"])
     assert rc == 0, capsys.readouterr().err

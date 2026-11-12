@@ -4,7 +4,6 @@
 """
 import json
 import textwrap
-from pathlib import Path
 
 import pytest
 import yaml
@@ -12,8 +11,7 @@ import yaml
 from atlas.review_code import (
     review_code, load_config, score_findings, scan_pytest_file,
     scan_dsl_flow, scan_contract_file, diff_baseline, cross_check_runs,
-    emit_allure_review, findings_to_tower, format_text, format_json,
-    DEFAULT_WEIGHTS, CRITICAL_CAP,
+    emit_allure_review, findings_to_tower, CRITICAL_CAP,
 )
 
 
