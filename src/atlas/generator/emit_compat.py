@@ -180,6 +180,8 @@ CONTRACT_FIXTURES = (
 
 # 兼容产物允许的第三方 import 根（D.1.5 三值外零命中；allure 为旧仓既有可选件，
 # lead 任务原文「import pytest + 可选 import allure」）。atlas **不在表内=第一红线**。
+# 判据消费方 = tests/test_emit_compat.py::test_compat_artifact_import_roots_within_third_party
+# （扫产物全部 .py 的 AST import 根，越界即红）——常量与判据同住一处，不留手抄副本。
 COMPAT_ALLOWED_ROOTS = ("pytest", "playwright", "allure")
 
 # 旧仓业务选择器哨兵（lead 交付注意②：产物文本 0 命中；正向对照=旧仓 conftest 实文必命中）。

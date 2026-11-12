@@ -27,12 +27,13 @@ from pathlib import Path
 import pytest
 
 from atlas.generator.emit_compat import (
-    CONTRACT_FIXTURES, LEGACY_BUSINESS_SELECTOR_MARKS, SHIM_SOURCE_FILES,
-    CompatEmitError, _compat_runtime_lines, _legacy_web_dir, atlas_import_hits,
-    atlas_import_text_hits, compat_combo_problem, compat_persist_keys,
-    compat_specs_from_flow, emit_compat_package, is_atlas_free,
-    render_compat_conftest, render_compat_pytest_ini, render_compat_readme,
-    vendor_body, vendor_is_current, vendor_provenance, vendor_shim_source,
+    COMPAT_ALLOWED_ROOTS, CONTRACT_FIXTURES, LEGACY_BUSINESS_SELECTOR_MARKS,
+    SHIM_SOURCE_FILES, CompatEmitError, _compat_runtime_lines, _legacy_web_dir,
+    atlas_import_hits, atlas_import_text_hits, compat_combo_problem,
+    compat_persist_keys, compat_specs_from_flow, emit_compat_package,
+    is_atlas_free, render_compat_conftest, render_compat_pytest_ini,
+    render_compat_readme, vendor_body, vendor_is_current, vendor_provenance,
+    vendor_shim_source,
 )
 from atlas.generator.emit_pytest import PytestEmitError, emit_pytest_package
 from atlas.generator.model import Endpoint, ResponseSpec
@@ -383,6 +384,43 @@ def test_compat_artifacts_atlas_free_and_selector_free(tmp_path, monkeypatch):
         assert is_atlas_free(src, str(p)) == [], p
         for mark in LEGACY_BUSINESS_SELECTOR_MARKS:
             assert mark not in src, (p, mark)
+
+
+def test_compat_artifact_import_roots_within_third_party(tmp_path, monkeypatch):
+    """D.1.5「三值外零命中」的判据消费方（COMPAT_ALLOWED_ROOTS 的**唯一**用点）。
+
+    扫产物每个 .py 的 AST import 根，越界 → 红。stdlib 不在名单里，故对**标准库**
+    必须能判可：判据口径 = 顶层包名不在 sys.stdlib_module_names ∧ 不在
+    COMPAT_ALLOWED_ROOTS ∧ 不是产物内模块（垫片 fastplugin、同名 testcases 包）。
+
+    怎么坏（删掉这条即失去哪道防线）：COMPAT_ALLOWED_ROOTS 会退回「注释里的承诺」——
+    有人给产物模板加一句 `import requests`，全仓无一条测会红，旧仓机器上要等到
+    真跑才 ModuleNotFoundError（#106 断链同族：判据在位但没人消费）。
+    """
+    monkeypatch.setenv("ATLAS_LEGACY_WEB", str(_fake_legacy_web(tmp_path)))
+    out = tmp_path / "pkg"
+    emit_compat_package(out_dir=out, flow=_COMPAT_FLOW)
+    py_files = sorted(out.rglob("*.py"))
+    assert py_files, "产物里一个 py 都没有=空壳假成功"
+
+    local = {p.stem for p in py_files} | {p.parent.name for p in py_files}
+    roots: set[str] = set()
+    for p in py_files:
+        for node in ast.walk(ast.parse(p.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Import):
+                roots |= {a.name.split(".")[0] for a in node.names}
+            elif isinstance(node, ast.ImportFrom) and not node.level and node.module:
+                roots.add(node.module.split(".")[0])
+    roots.discard("__future__")
+    third_party = {r for r in roots
+                   if r not in sys.stdlib_module_names and r not in local}
+    assert third_party <= set(COMPAT_ALLOWED_ROOTS), \
+        f"产物出现名单外第三方 import 根（旧仓机器没装=运行期必炸）：{sorted(third_party)}"
+    assert "atlas" not in roots, "第一红线：产物 import 根含 atlas"
+
+    # 正向对照：名单判定非恒真——把「atlas 家族越界」喂进同一判据必须命中
+    assert "atlas" not in COMPAT_ALLOWED_ROOTS
+    assert {"requests"} - set(COMPAT_ALLOWED_ROOTS)
 
 
 def _fixture_surface(src: str) -> dict:
