@@ -16,7 +16,9 @@
   `degraded_to_ui.reason`）。
 - **C4-A**（评审必改）：`sanitize_url` **逐键命中才 redact**，非敏感业务参数
   （docNo/page/ou 等）原样保留——整段抹 query 会销毁追责证据（#85 证据面），并把漂移面
-  从「敏感键值」放大到「全部 query 值」。fragment 整抹保留（fragment 常是前端路由/哈希）。
+  从「敏感键值」放大到「全部 query 值」。fragment **分形态**：`/` 开头的路由型 fragment
+  保留路由段、只逐键 redact 其 query（ICS 是 hash 路由 SPA，整抹等于把「在哪个页面」这条
+  取证证据也抹掉）；其余形态维持整抹（`#access_token=…` 这类不透明令牌的典型形态）。
 - **C4-B**（评审必改）：净化只服务**落盘**；**定性输入必须用净化前原文**
   （`failures.classify_failure` 走 raw 文本）。否则关键词恰好只出现在敏感 k=v 的值里
   （`?code=401`、`token=…timeout…`）时，净化把 SESSION 翻成 unknown——脱敏反而损归因，
@@ -171,10 +173,37 @@ def _sanitize_query(query: str) -> str:
     return "&".join(parts)
 
 
-def sanitize_url(url: object) -> str:
-    """URL 净化：query **逐键** redact + fragment 整抹；相对 URL（`/web/x?token=…`）同样处理。
+def _sanitize_fragment(fragment: str) -> str:
+    """fragment 分形态：路由型 fragment 保留路由、只逐键 redact 其 query；其余整抹。
 
-    坏形态原样返回（永不抛）：净化是尽力而为的遮蔽，不得把诊断文本改成崩溃或空串。
+    ICS 是 hash 路由 SPA（`#/tsp/views/parts/list?name=sparePartList`）——旧实现
+    fragment 一律整抹成 `<redacted>`，后果是**取证证据被销毁**：探索 trace / 审核塔
+    草稿里看不出当前在哪个页面，`explore:step:<url>` 的 identity 还全部坍缩成一个
+    （塔里去重合并、候选凭空消失）。而路由段本身不携带凭据（不含 `=`、不像字面秘密），
+    真正危险的只是路由后的 query（`#/callback?code=…&state=…`）。
+
+    判据（形态，不猜业务）：`/` 开头的 fragment 视为**路由型**——逐段保留，但对"像字面
+    秘密"的段（`#/callback/eyJhbGci…` 这类把 token 塞进路径的形态）逐段 `looks_literal_secret`
+    抹掉；`?` 之后的 query 走同一把 `_sanitize_query`。不以 `/` 开头的 fragment
+    （`#access_token=xyz`、`#abcdef`）维持整抹（那是凭据/不透明令牌的典型形态）。
+    逐段判据对真实路由零误伤（实测 `/spm/views/...`、`/tsp/views/...` 各段全 False，
+    JWT 段 True）。
+    """
+    route, sep, query = fragment.partition("?")
+    if not route.startswith("/"):
+        return REDACTED
+    route = "/".join(REDACTED if seg and looks_literal_secret(seg) else seg
+                     for seg in route.split("/"))
+    if not sep:
+        return route
+    return f"{route}?{_sanitize_query(query)}"
+
+
+def sanitize_url(url: object) -> str:
+    """URL 净化：query **逐键** redact + fragment 按形态处理（路由保留 / 其余整抹）。
+
+    相对 URL（`/web/x?token=…`）同样处理。坏形态原样返回（永不抛）：净化是尽力而为
+    的遮蔽，不得把诊断文本改成崩溃或空串。
     """
     text = _text_of(url)
     try:
@@ -183,7 +212,7 @@ def sanitize_url(url: object) -> str:
         return text
     if not (parts.query or parts.fragment):
         return text
-    fragment = REDACTED if parts.fragment else ""
+    fragment = _sanitize_fragment(parts.fragment) if parts.fragment else ""
     try:
         return urlunsplit((parts.scheme, parts.netloc, parts.path,
                            _sanitize_query(parts.query), fragment))

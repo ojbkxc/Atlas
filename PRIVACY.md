@@ -101,11 +101,14 @@ Atlas 运行记录（`reports/runs.jsonl`）默认保存：用例名、环境、
   迁移产物只有在 `-o` 写文件时才打全文；无 `-o` 且闸命中时只打摘要——终端回滚缓冲与
   CI 日志不是凭据的存放处。`flows/` 不在 gitignore，产物请放受控目录。
 - **异常与 URL 净化**：落盘的异常文本（经验草稿 `evidence.text`、agent 留痕 `reason`、
-  step 的 `degraded_to_ui.reason`）与框架自己写进异常的 `page.url`，都经同一把净化刀处理：
+  step 的 `degraded_to_ui.reason`）、框架自己写进异常的 `page.url`，以及 `atlas explore`
+  的 checkpoint URL（trace 落盘 + `_observe` 出境给 LLM），都经同一把净化刀处理：
   URL 的 query **逐键**命中才 `<redacted>`（`docNo`/`page`/`ou` 等业务取证参数保留），
-  fragment 整抹；`敏感键=值`、JSON 里的 `"token": "…"`、`Cookie:`/`Authorization:` 行的值段
-  遮蔽。失败归因（`classify_failure`）读的是**净化前原文**——否则关键词恰好只在敏感值里
-  （`?code=401`）时，脱敏会把会话问题翻成「无法归因」，比泄露更隐蔽。
+  fragment **分形态**——`/` 开头的路由型 fragment 保留路由段（ICS 是 hash 路由 SPA，
+  整抹等于连「在哪个页面」的取证证据一起抹掉；路由段内像字面秘密的段仍逐段遮蔽），
+  非路由型（`#access_token=…`）整抹；`敏感键=值`、JSON 里的 `"token": "…"`、
+  `Cookie:`/`Authorization:` 行的值段遮蔽。失败归因（`classify_failure`）读的是**净化前原文**
+  ——否则关键词恰好只在敏感值里（`?code=401`）时，脱敏会把会话问题翻成「无法归因」，比泄露更隐蔽。
 - **边界**：净化不覆盖请求体/响应体里的裸高熵串（那是 body 面，完整报文本就默认不写日志）。
   `atlas explore` 的 trace 与 HAR 导出仍按运行产物同等对待：含真实 URL/文案，不提交。
 

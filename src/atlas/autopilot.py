@@ -21,6 +21,7 @@ from pathlib import Path
 
 from .agent import Decision, RiskLevel, classify_risk
 from .core import TaskMetadata
+from .credential_gate import sanitize_url
 from .explore import PRODUCTION_REFUSED, _record_checkpoint, compile_trace, extract_candidates
 from . import locators
 
@@ -90,11 +91,18 @@ def _risk_of(action: dict, *, production: bool) -> RiskLevel:
 
 
 def _observe(page) -> dict:
+    """页面观察：aria snapshot + 候选 + URL。
+
+    `url` 过 `sanitize_url`（红线 #2）——这个值**出境**：`_build_messages` 把它拼进
+    user 消息发给 LLM（真实部署是第三方/中转端点）。真实 SIT 实测第一轮 checkpoint 的
+    URL 带 SSO 票据 `?ticket=ST-…`，不过刀就是**把凭据发到外部服务**（比落盘更严重，
+    无法回收）。净化是逐键的，LLM 需要的路由/页面坐标照常保留。
+    """
     try:
         snapshot = page.aria_snapshot()
     except Exception:
         snapshot = ""
-    return {"url": page.url, "snapshot": snapshot,
+    return {"url": sanitize_url(page.url), "snapshot": snapshot,
             "candidates": extract_candidates(snapshot)}
 
 

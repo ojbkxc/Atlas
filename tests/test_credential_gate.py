@@ -94,7 +94,28 @@ def test_sanitize_url_redacts_only_matching_keys_keeps_business_params():
     assert "ticket=<redacted>" in out
     assert "docNo=SO-9" in out and "page=2" in out, "非敏感业务参数必须保留"
     assert "ST-123" not in out and "xyz" not in out
-    assert out.endswith("#<redacted>"), "fragment 整抹（可保留整段口径）"
+    assert out.endswith("#<redacted>"), "非路由型 fragment（裸令牌）整抹"
+
+
+def test_sanitize_url_keeps_spa_route_fragment_redacts_its_query():
+    """路由型 fragment（`#/path`）保留路由段 + 其 query 逐键 redact。
+
+    旧口径 fragment 一律整抹——对 ICS 这类 hash 路由 SPA 等于把「在哪个页面」的取证证据
+    一起抹掉（探索 trace / 审核塔草稿看不出页面坐标，`explore:step:<url>` identity 全部坍缩）。
+    真实 SIT URL 形态。
+    """
+    url = "https://ics.example.com/?ticket=ST-9#/tsp/views/parts/list?name=sparePartList"
+    out = g.sanitize_url(url)
+    assert out == "https://ics.example.com/?ticket=<redacted>#/tsp/views/parts/list?name=sparePartList"
+    # 路由后的 callback query 仍逐键遮蔽
+    cb = g.sanitize_url("https://ics.example.com/#/cb?code=SEC&state=abc&docNo=SO-1")
+    assert cb == "https://ics.example.com/#/cb?code=<redacted>&state=<redacted>&docNo=SO-1"
+    # 令牌塞进路由段：逐段判据抹掉该段，其余段保留
+    seg = g.sanitize_url("https://x/#/cb/eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abc")
+    assert seg.startswith("https://x/#/cb/<redacted>")
+    # 幂等（净化两次 == 一次）
+    for probe in (url, cb, seg):
+        assert g.sanitize_url(g.sanitize_url(probe)) == g.sanitize_url(probe)
 
 
 def test_sanitize_url_handles_relative_url_and_no_query():

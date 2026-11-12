@@ -336,3 +336,34 @@ def test_click_uses_shared_locator_resolution_exact_name(env):
                                  '{"action":"done"}'], page=_Page())
     assert report.stopped_reason == "done"
     assert seen == [("button", "Add", {"exact": True})]
+
+
+# ===================== C4：URL 出境/落盘前净化（红线 #2） =====================
+
+def test_observe_sanitizes_url_before_llm_egress(env):
+    """`_observe` 的 url 出境（拼进 LLM user 消息）——真实 SIT 第一轮实测带 SSO 票据，
+    不过刀就是把凭据发给外部端点（无法回收）。同时路由坐标必须保留（LLM 靠它判断在哪页）。"""
+    class _TicketPage(FakePage):
+        def __init__(self):
+            super().__init__()
+            self.url = "https://sit.example/?ticket=ST-3547-secret#/tsp/views/parts/list?name=sparePartList"
+
+    report, page, llm_fake = _run(env, ['{"action":"done"}'], page=_TicketPage())
+    prompt = json.dumps(llm_fake.prompts[0], ensure_ascii=False)
+    assert "ST-3547-secret" not in prompt, "SSO 票据发到 LLM 端点 = 凭据出境"
+    assert "/tsp/views/parts/list" in prompt, "页面路由坐标必须保留（LLM 据此导航）"
+    assert "ticket=<redacted>" in prompt
+
+
+def test_checkpoint_url_is_sanitized_on_disk(env):
+    """trace 落盘的 url 过刀：否则 --compile 会把票据抄进审核塔草稿。"""
+    class _TicketPage(FakePage):
+        def __init__(self):
+            super().__init__()
+            self.url = "https://sit.example/?ticket=ST-9&docNo=SO-1#/list?page=2"
+
+    _run(env, ['{"action":"click","role":"button","name":"Add"}', '{"action":"done"}'],
+         page=_TicketPage())
+    raw = env.trace.read_text(encoding="utf-8")
+    assert "ST-9" not in raw, "trace 落盘带票据 = 红线 #2 违反"
+    assert "ticket=<redacted>" in raw and "docNo=SO-1" in raw, "逐键遮蔽，业务参数保留"

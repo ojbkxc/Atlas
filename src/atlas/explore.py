@@ -43,6 +43,8 @@ import sys
 import time
 from pathlib import Path
 
+from .credential_gate import sanitize_url
+
 # 可操作元素才值得成为选择器候选：其余（generic/text/grid）噪声大
 _ACTION_ROLES = {"button", "textbox", "combobox", "checkbox", "radio", "switch", "searchbox"}
 _MAX_CANDIDATES_PER_CHECKPOINT = 20
@@ -86,6 +88,10 @@ def _record_checkpoint(page, trace: Path, shots: Path, index: int) -> None:
     """落一个证据 checkpoint：aria snapshot + URL + 标题追加进 trace jsonl。
 
     行格式是 explore --compile 的解析契约，字段与顺序不得擅改。
+    `url` 落盘前过 `sanitize_url`（红线 #2 凭据不落盘）：真实 SIT 实测第一轮 checkpoint
+    的 URL 带 SSO 票据 `?ticket=ST-…`——trace 落盘即泄漏，且 `--compile` 会把同一 URL
+    抄进审核塔草稿（16 行实测）。净化刀是逐键的，业务路由/`docNo` 类取证参数保留；
+    路由型 fragment（`#/tsp/views/...`）现也保留（见 credential_gate._sanitize_fragment）。
     """
     snap_name = f"{index:03d}.aria.yaml"
     snapshot = ""
@@ -95,7 +101,7 @@ def _record_checkpoint(page, trace: Path, shots: Path, index: int) -> None:
         snapshot = ""  # 老版本浏览器/页面异常：URL checkpoint 仍是有效证据
     (shots / snap_name).write_text(snapshot, encoding="utf-8")
     row = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "checkpoint": index,
-           "url": page.url, "title": page.title(),
+           "url": sanitize_url(page.url), "title": page.title(),
            "snapshot_file": str(shots / snap_name),
            "snapshot_lines": len(snapshot.splitlines()) if snapshot else 0}
     with trace.open("a", encoding="utf-8") as stream:
@@ -141,7 +147,7 @@ def start(config, *, account: str | None = None, url: str | None = None,
         page = runtime.actor.page
         if url:
             page.goto(url, wait_until="domcontentloaded", timeout=60000)
-        print(f"探索会话已就绪（account={runtime.account}, url={page.url}）\n"
+        print(f"探索会话已就绪（account={runtime.account}, url={sanitize_url(page.url)}）\n"
               f"另开终端接管：playwright-cli attach --cdp=http://localhost:{port}\n"
               f"接管操作后回到这里：回车=记录一个证据 checkpoint；输入 stop=结束会话", flush=True)
         if cmd_path is not None:
@@ -247,10 +253,14 @@ def compile_trace(trace_path: Path, journal) -> dict:
     summary["checkpoints"] = len(rows)
     existing_selector_keys = set()
     for row in rows:
-        step = {"kind": "trace_step", "url": row.get("url", ""),
+        # 读侧同防线（红线 #2）：旧 trace 是净化前落盘的（真实 SIT 实测带 SSO 票据
+        # `?ticket=ST-…`），直接抄进塔行会把凭据二次落盘到审核队列。读侧再过一遍净化刀，
+        # 幂等（已有 `<redacted>` 不再叠）——与 #112「读侧必须同防线」同纪律。
+        url = sanitize_url(row.get("url", ""))
+        step = {"kind": "trace_step", "url": url,
                 "checkpoint": row.get("checkpoint"), "evidence": {
-                    "url": row.get("url", ""), "snapshot_file": row.get("snapshot_file", "")}}
-        journal.append_draft(_candidate_draft(journal, f"explore:step:{row.get('url', '')}", step))
+                    "url": url, "snapshot_file": row.get("snapshot_file", "")}}
+        journal.append_draft(_candidate_draft(journal, f"explore:step:{url}", step))
         summary["steps"] += 1
         snap_file = Path(row.get("snapshot_file", "")) if row.get("snapshot_file") else None
         snapshot_text = ""
@@ -267,7 +277,7 @@ def compile_trace(trace_path: Path, journal) -> dict:
                 journal.append_draft(_candidate_draft(
                     journal, f"explore:selector:{key[0]}:{key[1]}",
                     {"kind": "selector_candidate", "role": key[0], "name": key[1],
-                     "evidence": {"url": row.get("url", ""), "snapshot_file": str(snap_file)}}))
+                     "evidence": {"url": url, "snapshot_file": str(snap_file)}}))
                 summary["selector_candidates"] += 1
     return summary
 

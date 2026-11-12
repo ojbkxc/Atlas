@@ -345,3 +345,23 @@ def test_explore_cmd_file_unknown_command_named_not_executed(tmp_path, monkeypat
     assert "WARN" in err and "status?" in err
     assert cmd.read_text(encoding="utf-8") == ""
     assert closed == [True]
+
+
+# ---------- C4：读侧同防线（旧 trace 带票据 → 塔行二次净化） ----------
+
+def test_compile_trace_sanitizes_legacy_ticket_url(tmp_path):
+    """旧 trace 是净化前落盘的（真实 SIT 实测带 `?ticket=ST-…`）——读侧必须同防线，
+    否则 `--compile` 把凭据二次落盘进审核塔草稿（红线 #2）。净化幂等，业务参数保留。"""
+    trace = tmp_path / "trace.jsonl"
+    snap = tmp_path / "s.yaml"
+    snap.write_text('- button "Save"\n', encoding="utf-8")
+    trace.write_text(json.dumps({
+        "checkpoint": 1, "snapshot_file": str(snap),
+        "url": "https://sit.example/?ticket=ST-9&docNo=SO-1#/list?page=2"}) + "\n",
+        encoding="utf-8")
+    summary = compile_trace(trace, ExperienceJournal(tmp_path))
+    raw = (tmp_path / "experience_drafts.jsonl").read_text(encoding="utf-8")
+    assert "ST-9" not in raw, "旧 trace 的凭据被二次落盘到塔 = 红线 #2 违反"
+    assert "ticket=<redacted>" in raw and "docNo=SO-1" in raw
+    assert "/list?page=2" in raw, "路由坐标保留（塔行要能看出在哪个页面）"
+    assert summary["steps"] == 1 and summary["selector_candidates"] == 1

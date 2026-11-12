@@ -109,10 +109,16 @@ def test_sso_callback_exception_text_is_sanitized_on_disk_forms():
 
 
 def test_runtime_writes_sanitized_page_url_into_exceptions():
-    """PRIVACY 承诺覆盖框架自己写进异常的 URL（SSO 回调 query 常带 ticket/code）。"""
+    """PRIVACY 承诺覆盖框架自己写进异常的 URL（SSO 回调 query 常带 ticket/code）。
+
+    fragment 分形态（2026-11-12）：`/` 开头的路由型 fragment 保留路由段（ICS 是 hash 路由
+    SPA，整抹会连「在哪个页面」的取证证据一起抹掉），非路由型维持整抹。凭据判据不变。
+    """
     cleaned = sanitize_url(f"{PORTAL}?ticket=ST-abc&jsessionid=DEADBEEF#/sso")
     assert "ST-abc" not in cleaned and "DEADBEEF" not in cleaned
-    assert "#<redacted>" in cleaned
+    assert cleaned.endswith("#/sso"), "路由段保留（旧口径 `#<redacted>` 抹掉页面坐标）"
+    token_frag = sanitize_url(f"{PORTAL}?a=1#access_token=xyz")
+    assert token_frag.endswith("#<redacted>"), "非路由型 fragment（不透明令牌）仍整抹"
     source = (Path(__file__).resolve().parent.parent / "src" / "atlas" / "runtime.py"
               ).read_text(encoding="utf-8")
     assert "sanitize_url(page.url)" in source, "runtime 回到裸 page.url = 承诺失效"

@@ -60,9 +60,11 @@
   鉴权头换成 `${ATLAS_HDR_<n>}` 占位，映射清单只报键名——凭据值不进 YAML/stdout/stderr。
   已写成 `${VAR}`/`${__P()}` 的外部化值不重复告警。迁移无 `-o` 且闸命中时**拒打 YAML 全文**，
   只出摘要与接线指引（终端回滚缓冲与 CI 日志不是凭据存放处）。异常文本落盘三条路径（经验草稿
-  `evidence.text`、agent 留痕 `reason`、step 的 `degraded_to_ui.reason`）与 `runtime` 写进异常的
-  `page.url` 走同一把净化刀：URL query **逐键**命中才 `<redacted>`（`docNo`/`page`/`ou` 等业务取证
-  参数保留）、fragment 整抹；而**定性输入用净化前原文**——反序会把 `?code=401` 这类样本的会话问题
+  `evidence.text`、agent 留痕 `reason`、step 的 `degraded_to_ui.reason`）、`runtime` 写进异常的
+  `page.url`、以及 `explore` 的 checkpoint URL（trace 落盘 + `_observe` 出境给 LLM）走同一把净化刀：
+  URL query **逐键**命中才 `<redacted>`（`docNo`/`page`/`ou` 等业务取证参数保留）、fragment **分形态**
+  （`/` 开头的路由型 fragment 保留路由段——ICS 是 hash 路由 SPA，整抹会连页面坐标一起抹；非路由型
+  `#access_token=…` 整抹）；而**定性输入用净化前原文**——反序会把 `?code=401` 这类样本的会话问题
   翻成 unknown，脱敏损归因比泄露更隐蔽。Allure 报告分发口径落进提示文案：自建 HTTP 必须
   `--bind 127.0.0.1`。
 - **版本三元组入报告（C6）**：每次 run 记录与 Allure parameters 带「引擎版本 + 知识库内容 sha1
