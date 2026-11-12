@@ -308,16 +308,6 @@ def claim_slot(path: Path, task_id: str, expected: "str | None", new_value: str)
     return True
 
 
-def update_task(path: Path, task_id: str, changes: dict, *, now: "datetime | None" = None) -> dict:
-    """按字段合并更新台账条目（不做重置判据——重置走 apply_patch）。"""
-    doc = load_doc(path)
-    task = get_task(doc, task_id, source=Path(path))
-    task.update(changes)
-    task["updated_at"] = iso(now or datetime.now(timezone.utc))
-    save_doc(path, doc)
-    return task
-
-
 def apply_patch(task: dict, patch: dict, *, root: Path,
                 now: "datetime | None" = None) -> dict:
     """§3 表 8：改配置（cron/tz/flow/run_args 任一）或重新 enable → 重置水位线/连败/原因。
