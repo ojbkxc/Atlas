@@ -3,7 +3,7 @@
 <p align="center">
   <a href="https://github.com/ojbkxc/Atlas"><img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License"></a>
-  <a href="#当前验证边界"><img src="https://img.shields.io/badge/tests-2404%20passed-brightgreen" alt="2404 passed"></a>
+  <a href="#当前验证边界"><img src="https://img.shields.io/badge/tests-2428%20passed-brightgreen" alt="2428 passed"></a>
   <img src="https://img.shields.io/badge/engine-Playwright-45edaa" alt="Playwright">
   <img src="https://img.shields.io/badge/self--healing-human--reviewed-orange" alt="Human-reviewed healing">
 </p>
@@ -545,10 +545,12 @@ PYTHONPATH=src python scripts/boundary_classify.py --diff incoming.diff --to-tow
 
 ## 当前验证边界
 
-- 离线测试：**2404 passed / 0 failed**（Python 3.13；`PYTHONPATH=src python -m pytest -q`，
-  2026-11-12 重构波「产物优先可移植包」收口后实测——0 skipped、`--collect-only` 同为 2404、
-  冻结态跑前跑后两次快照均 HEAD 一致且工作树 clean；
-  上一收口位为 2216（2026-11-10 gap12「LLM 全自动撒手」波），其间 +188 全部来自重构波：
+- 离线测试：**2428 passed / 0 failed**（Python 3.13；`PYTHONPATH=src python -m pytest -q`，
+  2026-11-12 实测——0 skipped、`--collect-only` 同为 2428；
+  上一收口位为 2404（2026-11-12 重构波「产物优先可移植包」收口），其间 +24：迁移坑点审核
+  工具 `scripts/pitfall_review.py` 17 条 + URL 净化判据与探索链路（落盘/出境/读侧）4 条 +
+  新脚本入哨兵网 2 条 + 上一笔 cffd717 未落数的 1 条漂移；
+  再上一收口位为 2216（2026-11-10 gap12「LLM 全自动撒手」波），其间 +188 全部来自重构波：
   2.2 产物 UI 腿可执行化、2.3 分片、2.4 trace 归档、2.5 浏览器矩阵、2.6 iservice 第二业务插件 + 插件缝、
   §3 松绑（生产写降级为显式 env 开关 + C2 证据闸 opt-in）、#13 产物凭据闸、#16 无渲染分支点名真因、
   #17 login 骨架去 base_url + 凭据帧归零，以及本轮 4 项清理（B-01/B-02/B-03 零消费符号删除、

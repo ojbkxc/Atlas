@@ -365,7 +365,7 @@ Allure status=skipped           → 读 atlas.fail_class label 区分 env_blocke
 15. 结果集里混入坏 JSON / 非对象 / 腰斩文件 → 跳过计数，好结果照常分析（`#112/#131`）。
 16. 空结果集 → 返回空汇总而非崩。
 
-门禁：`PYTHONPATH=src python -m pytest -q`（现有 533 passed 基线不回归）＋ `compileall`。
+门禁：`PYTHONPATH=src python -m pytest -q`（当日全量实跑基线不回归；计数见 README 徽章 / AGENTS §2）＋ `compileall`。
 
 ---
 

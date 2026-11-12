@@ -7,8 +7,8 @@
 ## 0. 基线事实
 
 - 位置 `D:\GitHub\Atlas`，Python src 布局（`src/atlas/`），包版本 `0.1.0`，知识驱动 UI/API 测试平台。
-- **离线测试基线 772 passed（本任务口径），全部改动未提交**。
-- ⚠️ 文档事实漂移：README badge 与「当前验证边界」、CLAUDE.md 仍写 **720 passed**，AGENTS.md §2 也写「当前基线 720 passed」。吸收改造（LiteFlow 编译纪律等）带来的 +52 条测试尚未回写这三份文档。gap6 推荐任何能力前，**先以 `pytest -q` 实测为准**，别引用 720 这个陈旧数字。
+- **离线测试基线：当日全量实跑绿（本任务口径），全部改动未提交**。（计数只认 README 徽章 / AGENTS §2 四处，本文不留计数位）
+- ⚠️ 文档事实漂移（2026-11-05 当时现场，保留为历史记录）：README badge 与「当前验证边界」、CLAUDE.md 仍写 **720 passed**，AGENTS.md §2 也写「当前基线 720 passed」。吸收改造（LiteFlow 编译纪律等）带来的 +52 条测试尚未回写这三份文档。gap6 推荐任何能力前，**先以 `pytest -q` 实测为准**，别引用 720 这个陈旧数字。
 - 未提交工作区（10 项）：`CLAUDE.md`/`README.md`/`docs/gaps/gap5-allure.md`/`cli.py`/`dsl.py`/`engine.py`/`reporting.py` + 三个新测试文件（`test_dsl_atomic_compile`/`test_dsl_template_dispatch`/`test_reporting_runlog_fields`）。这些正是 LiteFlow 吸收改造（原子编译 / md5 / ^ 指针 / {{slot}} / dispatch / 死字段清理）。
 
 ## 1. AGENTS.md 红线清单（原样摘录要点）

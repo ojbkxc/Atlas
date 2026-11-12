@@ -350,7 +350,7 @@ atlas review-code --config reviewcode.json
 17. 读 `--baseline` 时坏字节/坏行 → 跳过计数不崩（`#131`）。
 18. `--review-mode ai` 未实现 → CLI 拒绝（argparse rc 2，不静默降级到 static）。
 
-门禁：`PYTHONPATH=src python -m pytest -q`（533 passed 基线不回归）＋ `compileall`。
+门禁：`PYTHONPATH=src python -m pytest -q`（当日全量实跑基线不回归；计数见 README 徽章 / AGENTS §2）＋ `compileall`。
 
 ---
 

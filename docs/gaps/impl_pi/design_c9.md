@@ -3,7 +3,7 @@
 > 上游：gap6 §3.2-C9（run_attention：批量遇人工步骤/审核塔积压→「等人」而非计失败；红线列 `✓·⚠·✓·✓·✓`，⚠=分类判据误标面）+ §9〔补充 S3〕〔勘误 E6〕。
 > **E6 原文口径（判定已钉死，本设计照此执行）**：`allure_report.py:6-9` 已是「operational/环境终态→skipped + 独立 label + 不洗绿」的既有实现（env_blocked→skipped+`atlas.blocked=true`、interrupted→skipped+`atlas.interrupted=true`、unknown→broken，注释原文「不进 failed 也不静默绿」），新终态照此映射即**同族第二实现**，不构成红线 #7 的「把失败改 SKIP」；残留风险只在**分类判据误标**，与终态命名无关——§2 生产者白名单+输入侧封闭就是冲这一条去的。
 > 磁盘基线（2026-11-06 实测）：`failures.py:6-14` 恰 8 类、无 waiting/deferred（gap6 §9.1 C9 行复核成立）；`scheduling/lease.py`/design_c1 §4 已有「不确定按**推迟**记录，与 waiting≠failed 同族」的引用——S2 细则当时悬空的「同族」由本设计显态化。
-> 实施者：impl_c9（任务 #5；W6 单主）。基线=W5 落地后的 pytest 实测数（≥1448），不回退。
+> 实施者：impl_c9（任务 #5；W6 单主）。当日全量实跑基线不回退（计数见 README 徽章 / AGENTS §2，本文不留计数位）。
 
 ## 1. 终态与判据（failures.py，单一真相的家）
 

@@ -629,7 +629,7 @@ P1 采用 A（与 `import_jmeter.py`「只生成供人审」同姿态）；B 作
 21. `--with-pytest` 且无 allure → rc 2 + 明确提示，不生成半截文件。
 22. `atlas gen … && atlas compile <产物>` 端到端 rc 0（离线）；`atlas run` 不在测试中执行（无凭据/浏览器）。
 
-**门禁**：`PYTHONPATH=src python -m pytest -q`（现有 533 passed 基线不回归）+ `compileall -q src` + `atlas doctor`（不改变现有行为）。
+**门禁**：`PYTHONPATH=src python -m pytest -q`（当日全量实跑基线不回归；计数只认 README 顶部徽章 / AGENTS §2 四处，本文不留计数位）+ `compileall -q src` + `atlas doctor`（不改变现有行为）。
 
 ---
 

@@ -58,7 +58,7 @@
 
 ## 5. 完成门禁（每波）
 
-- `PYTHONPATH=src python -m pytest -q`：**基线 772 passed 不回退**，各波新增测试数在对应设计 §8 标注下限；
+- `PYTHONPATH=src python -m pytest -q`：**当日全量实跑基线不回退**（计数只认 README 徽章 / AGENTS §2 四处，本文不留计数位），各波新增测试数在对应设计 §8 标注下限；
 - `python -m compileall -q src`；`atlas doctor`（W1 后含 `version_triple`，W3 后含 `boundary_ledger`）；
 - 矩阵 X1–X9 相关测试全绿；红线五查逐条在设计内自证（见各 §9）；
 - **离线全绿 ≠ 可用**（AGENTS §2）：C1 的 OS 接线、C4 真 .jmx 迁移产物只增**离线测**，真机/真文件验证留给用户按 SOP 执行，各设计 §10 列明未验证项。

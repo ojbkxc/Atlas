@@ -113,7 +113,7 @@ goal ──► [观察] aria_snapshot + candidates + url + 历史
 
 ## G. 落地注（W1/W2，2026-11-10）
 
-**交付面**：`src/atlas/llm.py`、`src/atlas/autopilot.py`（新）+ `src/atlas/cli.py`（`explore --auto/--goal/--max-steps/--max-seconds`）+ `src/atlas/explore.py`（一处常量提升）+ 两个新测试文件（`test_llm.py` 11 项、`test_autopilot.py` 21 项））。离线全量 **2216 passed**、0 skipped，`--collect-only` 同值。
+**交付面**：`src/atlas/llm.py`、`src/atlas/autopilot.py`（新）+ `src/atlas/cli.py`（`explore --auto/--goal/--max-steps/--max-seconds`）+ `src/atlas/explore.py`（一处常量提升）+ 两个新测试文件（`test_llm.py` 11 项、`test_autopilot.py` 21 项））。离线全量当日实跑 0 failed / 0 skipped、`--collect-only` 同值（计数只认 README 徽章 / AGENTS §2 四处，本文不留计数位）。
 
 **实现期发现并处置的四点**（都是「设计文本没写到、不做就会真坏」的一类）：
 

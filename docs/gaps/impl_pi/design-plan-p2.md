@@ -68,7 +68,7 @@
 
 ## 5. 完成门禁（每波）
 
-- `PYTHONPATH=src python -m pytest -q`：**基线 1448 只增不减**；W5 新增 ≥24（design_c12 §5）、W6 新增 ≥22（design_c9 §7）；**归因链**：终验以每波复跑实测数为唯一口径，分项尾差不强拆（一期终验 §1 教训）。
+- `PYTHONPATH=src python -m pytest -q`：**当日全量实跑基线只增不减**（计数见 README 徽章 / AGENTS §2，本文不留计数位）；W5 新增 ≥24（design_c12 §5）、W6 新增 ≥22（design_c9 §7）；**归因链**：终验以每波复跑实测数为唯一口径，分项尾差不强拆（一期终验 §1 教训）。
 - `python -m compileall -q src`；`atlas contracts --validate` ok；`atlas doctor` rc0（两项均不动 doctor 面——如实：新增判据不进 doctor，避免版本/边界项的既有 rc 语义被稀释，红线 #12）。
 - X 矩阵相关测全绿；两份设计的红线五查逐条自证复核；**兼容表（design_c12 §6 / design_c9 §6）逐行对号**——预期「先红后绿」项仅两处且均为**验收项非回归**：test_allure_analysis:513（OPERATIONAL 落地即绿）、§3-2 命中时的 summary 键测。
 - 离线全绿 ≠ 可用：真机栏（两份 §9）进任务 #6，须用户授权后前台串行；本波不声称任何真机结论。

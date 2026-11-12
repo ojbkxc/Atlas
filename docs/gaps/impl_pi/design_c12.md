@@ -5,7 +5,7 @@
 > - 现防线：`healing.can_auto_heal`/`retry_read_only` 拒非只读重试（healing.py:47-48/72）；`engine._perform` 捕获集只含 `(NotImplementedError, RuntimeError)`，OSError 系网络故障原样传播（engine.py:274，既有测 `test_plugin_and_legacy.py:328-339` 钉「网络故障不被降级掩盖、ui_called is False」）。
 > - **真口子（本设计要堵的）**：`engine._perform`（engine.py:269-284）在 API 尝试**可能已经把请求发出去之后**才捕获 `RuntimeError/NotImplementedError` 并降级重跑 UI——写任务（`read_only=False`，core.py:28）+ `channel=auto` + `supports_api` 形态下 = 同一写操作第二次执行 = 双单。该形态**不是假想**：`plugins/demo/tasks.py:185-186` 请求已发出后仍 `raise NotImplementedError("API 查客户失败…")`（只读接口无害，写接口同构即炸）；`DemoTask._perform_api` 的「禁止写操作走 auto」（tasks.py:146）是**注释约定，无机制**——#106/#86 同族（文档承诺≠接线）。
 > - `reporting.py:136` 注释钉着「唯一真实重试源是 engine heal 模式」——C12 落地后这句须扩为「heal 重试 + **有界降级重执行**」，两处同波改（判据注释漂移=#92/#102 家族，测试钉）。
-> 实施者：impl_c12（任务 #4；W5 单主，见 design-plan-p2 §2）。基线 1448 passed 不回退。
+> 实施者：impl_c12（任务 #4；W5 单主，见 design-plan-p2 §2）。当日全量实跑基线不回退（计数见 README 徽章 / AGENTS §2，本文不留计数位）。
 
 ## 1. 判据单一真相放哪（拍板答案）
 
