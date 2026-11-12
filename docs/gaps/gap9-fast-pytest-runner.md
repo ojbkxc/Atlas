@@ -284,7 +284,7 @@ G1/G2/G3 闭合（见上）；G4 → 升为**通则**：F 节/待办/落地注�
 
 ### G.4 消费命令（定稿，写进 README 的同源事实）
 
-生成：`atlas gen <doc> --with-pytest --fast`（仅 API 腿）/ `atlas export-pytest <flow.yaml> --fast`（UI 腿需 `page_object` 或 `legacy_pages` 声明位）；执行：`pytest <out> -q`；报告：`atlas allure <out>/reports/runs.jsonl --out <out>/reports/allure-results`（产物 runs.jsonl 行 schema 与 Atlas 兼容，`atlas allure` 直接可吃）。产物运行期旋钮唯一清单 = `emit_fast.ENV_KEYS`（凭据恒 env 读取、模板无值）；产物目录 `exports/` **不在 .gitignore**——放受控目录、勿提交。
+生成：`atlas gen <doc> --with-pytest --fast`（仅 API 腿）/ `atlas export-pytest <flow.yaml> --fast`（UI 腿需 `page_object` 或 `legacy_pages` 声明位）；执行：`pytest <out> -q`；报告：`atlas allure <out>/reports/runs.jsonl --out <out>/reports/allure-results`（产物 runs.jsonl 行 schema 与 Atlas 兼容，`atlas allure` 直接可吃）。产物运行期旋钮唯一清单 = `emit_fast.ENV_KEYS`（凭据恒 env 读取、模板无值）；产物目录 `exports/` **已在 .gitignore**（2026-11-12 收紧，防 `git add .` 误入库）——仍放受控目录。
 
 ### G.5 过程记录（波次收口纪律——本波的偏离有一半出在「收口过程」而非代码，照实留档）
 
