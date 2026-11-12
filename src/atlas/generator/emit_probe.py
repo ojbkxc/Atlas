@@ -1,4 +1,4 @@
-"""探针生成：requires 声明 + 只实现 find() 的 DataProbe skeleton。
+"""探针生成：只实现 find() 的 DataProbe skeleton。
 
 红线 3/12/16：不造形式代码、不自动创建无备注单据、建单报文须来自真实捕获。
 create() 一律 NotImplementedError；不生成 creator。
@@ -6,7 +6,6 @@ create() 一律 NotImplementedError；不生成 creator。
 from __future__ import annotations
 
 from .model import Endpoint
-from .emit_flow import _build_requires
 
 
 PROBE_HEADER = '''# 生成候选：只实现 find()（零副作用查询）；create() 一律 NotImplementedError。
@@ -35,8 +34,3 @@ def emit_probe_skeleton(endpoints: list[Endpoint], *, scenario: str = "auto",
              '        raise NotImplementedError("生成候选不提供建单；请接已验证 creator（ScriptedCreator）")',
              '']
     return "\n".join(lines)
-
-
-def emit_requires(endpoints: list[Endpoint], scenario: str = "auto") -> dict:
-    """requires 块（与 emit_flow 共用 _build_requires，单一真相）。"""
-    return _build_requires(endpoints, scenario)
