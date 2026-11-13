@@ -399,3 +399,52 @@ class _EmptySessionPlugin:
 
     def session_defaults(self, env: str = ""):
         return {"account": "", "ou": "", "division_code": "", "language": "English US"}
+
+
+def _empty_account_project(tmp_path) -> tuple[Path, Path]:
+    """搭一个「环境坐标齐全、唯独账号为空」的最小 Atlas 项目，供 CLI 投递形态测试。
+
+    返回 (项目根, flow 路径)。用真实 iservice 插件（非替身）走 main() 端到端。
+    """
+    kb = _write_envs(tmp_path, {"sit": {"url_key": "ISERVICE_URL_SIT"}})   # 有意不带 account
+    project = tmp_path / "proj"
+    (project / "api" / "scripts").mkdir(parents=True)
+    (project / "api" / "scripts" / "demo_api.py").write_text("", encoding="utf-8")
+    (project / "legacy" / "legacy-web").mkdir(parents=True)
+    (project / ".atlas-root").write_text("", encoding="utf-8")
+    (project / ".env").write_text(
+        f"ISERVICE_URL_SIT=https://sit.example/\n"
+        f"ATLAS_DEMO_API_PROJECT={project / 'api'}\n"
+        f"ATLAS_LEGACY_PROJECT={project / 'legacy'}\n", encoding="utf-8")
+    flow = project / "flow.yaml"
+    flow.write_text("steps: []\n", encoding="utf-8")
+    return project, flow, kb
+
+
+@pytest.mark.parametrize("argv_tail", [
+    ["run", "flow.yaml", "--env", "sit"],
+    ["explore"],
+    ["agent", "--execute", "--goal", "document_no"],
+])
+def test_cli_delivers_empty_account_as_rc2_not_traceback(tmp_path, monkeypatch, capsys, argv_tail):
+    """空账号闸门经 CLI 必须投递成「一行 stderr + rc 2」，不是 traceback。
+
+    旧实现只在 `DemoRuntime.__enter__` 判定，而 run/agent/explore 分支的 `with` 只捕
+    `AwaitingHuman`/`PermissionError`——ValueError 直接穿透 `main()`：`atlas run --env prod-eu`
+    （该环境坐标 account 为空）给出 ~20 行 traceback，可操作的那一行被埋掉。base_url /
+    `check_demo_api` / `check_legacy_paths` 三条早有「`with` 之前预检 → rc 2」通道（#103 同族），
+    唯独账号漏了——闸门自己成了 #103 想消灭的「失败点漂到不该漂的地方」。现三条入口都在
+    `with` 前调用同一判据 `runtime.require_account`（单点），此测钉住投递形态。
+    """
+    project, flow, kb = _empty_account_project(tmp_path)
+    monkeypatch.setenv("ATLAS_PLUGIN", "iservice")
+    monkeypatch.setenv("ATLAS_ENV_PREFIX", "ISERVICE_")
+    monkeypatch.setenv("ATLAS_KNOWLEDGE_DIR", str(kb))
+    argv = ["--root", str(project), *[str(flow) if a == "flow.yaml" else a for a in argv_tail]]
+
+    rc = main(argv)
+    err = capsys.readouterr().err
+    assert rc == 2, f"空账号＝输入错误，应 rc 2；实得 {rc}（stderr={err!r}）"
+    assert "没有可用账号" in err and "--account" in err
+    assert err.count("\n") == 1, f"必须是**一行** stderr，实得：{err!r}"
+    assert "Traceback" not in err

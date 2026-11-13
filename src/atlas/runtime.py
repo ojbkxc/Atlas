@@ -40,6 +40,46 @@ def check_demo_api(config: AtlasConfig) -> None:
             "（检查 ATLAS_DEMO_API_PROJECT / ATLAS_DEMO_API_FILE 是否指向旧项目的 scripts 目录）")
 
 
+def resolve_account(config: AtlasConfig, account: str | None = None, *,
+                    defaults: dict | None = None) -> str:
+    """会话账号**解析单点**：显式 `account` 参数 > 插件 `session_defaults(env).account`
+    （其内部已含 私有 `session.json` → `envs.json` 环境坐标 → `ATLAS_SESSION_*` 三层）。
+
+    消费方 = `DemoRuntime.__init__` 与 CLI 预检（`_precheck_session_inputs`），不留第二份
+    「参数 or 默认值」的写法（#92）。"""
+    if account:
+        return account
+    if defaults is None:
+        defaults = resolve_plugin().session_defaults(env=config.env)
+    value = defaults.get("account") if isinstance(defaults, dict) else None
+    return value or ""
+
+
+def require_account(config: AtlasConfig, account: str | None) -> None:
+    """空账号闸门**单点**（判据与消息唯一来源）。
+
+    **为什么必须有 CLI 侧预检**：这段判据旧实现内联在 `DemoRuntime.__enter__`，而
+    `with DemoRuntime(...)` 所在的 run/agent/explore 分支只捕 `AwaitingHuman` /
+    `PermissionError`——`atlas run --env prod-eu`（该环境坐标 `account` 为空）抛出的
+    ValueError 直接穿透 `main()`：用户拿到 ~20 行 traceback，可操作的那一行被埋掉。
+    base_url / `check_demo_api` / `check_legacy_paths` 三条早就有「`with` 之前预检 →
+    一行 stderr + rc 2」的通道（#103 同族），唯独账号缺这一条，于是这条闸门自己成了
+    #103 想消灭的那种「失败点漂到不该漂的地方」。现 CLI 在 `with` 前调它（rc 2），
+    `__enter__` 仍调它兜直接使用 `DemoRuntime` 的调用方（examples/探索轨道）。
+
+    账号为空还照跑会走 `credential("")`——命中旧项目 `.env` 里 `ISERVICE_PWD_` 这类
+    「键在、值为空」的残留键，拿到空密码后照样起 Chromium 走 SSO，失败点漂进旧登录
+    代码、消息不提「哪个配置没给」（#103 的原始形态）。
+    """
+    if not str(account or "").strip():
+        raise ValueError(
+            f"环境 {config.env!r} 没有可用账号：插件会话默认值与 envs.json 环境坐标"
+            f"都为空，且未传 --account / ATLAS_SESSION_ACCOUNT。"
+            f"补救：传 --account <账号>，或把账号写进私有知识点"
+            f"（knowledge/<域>/envs.json 的 environments.{config.env}.account）"
+        )
+
+
 class DemoRuntime:
     """一次登录、一个 Actor、一套任务/契约/探针；不复制原项目代码。"""
     def __init__(self, config: AtlasConfig, *, login: bool = True, account: str | None = None,
@@ -50,7 +90,7 @@ class DemoRuntime:
         # ——旧实现不传，账号恒空串，真实跑时 `credential("")` 命中 `ISERVICE_PWD_` 空值键，
         # 白烧一次登录才在 SSO 页面报错（#103 归因漂移同族）。
         defaults = resolve_plugin().session_defaults(env=config.env)
-        account = account or defaults["account"]
+        account = resolve_account(config, account, defaults=defaults)
         ou = ou or defaults["ou"]
         division_code = division_code or defaults["division_code"]
         language = language or defaults["language"]
@@ -66,17 +106,14 @@ class DemoRuntime:
     def __enter__(self) -> "DemoRuntime":
         legacy = self.config.legacy_project
         load_dotenv(legacy)  # 沿用同事项目 .env；已有进程变量优先，不复制凭据。
-        # 空账号闸门必须在开浏览器 / 登录之前（#103 同族）：`credential("")` 会命中
-        # `ISERVICE_PWD_` 这类「键在、值为空」的残留键，拿到空密码后照样起 Chromium 走 SSO，
-        # 失败点漂进旧登录代码、消息不提「哪个配置没给」。没指定 --account 且插件/知识库
-        # 也没给出该环境坐标时，这里点名 env 与两条补救路径。
-        if self.should_login and not str(self.account or "").strip():
-            raise ValueError(
-                f"环境 {self.config.env!r} 没有可用账号：插件会话默认值与 envs.json 环境坐标"
-                f"都为空，且未传 --account / ATLAS_SESSION_ACCOUNT。"
-                f"补救：传 --account <账号>，或把账号写进私有知识点"
-                f"（knowledge/<域>/envs.json 的 environments.{self.config.env}.account）"
-            )
+        # 空账号闸门必须在开浏览器 / 登录之前（#103 同族，判据与消息在 require_account 单点，
+        # 同一函数也被 CLI 预检调用以投递 rc 2）。`credential("")` 会命中 `ISERVICE_PWD_`
+        # 这类「键在、值为空」的残留键，拿到空密码后照样起 Chromium 走 SSO，失败点漂进旧登录
+        # 代码、消息不提「哪个配置没给」。没指定 --account 且插件/知识库也没给出该环境坐标时，
+        # 这里点名 env 与两条补救路径。位置有意在 `load_dotenv(legacy)` **之后**：账号可能只写在
+        # 旧项目 .env 的 `ATLAS_SESSION_ACCOUNT` 里，早于它判定会误拒正常路径（#115）。
+        if self.should_login:
+            require_account(self.config, self.account)
         if not self.config.base_url:
             raise ValueError(f"缺少 {self.config.env} 对应的 {self.config.env_url_key} 配置")
         self.config.validate_base_url(self.config.base_url)

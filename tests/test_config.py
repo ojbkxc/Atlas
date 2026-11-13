@@ -106,18 +106,41 @@ def test_engine_env_map_never_drifts_from_plugin_policy(tmp_path):
 
     生产禁写是安全护栏，两处漂移会导致「插件标记 forbidden 但引擎放行」。
     此守卫在漂移时立刻红：url_key、环境集合、生产判定三者必须逐环境一致。
+
+    覆盖**每个**仓库内插件（demo + iservice）——旧版只钉 demo，真实业务插件 iservice
+    的 envs.json 是同一份环境知识的第三份副本，漏检即「iservice 标记 forbidden 但引擎
+    按 uat- 前缀放行」这类安全漂移在绿测下过关。url_key 只比较 `URL_` 后缀（各插件有
+    自己的 ATLAS_ENV_PREFIX，后缀才是跨前缀的不变量）。
     """
     import json
     from pathlib import Path as _P
     from atlas.config import ENV_URL_KEYS
-    envs = json.loads((_P(__file__).resolve().parents[1] /
-        "src/atlas/plugins/demo/knowledge/envs.json").read_text(encoding="utf-8"))["environments"]
-    assert set(ENV_URL_KEYS) == set(envs), "环境集合漂移：引擎与插件不一致"
-    for name, meta in envs.items():
-        assert ENV_URL_KEYS[name] == meta["url_key"], f"{name} 的 url_key 漂移"
-        # 引擎的 prod- 前缀判定必须与插件 write=forbidden 策略逐环境一致
-        assert AtlasConfig(tmp_path, env=name).is_production == (meta["write"] == "forbidden"), \
-            f"{name} 生产判定漂移：引擎前缀规则与插件策略不一致"
+    plugins_root = _P(__file__).resolve().parents[1] / "src/atlas/plugins"
+    env_maps = sorted(plugins_root.glob("*/knowledge/envs.json"))
+    covered = {p.parent.parent.name for p in env_maps}
+    assert covered >= {"demo", "iservice"}, f"仓库内插件 envs.json 未全数覆盖：{env_maps}"
+    for path in env_maps:
+        domain = path.parent.parent.name
+        envs = json.loads(path.read_text(encoding="utf-8"))["environments"]
+        assert set(ENV_URL_KEYS) == set(envs), f"{domain} 环境集合漂移：引擎与插件不一致"
+        for name, meta in envs.items():
+            assert ENV_URL_KEYS[name].rsplit("URL_", 1)[1] == meta["url_key"].rsplit("URL_", 1)[1], \
+                f"{domain}/{name} 的 url_key 与引擎前缀规则不一致"
+            # 引擎的 prod- 前缀判定必须与插件 write=forbidden 策略逐环境一致
+            assert AtlasConfig(tmp_path, env=name).is_production == (meta["write"] == "forbidden"), \
+                f"{domain}/{name} 生产判定漂移：引擎前缀规则与插件策略不一致"
+
+
+def test_cli_env_choices_never_drift_from_engine_env_set():
+    """`--env` 的 choices 是环境集合的**第三份副本**（config.ENV_URL_SUFFIXES 与
+    plugins/*/knowledge/envs.json 之外）。旧实现手抄了一份字面量列表：新增环境时前两处
+    的漂移测都会绿，只有 CLI 静默不认那个 `--env`，用户在命令行撞 "invalid choice"
+    却说不清该改哪（#92 改一漏一）。现 choices 从 config.ENV_URL_KEYS 派生，此守卫钉死。"""
+    from atlas.cli import _parser
+    from atlas.config import ENV_URL_KEYS
+    action = next(a for a in _parser()._actions if a.dest == "env")
+    assert action.choices is not None, "--env 丢了 choices 约束（手抄列表退化成自由文本）"
+    assert list(action.choices) == list(ENV_URL_KEYS)
 
 
 def test_credential_falls_back_to_default_password(tmp_path, monkeypatch):

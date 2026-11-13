@@ -10,11 +10,11 @@ from pathlib import Path
 import yaml
 from . import __version__, boundaries, versioning
 from .composition import catalog, compose_for_goal
-from .config import AtlasConfig, load_dotenv
+from .config import ENV_URL_KEYS, AtlasConfig, load_dotenv
 from .dsl import FlowCompiler, FlowDocument, TaskRegistry
 from .legacy import LegacyAdapter
 from .plugin_api import resolve_plugin
-from .runtime import DemoRuntime, check_demo_api
+from .runtime import DemoRuntime, check_demo_api, require_account, resolve_account
 
 def core_tasks(legacy_pages_path=None):
     """任务枚举的插件缝**单一入口**（cli 的 tasks/compose/agent 经此走 resolve_plugin().tasks()）。
@@ -34,7 +34,12 @@ def _parser() -> argparse.ArgumentParser:
     # default=SUPPRESS：否则子解析器的默认值会覆盖全局位已设值（argparse 经典坑）。
     # 缺省语义由 main() 的 getattr 兜底。
     global_args.add_argument("--root", type=Path, default=argparse.SUPPRESS)
-    global_args.add_argument("--env", default=argparse.SUPPRESS, choices=["sit", "uat-eu", "uat-amer", "uat-hk", "prod-eu", "prod-amer", "prod-hk"])
+    # choices 从引擎单一真相派生（config.ENV_URL_SUFFIXES 的键，即环境集合的权威声明）；
+    # 旧实现手抄了一份字面量列表——这是同一份环境知识的**第三份副本**（config 与
+    # plugins/*/knowledge/envs.json 之外），#92 改一漏一：新增环境时 `config.py` 与插件
+    # 的漂移测都会绿，只有 CLI 静默不认那个 `--env`，用户在命令行撞 "invalid choice"
+    # 却说不清该改哪。派生后漂移由 tests/test_config.py 的守卫当场钉红。
+    global_args.add_argument("--env", default=argparse.SUPPRESS, choices=list(ENV_URL_KEYS))
     global_args.add_argument("--mode", default=argparse.SUPPRESS, choices=["run", "debug", "heal"])
     global_args.add_argument("--headed", action="store_true", default=argparse.SUPPRESS,
                              help="有头模式，供 DSL 调试")
@@ -506,6 +511,10 @@ def main(argv: list[str] | None = None) -> int:
             config.validate_base_url(config.base_url)
             check_demo_api(config)
             config.check_legacy_paths()   # #103 延伸：坏 legacy 路径也在浏览器/登录前 rc 2
+            # 空账号也在 `with` 之前投递成 rc 2（判据/消息在 runtime.require_account 单点）：
+            # 旧实现只在 __enter__ 判，ValueError 穿透 main() 变 ~20 行 traceback。
+            # agent 子命令无 --account（账号只来自插件/知识库坐标），故 getattr 兜底。
+            require_account(config, resolve_account(config, getattr(args, "account", None)))
         except (OSError, ValueError) as exc:
             return _user_error(exc)
         with DemoRuntime(config) as runtime:
@@ -805,6 +814,11 @@ def main(argv: list[str] | None = None) -> int:
             config.validate_base_url(config.base_url)
             check_demo_api(config)
             config.check_legacy_paths()   # #103 延伸：坏 legacy 路径也在浏览器/登录前 rc 2
+            # 空账号也在 `with` 之前投递成 rc 2（判据/消息在 runtime.require_account 单点）：
+            # 旧实现只在 __enter__ 判，ValueError 穿透 main() 变 ~20 行 traceback。
+            # --no-login（不登录）时不查：没有会话就没有「拿空账号去登录」这件事。
+            if not args.no_login:
+                require_account(config, resolve_account(config, args.account))
         except (OSError, ValueError) as exc:
             return _user_error(exc)
         if case_timeout is not None:
@@ -1217,6 +1231,12 @@ def _explore(args, config) -> int:
     if args.auto:
         return _explore_auto(args, config)
     from .explore import start
+    # 空账号在开浏览器/登录前投递成 rc 2（判据单点在 runtime.require_account）；
+    # 与 __init__ 同解析状态（此刻尚未 load_dotenv(legacy)，与 DemoRuntime 构造期一致）。
+    try:
+        require_account(config, resolve_account(config, args.account))
+    except ValueError as exc:
+        return _user_error(exc)
     try:
         trace = start(config, account=args.account, url=args.url, trace=args.trace)
     except PermissionError as exc:
@@ -1253,6 +1273,11 @@ def _explore_auto(args, config) -> int:
     trace = Path(args.trace) if args.trace else (
         config.reports_dir / f"explore_auto_{time.strftime('%Y%m%d_%H%M%S')}.jsonl")
     journal = ExperienceJournal(config.reports_dir)
+    # 空账号同 run 口径：开浏览器/登录前 rc 2 一行 stderr（判据单点在 runtime.require_account）。
+    try:
+        require_account(config, resolve_account(config, args.account))
+    except ValueError as exc:
+        return _user_error(exc)
     runtime = None
     try:
         runtime = DemoRuntime(config, login=True, account=args.account).__enter__()

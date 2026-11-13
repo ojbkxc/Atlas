@@ -107,8 +107,13 @@ PYTHONPATH=src python -m atlas doctor
   不做臆造，登录后沿用 SSO 默认 OU 不切换）；PROD-EU 仍空——旧仓 `.env` 明确「生产环境必须搭配
   `iservice`、切勿使用测试账号」，故**不填** `zhangfj73`，要跑须显式 `--account` 并先补 OU）。优先级：
   `ATLAS_SESSION_*` > 私有 `session.json` > 私有 `envs.json` 环境坐标 > 包内结构默认。
-  账号仍为空时 `DemoRuntime.__enter__` 在**开浏览器前**点名拒绝（旧行为是拿空串起 Chromium 走 SSO，
-  `credential("")` 命中 `ISERVICE_PWD_` 空值键，白烧会话且归因漂移 #103）。
+  账号仍为空时**在开浏览器/登录前**点名拒绝：CLI 在 `with DemoRuntime(...)` 之前预检并投递
+  「一行 stderr + rc 2」（判据与消息单点在 `runtime.require_account`，与 base_url / `check_demo_api` /
+  `check_legacy_paths` 三条 #103 预检同口径；`run`/`agent --execute`/`explore` 三个登录入口都调它），
+  `DemoRuntime.__enter__` 仍调同一函数兜直接使用运行时的调用方（examples/脚本）。
+  修复前该闸门只在 `__enter__` 判定，ValueError 穿透 `main()` 变 ~20 行 traceback——
+  闸门自己成了 #103 想消灭的「失败点漂到不该漂的地方」。旧行为是拿空串起 Chromium 走 SSO，
+  `credential("")` 命中 `ISERVICE_PWD_` 空值键，白烧会话且归因漂移 #103。
   示例 flow 里的虚构客户号（如 `CUST0000001`）在真实系统查无属数据事实，不伪装 PASSED。
 
 ## 3. 架构不变量
