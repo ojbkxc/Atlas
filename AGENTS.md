@@ -103,7 +103,9 @@ PYTHONPATH=src python -m atlas doctor
   （显式 `ATLAS_SESSION_*` env 优先于 `--bu`）。
   **2026-11-12 起第三层来源接通**：`--env <名>` 会自动读私有 `envs.json` 的
   `environments.<env>.account/ou`（真实业务插件 `plugins/iservice` 消费；SIT/UAT-EU/PROD-AM/PROD-HK
-  已有实测坐标，UAT-AMER/UAT-HK/PROD-EU 旧仓无套件故如实留空）。优先级：
+  已有实测坐标；UAT-AMER/UAT-HK 账号由用户 2026-11-13 指定 `zhangfj73`、**OU 仍空**（旧仓无该套件，
+  不做臆造，登录后沿用 SSO 默认 OU 不切换）；PROD-EU 仍空——旧仓 `.env` 明确「生产环境必须搭配
+  `iservice`、切勿使用测试账号」，故**不填** `zhangfj73`，要跑须显式 `--account` 并先补 OU）。优先级：
   `ATLAS_SESSION_*` > 私有 `session.json` > 私有 `envs.json` 环境坐标 > 包内结构默认。
   账号仍为空时 `DemoRuntime.__enter__` 在**开浏览器前**点名拒绝（旧行为是拿空串起 Chromium 走 SSO，
   `credential("")` 命中 `ISERVICE_PWD_` 空值键，白烧会话且归因漂移 #103）。
