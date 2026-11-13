@@ -11,13 +11,54 @@ flows/smoke.yaml/tests/test_smoke.py/scripts/run_allure.py/README.md。
 - --interactive 默认关闭（CI 安全）
 """
 from __future__ import annotations
+import tomllib
 from pathlib import Path
 
 from .config import ENV_PREFIX_DEFAULT, ENV_URL_SUFFIXES
 
+# 本分发的名字，同时是 `atlas init` 生成项目里那条依赖的名字。探测源码根时用它校验
+# 「这个 pyproject.toml 就是 Atlas 自己的」——只靠路径形状会把任意同名目录认成 Atlas。
+_ATLAS_DIST_NAME = "atlas-test-platform"
+
 
 class ScaffoldError(Exception):
     """用户输入/目标冲突 → CLI 走 rc 2（与 cli._user_error 同口径）。"""
+
+
+def detect_atlas_source_root(pkg_file: Path | None = None) -> Path | None:
+    """探测**当前正在运行的 Atlas 源码根**：向上找声明 `name = "atlas-test-platform"`
+    的 `pyproject.toml`（命中即返回其所在目录）。
+
+    为什么默认要探测：生成的 pyproject 写 `dependencies = ["atlas-test-platform"]`，
+    而 Atlas 的分发路径是**源码**（README 第一步就是 `pip install -e .`）——这个裸名在
+    公共索引上解析不到，于是新用户接手骨架后的第一步 `pip install -e .` 当场
+    "No matching distribution found"，而 `--atlas-path` 在文档里写成「可选」，暗示默认可用。
+    默认自动探测把最常见的情形（从源码 checkout 运行 atlas，含 editable 安装）变成开箱可用。
+
+    装成 site-packages（非 editable）时上层没有 pyproject.toml，如实回落 None——由调用方
+    给可操作提示，绝不猜一个路径钉进去（猜错比留空更坏）。
+
+    `pkg_file` 缺省取 `atlas/__init__.py`；显式传入只为离线测可造合成布局。
+    """
+    if pkg_file is None:
+        try:
+            import atlas
+            pkg_file = Path(atlas.__file__).resolve()
+        except Exception:
+            return None
+    pkg_file = Path(pkg_file).resolve()
+    # src/atlas/__init__.py → [src/atlas, src, 仓库根]；限 4 层，不向盘符根无限上溯。
+    for parent in list(pkg_file.parents)[:4]:
+        candidate = parent / "pyproject.toml"
+        if not candidate.is_file():
+            continue
+        try:
+            data = tomllib.loads(candidate.read_text(encoding="utf-8"))
+        except Exception:
+            continue   # 坏 pyproject 不是「Atlas 源码根」的证据，跳过而非裸崩
+        if str((data.get("project") or {}).get("name", "")) == _ATLAS_DIST_NAME:
+            return parent
+    return None
 
 
 def _render(text: str, ctx: dict) -> str:
@@ -194,16 +235,16 @@ _README = """\
    .venv/Scripts/python -m pip install -e .   # Windows
    # 或 Linux: .venv/bin/python -m pip install -e .
    ```
+{{atlas_install_note}}
 
 2. 装浏览器：
    ```bash
    python -m playwright install chromium
    ```
 
-3. 配置环境：
+3. 填环境值（`.env` 已由 `atlas init` 生成，值与 `.env.example` 相同、全空）：
    ```bash
-   cp .env.example .env
-   # 编辑 .env，填入真实的 URL 和凭据
+   # 编辑 .env，填入真实的 URL 和凭据；不要提交 .env
    ```
 
 4. 验证：
@@ -370,12 +411,29 @@ def init_project(name, system, module, *, atlas_path=None, interactive=False,
         except (EOFError, OSError):
             pass  # 非交互环境不阻塞
 
-    # atlas-test-platform 依赖行
+    # atlas-test-platform 依赖行：**默认**探测当前 Atlas 源码根并钉成 file://——
+    # 裸索引名在「Atlas 只以源码分发」时解析不到，新用户第一步 `pip install -e .` 就撞
+    # "No matching distribution found"（见 detect_atlas_source_root 的说明）。
+    if atlas_path is None:
+        atlas_path = detect_atlas_source_root()
     if atlas_path:
         atlas_uri = Path(atlas_path).resolve().as_uri()
         atlas_dep_suffix = f" @ {atlas_uri}"
+        atlas_dep_mode = "file"
+        atlas_install_note = (
+            f"> 本骨架已把 Atlas 钉为 `file://` 依赖（`{atlas_uri}`）：上面那条 "
+            f"`pip install -e .` 会一并安装它。\n"
+            f"> Atlas 目录移动后需重新 `atlas init`，或手动改 `pyproject.toml` 里的路径。")
     else:
         atlas_dep_suffix = ""
+        atlas_dep_mode = "index"
+        atlas_install_note = (
+            "> **依赖前置**：未探测到 Atlas 源码根，`pyproject.toml` 按索引名依赖 "
+            "`atlas-test-platform`。\n"
+            "> 若该名在公共/私有索引上解析不到，请先把 Atlas 装进同一环境"
+            "（`pip install -e <Atlas 仓库路径>`），\n"
+            "> 或用 `atlas init --atlas-path <Atlas 仓库路径>` 重新生成骨架"
+            "（钉成 `file://` 依赖，开箱可装）。")
 
     ctx = {
         "name": name,
@@ -383,6 +441,7 @@ def init_project(name, system, module, *, atlas_path=None, interactive=False,
         "module": module,
         "env_prefix": env_prefix,
         "atlas_dep_suffix": atlas_dep_suffix,
+        "atlas_install_note": atlas_install_note,
     }
 
     dest.mkdir(parents=True, exist_ok=True)
@@ -422,15 +481,21 @@ def init_project(name, system, module, *, atlas_path=None, interactive=False,
     return {
         "created": str(dest),
         "files": files,
+        # 依赖处置如实回传（不是「装好了」的声明）：mode=file 时 path 是钉进去的源码根；
+        # mode=index 时恒为 None——CLI 据此打 WARN，不静默给一个可能解析不到的骨架。
+        "atlas_dependency": {
+            "mode": atlas_dep_mode,
+            "path": str(Path(atlas_path).resolve()) if atlas_path else None,
+        },
         "next": [
             f"cd {dest}",
             "python -m venv .venv",
-            ".venv/Scripts/python -m pip install -e .",
+            "# 激活 venv：Windows .venv\\Scripts\\activate；Linux/macOS source .venv/bin/activate",
+            "python -m pip install -e .",
             "python -m playwright install chromium",
-            "cp .env.example .env  # 填真实值",
             "atlas doctor",
             "pytest -q",
             "atlas allure reports/runs.jsonl --out reports/allure-results --clean",
-            "allure serve reports/allure-results",
+            "allure serve reports/allure-results   # 需另装 allure CLI；也可用 scripts/run_allure.py",
         ],
     }

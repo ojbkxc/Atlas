@@ -25,6 +25,43 @@
 
 **引擎与业务解耦，知识即数据**：Demo 只是第一个业务插件，更换业务时替换插件和知识库，不重写 Actor、驱动与执行底座——产物包同样只依赖生成期知识，不依赖 Atlas 运行时。
 
+## 拿到先跑这三步（零凭据 · 离线可验）
+
+不用真实系统、不用账号，就能看到 Atlas 的核心产出与一次端到端绿。
+
+```bash
+# 0) 装 Atlas 本体（Python 3.11+）
+python -m venv .venv
+.venv/Scripts/python -m pip install -e ".[dev]"      # Linux/macOS：.venv/bin/python
+python -m playwright install chromium
+
+# 1) 看核心产物：flow → 可独立运行的 pytest 包（只生成不执行，产物零 import atlas）
+atlas export-pytest examples/atlas_portable_smoke.yaml --fast -o exports/portable-smoke
+
+# 2) 看接口文档 → flow YAML + 契约候选 + 回归代码包（只生成不执行）
+atlas gen examples/api_sample.md --with-pytest -o exports/gen/api
+
+# 3) 端到端绿一次：新建项目骨架 → 跑冒烟（本地页面，无网络无凭据）
+atlas init myproj --system ics --module so
+cd myproj && python -m venv .venv && .venv/Scripts/python -m pip install -e .
+python -m playwright install chromium && pytest -q
+```
+
+读数须知（以下都是文档口径，不是「你应该看到什么」的保证）：
+
+- 第 1/2 步是**生成期**动作，产物落 `exports/`（已在 `.gitignore`）：**零 `import atlas`**、可脱离
+  Atlas 运行；真要执行时按产物 README 接 `ATLAS_BASE_URL` 与凭据（未接就是把 `env_blocked` 写在
+  报告里，不会伪装通过）。`examples/api_sample.md` 是随仓的**虚构**样例输入，换成你自己的文档
+  （Markdown / OpenAPI 3 / Swagger 2 / 纯文本，按内容嗅探）即可。
+- 第 3 步的骨架冒烟跑本地页面，**不访问真实系统**——这是唯一一条零配置就能跑绿的执行链。
+  `atlas init` 默认把当前 Atlas 源码根钉成 `file://` 依赖（生成项目 `pyproject.toml` 里的
+  `atlas-test-platform @ file:///…`），所以 `pip install -e .` 开箱可装；Atlas 目录移动后重新
+  `atlas init`，或用 `--atlas-path <Atlas 仓库>` 指定。探测不到源码根时会在 stderr 打 `WARN:` 并
+  给出两条补救路径（不静默给你一个装不上的骨架）。
+- `atlas doctor` 在未接旧项目时会 **rc 1**（`legacy_pages`/`demo_api` 为 False）——这是预期而非装坏，
+  接法见文末常见问题「怎么接回公司真实项目」。
+- 想看 Atlas 自身的全量离线测试：`PYTHONPATH=src python -m pytest -q`（几分钟，不联网、不用凭据）。
+
 ## 已实现
 
 - **Screenplay Actor**：`BrowseTheWeb(page)` + `CallApi(session)` 双 Ability；同一业务流 UI/API 混用，浏览器 Cookie 可同步给 API。

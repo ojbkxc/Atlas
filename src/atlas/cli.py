@@ -439,6 +439,13 @@ def main(argv: list[str] | None = None) -> int:
                               out_dir=args.out)
         except ScaffoldError as exc:
             return _user_error(exc)   # rc 2 口径，与 compile/run/machine 一致
+        # 未探测到 Atlas 源码根＝骨架的 `pip install -e .` 可能解析不到 atlas-test-platform
+        # （Atlas 只以源码分发）。如实 WARN + 给出两条补救路径，不静默给一个装不上的骨架。
+        if (out.get("atlas_dependency") or {}).get("mode") == "index":
+            print("WARN: 未探测到 Atlas 源码根，生成项目的 pyproject 按索引名依赖 "
+                  "atlas-test-platform；该名若不可解析，请先 `pip install -e <Atlas 仓库>`，"
+                  "或用 `atlas init --atlas-path <Atlas 仓库>` 重新生成（钉成 file:// 依赖）。",
+                  file=sys.stderr)
         print(json.dumps(out, ensure_ascii=False, indent=2))
         return 0
     if args.command == "config":

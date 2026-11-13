@@ -219,3 +219,95 @@ def test_atlas_root_written_last(tmp_path, capsys):
     # .atlas-root 内容正确
     text = (tmp_path / "myproj" / ".atlas-root").read_text(encoding="utf-8")
     assert text == 'atlas-root = "."\n'
+
+
+# ---- 开箱可装：默认自动探测 Atlas 源码根，钉成 file:// 依赖 ----
+#
+# 为什么值得钉死：生成项目写 `dependencies=["atlas-test-platform"]`，而 Atlas 是源码分发
+# （README 第一步 `pip install -e .`）——裸索引名解析不到，新用户接手骨架第一步就
+# "No matching distribution found"，而 `--atlas-path` 在文档里写成「可选」。
+
+def test_detect_atlas_source_root_synthetic(tmp_path):
+    """探测判据：向上找**声明该分发名**的 pyproject.toml；只靠目录形状不算数。"""
+    from atlas.scaffold import detect_atlas_source_root
+    src = tmp_path / "src"
+    (src / "atlas").mkdir(parents=True)
+    (src / "atlas" / "__init__.py").write_text("", encoding="utf-8")
+    marker = src / "atlas" / "__init__.py"
+
+    # 未放 pyproject → 探测不到
+    assert detect_atlas_source_root(marker) is None
+
+    # 放了但名字不是本分发 → 不认（防把同名目录当 Atlas）
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "some-other-pkg"\n', encoding="utf-8")
+    assert detect_atlas_source_root(marker) is None
+
+    # 名字对上 → 返回源码根
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "atlas-test-platform"\nversion = "0.1.0"\n', encoding="utf-8")
+    assert detect_atlas_source_root(marker) == tmp_path.resolve()
+
+    # 坏 pyproject（非 TOML）不当证据，也不裸崩
+    (tmp_path / "pyproject.toml").write_text("this is not toml [", encoding="utf-8")
+    assert detect_atlas_source_root(marker) is None
+
+
+def test_default_init_pins_detected_source(tmp_path, capsys):
+    """默认 `atlas init`（不带 --atlas-path）应把探测到的源码根钉成 file:// 依赖；
+    探测不到时如实回落为索引名 + mode=index（由 CLI 打 WARN）。"""
+    from atlas.scaffold import detect_atlas_source_root
+    detected = detect_atlas_source_root()
+    rc = main(["init", "myproj", "--system", "ics", "--module", "so",
+               "--out", str(tmp_path)])
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    text = (tmp_path / "myproj" / "pyproject.toml").read_text(encoding="utf-8")
+    dep = out["atlas_dependency"]
+    if detected is not None:
+        assert dep["mode"] == "file" and dep["path"] == str(detected)
+        assert "atlas-test-platform @ " in text and "file:///" in text
+        assert Path(detected).as_uri() in text
+    else:
+        assert dep["mode"] == "index" and dep["path"] is None
+        assert re.search(r'"atlas-test-platform",', text)
+
+
+def test_index_fallback_warns_and_notes(tmp_path, monkeypatch, capsys):
+    """探测不到源码根时：骨架照旧生成（不失败），但 CLI 打 WARN、README 写「依赖前置」，
+    不静默给一个可能装不上的骨架。"""
+    import atlas.scaffold as scaffold
+    monkeypatch.setattr(scaffold, "detect_atlas_source_root", lambda *a, **k: None)
+    rc = main(["init", "myproj", "--system", "ics", "--module", "so",
+               "--out", str(tmp_path)])
+    assert rc == 0
+    captured = capsys.readouterr()
+    out = json.loads(captured.out)
+    assert out["atlas_dependency"] == {"mode": "index", "path": None}
+    assert "WARN:" in captured.err and "atlas-test-platform" in captured.err
+    assert "--atlas-path" in captured.err
+    proj = tmp_path / "myproj"
+    assert re.search(r'"atlas-test-platform",',
+                     (proj / "pyproject.toml").read_text(encoding="utf-8"))
+    assert "依赖前置" in (proj / "README.md").read_text(encoding="utf-8")
+
+
+def test_pinned_dependency_points_at_real_source_root(tmp_path, capsys):
+    """被钉进去的 file:// 路径必须真的存在且是 Atlas 源码根（不是猜出来的路径）。"""
+    from atlas.scaffold import detect_atlas_source_root
+    detected = detect_atlas_source_root()
+    if detected is None:
+        pytest.skip("当前 Atlas 非源码布局（未探测到源码根）")
+    rc = main(["init", "myproj", "--system", "ics", "--module", "so",
+               "--out", str(tmp_path)])
+    assert rc == 0
+    text = (tmp_path / "myproj" / "pyproject.toml").read_text(encoding="utf-8")
+    line = next(l for l in text.splitlines() if "atlas-test-platform" in l)
+    url = line.split("@", 1)[1].strip().rstrip(",").strip('"')
+    assert url.startswith("file:///")
+    from urllib.request import url2pathname
+    from urllib.parse import urlparse
+    path = Path(url2pathname(urlparse(url).path))
+    assert (path / "pyproject.toml").is_file()
+    assert 'name = "atlas-test-platform"' in (path / "pyproject.toml").read_text(encoding="utf-8")
+
