@@ -207,3 +207,51 @@ def test_gate_flow_headers_tolerates_bad_shapes():
 def test_gated_placeholders_in_finds_only_gate_products():
     flow = {"steps": [{"headers": {"x-api-key": "${ATLAS_HDR_2}", "base": "${BASE_URL}"}}]}
     assert g.gated_placeholders_in(flow) == [(1, "x-api-key", "${ATLAS_HDR_2}")]
+
+
+# ── is_externalized / query_key_is_sensitive：判据直测（盲区补齐轮）──────────
+# 此前两判据只经 looks_literal_secret/header_is_sensitive/sanitize_url 间接覆盖；
+# 此处钉住它们各自的未覆盖分支：__P( 裸形态、非 str 入参、子串兜底（长词/前缀变体）。
+
+@pytest.mark.parametrize("value", [
+    "${VAR}", "Bearer ${tok}", "${__P(name,)}", "__P(name)", "__P(", "${A}${B}",
+])
+def test_is_externalized_true_for_placeholder_forms(value):
+    assert g.is_externalized(value) is True, f"{value!r} 是人审接 env 的位，不算字面秘密"
+
+
+@pytest.mark.parametrize("value", [
+    "abc123", "", "${unclosed", "Bearer abc123", "non-secret text", None, 12345,
+])
+def test_is_externalized_false_for_literals_and_bad_inputs(value):
+    assert g.is_externalized(value) is False, f"{value!r} 未外部化"
+
+
+@pytest.mark.parametrize("key", [
+    "token", "access_token", "code", "ticket", "state", "password", "pwd",
+    "secret", "jsessionid", "sessionid", "key", "apikey",
+])
+def test_query_key_short_words_exact_match(key):
+    assert g.query_key_is_sensitive(key) is True
+
+
+@pytest.mark.parametrize("key", [
+    "x-access-token", "isc-axios-sessionid", "refresh_token", "credential_id",
+    "csrf-token", "Authorization", "xsrf-token",
+])
+def test_query_key_substring_branch_covers_prefixed_variants(key):
+    """_QUERY_SUBSTRINGS 兜底：短词只精确命中会漏 `x-access-token`/`isc-axios-sessionid`
+    这类带前缀的变体（sanitize_url 既有测只覆盖精确命中一支）。"""
+    assert g.query_key_is_sensitive(key) is True
+
+
+@pytest.mark.parametrize("key", ["monkey", "statusCode", "orderNo", "docNo", "", "page"])
+def test_query_key_non_sensitive_names(key):
+    """短词不做子串（`monkey`/`statusCode` 是业务参数，与 C4-A 保留取证参数同口径）；
+    `statusCode` 含 "code" 字样但精确命中名单没有它、子串表也不含 "code"。"""
+    assert g.query_key_is_sensitive(key) is False
+
+
+def test_query_key_non_str_inputs_never_raise():
+    assert g.query_key_is_sensitive(None) is False
+    assert g.query_key_is_sensitive(12345) is False

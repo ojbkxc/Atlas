@@ -145,8 +145,9 @@ def _parser() -> argparse.ArgumentParser:
                             help="runs.jsonl 路径（默认 <root>/reports/runs.jsonl）")
     allure_cmd.add_argument("--out", type=Path, default=None,
                             help="输出目录（默认 <root>/reports/allure-results）")
-    allure_cmd.add_argument("--clean", action="store_true",
-                            help="先清空结果集里 Atlas 前缀文件（默认即清，仅删 atlas-* 不误删用户附件）")
+    allure_cmd.add_argument("--clean", action=argparse.BooleanOptionalAction, default=True,
+                            help="先清空结果集里 Atlas 前缀文件（默认即清；--no-clean 可关闭；"
+                                 "仅删 atlas-* 不误删用户附件）")
     allure_cmd.add_argument("--serve", action="store_true",
                             help="生成后打印 allure serve 命令（不自行拉起浏览器/网络）")
     allure_analyze_cmd = add("allure-analyze",
@@ -605,7 +606,8 @@ def main(argv: list[str] | None = None) -> int:
             # #139：相对附件按项目根解析（engine 落 runs.jsonl 的就是 root 相对路径）；
             # 旧实现不传，消费侧回落 runs_path.parent=reports/ 做基准——截图明明在
             # root/artifacts/snapshots/ 却假报「无法读取」生成占位（假阴性证据）。
-            result = emit_allure(runs, out, clean=True, attachments_dir=config.root)
+            # clean 由 --clean/--no-clean 控制（默认即清，与历史行为逐字节一致）
+            result = emit_allure(runs, out, clean=args.clean, attachments_dir=config.root)
         except (OSError, ValueError) as exc:
             return _user_error(exc)
         print(json.dumps(result, ensure_ascii=False, indent=2))

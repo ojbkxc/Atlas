@@ -6,7 +6,7 @@ import json
 import pytest
 from atlas.experience import ExperienceJournal
 from atlas.knowledge import KnowledgeBase
-from atlas.overlay import diff_overlays, load_overlays, to_tower
+from atlas.overlay import diff_overlays, load_overlays, overlay_draft, to_tower
 from atlas.review import ReviewQueue
 
 SAMPLE = {
@@ -187,3 +187,46 @@ def test_bu_overlay_template_carries_task_context(tmp_path):
     to_tower(journal, path, "BU-A", "BU-B (sample)")
     rows = ReviewQueue(tmp_path).template_rows("bu_overlay")
     assert all(r["task"].startswith("overlay:") and r["remedy"] == "" for r in rows)
+
+
+# ── overlay_draft：草稿行形态与 id 公式直测（盲区补齐轮）───────────────────
+# 此前只经 to_tower 间接覆盖（塔内可见性/seen 聚合），但 id 推导公式、evidence 四键、
+# append_draft 调用形态没有直接钉桩——公式漂移意味着「同键同 BU 对」identity 变，
+# seen 聚合与 #118 证据刷新语义全部失锚。
+
+class _RecordingJournal:
+    """overlay_draft 只调 append_draft：替身记录，不落盘。"""
+
+    def __init__(self):
+        self.rows = []
+
+    def append_draft(self, row):
+        self.rows.append(row)
+
+
+def test_overlay_draft_row_shape_and_id_formula():
+    import hashlib
+    import re
+    journal = _RecordingJournal()
+    diff = {"key": "ou", "base": "A-ou", "other": "B-ou"}
+    row = overlay_draft(journal, "BU-A", "BU-B", diff)
+    expect_id = hashlib.sha1(b"overlay:ou:BU-A:BU-B").hexdigest()[:12]
+    assert row["id"] == expect_id, "id=sha1('overlay:{key}:{base}:{other}')[:12]，seen 聚合 identity 挂在这"
+    assert row["task"] == "overlay:ou"
+    assert row["kind"] == "bu_overlay"
+    assert row["failure_class"] == "bu_overlay"
+    assert row["exception_type"] == "" and row["pitfall_id"] == ""
+    assert row["status"] == "pending_review"
+    assert row["evidence"] == {"base_bu": "BU-A", "other_bu": "BU-B",
+                               "base_value": "A-ou", "other_value": "B-ou"}
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}", row["created_at"])
+    assert journal.rows == [row], "append_draft 必须恰调一次、参数即返回值"
+
+
+def test_overlay_draft_missing_key_raises_loudly():
+    """diff 必须带 key/base/other：缺 key 当场 KeyError（fail-loud 不猜，与
+    diff_overlays 未知 BU 点名同纪律）。"""
+    journal = _RecordingJournal()
+    with pytest.raises(KeyError):
+        overlay_draft(journal, "BU-A", "BU-B", {"base": "x", "other": "y"})
+    assert journal.rows == [], "坏形态不得半途写塔"

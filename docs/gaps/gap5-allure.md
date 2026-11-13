@@ -182,7 +182,7 @@ def write_attachment(out_dir: Path, source_path: Path, label: str,
 
 ```bash
 atlas allure reports/runs.jsonl --out reports/allure-results          # 默认直出
-atlas allure reports/runs.jsonl --clean                               # 先清空结果集（默认即清，--clean 为 no-op flag）
+atlas allure reports/runs.jsonl --clean                               # 先清空结果集（默认即清；--no-clean 可关闭）
 atlas allure reports/runs.jsonl --serve                               # 生成后打印 allure serve 命令（不自行拉起）
 # atlas allure --via-pytest examples/atlas_core_verify.yaml           # 未实现（P4 可选）：经 allure-pytest（需额外依赖）
 ```

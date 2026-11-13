@@ -824,3 +824,110 @@ def test_format_sync_summary_is_cp936_safe(project):
     text = ds.format_sync_summary(res)
     assert "DRY-RUN" in text
     text.encode("cp936")   # 标记全 ASCII，中文可编码（Atlas 历次 GBK 教训）
+
+
+# ── mcp_config_path / load_mcp_servers / repair_mojibake / classify_results /
+#    state_path / build_directory_arguments：判据直测（盲区补齐轮）───────────
+# 前四者此前只经 resolve_mcp_server/parse_mcp_response/sync_plan 间接覆盖；
+# 这里钉住未覆盖分支：home 解析时机、非 dict 条目过滤、坏字节/坏形态点名、
+# 不可修复乱码回落、suite_filter 自洽、空目录全零、payload 单键形态。
+
+def test_mcp_config_path_resolves_under_home(tmp_path, monkeypatch):
+    """~/.agents/mcp.json：home 在调用时解析（monkeypatch HOME/USERPROFILE 双设，跨平台）。"""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    assert ds.mcp_config_path() == tmp_path / ".agents" / "mcp.json"
+
+
+def test_load_mcp_servers_filters_non_dict_entries(tmp_path):
+    p = tmp_path / "mcp.json"
+    p.write_text(json.dumps({"mcpServers": {
+        "devops-mcp-sit": {"url": "http://sit"},
+        "bad-str": "not-a-dict",
+        "bad-null": None,
+        "bad-list": ["x"],
+    }}), encoding="utf-8")
+    assert ds.load_mcp_servers(p) == {"devops-mcp-sit": {"url": "http://sit"}}
+
+
+def test_load_mcp_servers_missing_file_names_it(tmp_path):
+    with pytest.raises(ds.DevopsSyncError) as exc:
+        ds.load_mcp_servers(tmp_path / "nope.json")
+    msg = str(exc.value)
+    assert "MCP 配置" in msg and "nope.json" in msg
+
+
+def test_load_mcp_servers_bad_json_and_shapes_named(tmp_path):
+    p = tmp_path / "mcp.json"
+    p.write_text("{not json", encoding="utf-8")
+    with pytest.raises(ds.DevopsSyncError) as exc:
+        ds.load_mcp_servers(p)
+    assert "解析失败" in str(exc.value)
+    p.write_text("[1, 2]", encoding="utf-8")
+    with pytest.raises(ds.DevopsSyncError):
+        ds.load_mcp_servers(p)          # 顶层非映射：没有 mcpServers
+    p.write_text(json.dumps({"mcpServers": ["x"]}), encoding="utf-8")
+    with pytest.raises(ds.DevopsSyncError):
+        ds.load_mcp_servers(p)          # mcpServers 非映射
+
+
+def test_load_mcp_servers_bad_bytes_replace_fallback_names(tmp_path):
+    """腰斩多字节：replace 回落读入后 JSON 必败 → 点名，不裸 UnicodeDecodeError。"""
+    p = tmp_path / "mcp.json"
+    p.write_bytes(b'{"mcpServers": {"devops-mcp-x": {"url": "u"}, "z": "\xff')
+    with pytest.raises(ds.DevopsSyncError):
+        ds.load_mcp_servers(p)
+
+
+def test_repair_mojibake_roundtrips_and_passthrough():
+    original = "同步成功"
+    assert ds.repair_mojibake(original.encode("utf-8").decode("latin-1")) == original
+    assert ds.repair_mojibake(original) == original     # 已正确：encode 必败 → 原样返回
+    assert ds.repair_mojibake("hello") == "hello"
+    assert ds.repair_mojibake("") == ""
+
+
+def test_repair_mojibake_unfixable_returns_original():
+    """`ü` 类单字符：latin-1 可编码但不是合法 utf-8 → decode 失败回落原文（不半修复）。"""
+    text = "ü"
+    assert ds.repair_mojibake(text) == text
+
+
+def test_classify_results_counts_and_suite_filter_consistency(tmp_path):
+    """suite_filter 必须与 load_cases 同口径：否则汇总把别的 suite 混进来=假绿
+    （classify_results docstring 明写的自洽要求）。"""
+    results = tmp_path / "allure-results"
+    results.mkdir()
+    _write_result(results, "a-result.json", suite="alpha", status="passed", start=1)
+    _write_result(results, "b-result.json", suite="beta", status="failed", start=2)
+    counts = ds.classify_results(results)
+    assert counts["total"] == 2 and counts["passed"] == 1 and counts["failed"] == 1
+    assert counts["broken"] == 0 and counts["skipped"] == 0 and counts["other"] == 0
+    assert ds.classify_results(results, suite_filter="alpha") == {
+        "total": 1, "passed": 1, "failed": 0, "broken": 0, "skipped": 0, "other": 0}
+
+
+def test_classify_results_unknown_status_goes_to_other_bucket(tmp_path):
+    results = tmp_path / "allure-results"
+    results.mkdir()
+    _write_result(results, "a-result.json", suite="alpha", status="weird-unknown", start=1)
+    counts = ds.classify_results(results)
+    assert counts["other"] == 1 and counts["total"] == 1
+    assert counts["passed"] == counts["failed"] == counts["broken"] == counts["skipped"] == 0
+
+
+def test_classify_results_empty_dir_all_zero(tmp_path):
+    results = tmp_path / "allure-results"
+    results.mkdir()
+    assert ds.classify_results(results)["total"] == 0
+
+
+def test_state_path_is_root_anchored_filename(tmp_path):
+    assert ds.state_path(tmp_path) == tmp_path / ds.STATE_FILENAME
+    assert ds.state_path(tmp_path).name == "devops-sync-state.yaml"
+
+
+def test_build_directory_arguments_single_key_shape():
+    args = ds.build_directory_arguments("demo-system/项目用例/UI自动化")
+    assert args == {"directoryPath": "demo-system/项目用例/UI自动化"}
+    assert len(args) == 1, "resolve_test_directory_by_path 的 arguments 只有 directoryPath 一键"

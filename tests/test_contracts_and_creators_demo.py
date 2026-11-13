@@ -268,6 +268,37 @@ def test_linux_acceptance_assets_exist():
     assert (ROOT / "scripts/linux_acceptance_remote.py").is_file()
 
 
+def test_linux_acceptance_remote_importable_and_resolve_password(monkeypatch, capsys):
+    """远程验收脚本必须可导入，且 resolve_password 从指定 env 名读密码。
+
+    回归 bug：`main()` 首行 `from linux_docker_acceptance import resolve_password`
+    引用了盘上已删除的模块 → 一进 main() 就 ImportError，脚本完全不可用
+    （README/CLAUDE 却把它当「已实跑通过」的验收脚本）。
+    """
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import linux_acceptance_remote as remote
+
+    # 模块可导入 + 同名函数可调用（不再依赖已删除的模块）
+    assert callable(remote.resolve_password)
+
+    # 行为：从 env 名读取密码；空/缺 → None（与调用方 `if not password` 语义一致）
+    monkeypatch.setenv("ATLAS_TEST_PW", "s3cr3t")
+    assert remote.resolve_password("ATLAS_TEST_PW") == "s3cr3t"
+    monkeypatch.delenv("ATLAS_TEST_PW")
+    assert remote.resolve_password("ATLAS_TEST_PW") is None
+    monkeypatch.setenv("ATLAS_TEST_PW", "")
+    assert remote.resolve_password("ATLAS_TEST_PW") is None
+    monkeypatch.delenv("ATLAS_TEST_PW")
+
+    # 端到端：缺凭据时 main() 早退 rc2（在 `import paramiko` / 连 SSH 之前）。
+    # 旧 ImportError 若回归，main() 会在凭据检查之前崩掉 → 本断言当场变红。
+    monkeypatch.setattr(sys, "argv",
+                        ["linux_acceptance_remote.py", "--host", "example.invalid",
+                         "--password-env", "ATLAS_TEST_PW"])
+    assert remote.main() == 2
+    assert "缺少凭据" in capsys.readouterr().err
+
+
 def test_linux_acceptance_probe_reports_environment():
     """只验证探测逻辑本身，不在测试里真跑容器或依赖本机是否有 Docker。"""
     sys.path.insert(0, str(ROOT / "scripts"))

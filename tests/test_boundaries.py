@@ -147,6 +147,60 @@ def test_subtree_vs_glob_conflict_resolves_by_specificity():
     assert B.resolve_region(data, "src/atlas/y.py") == "dir"
 
 
+# ── path_matches：X1 glob 分段语义直测（盲区补齐轮）───────────────────────────
+# resolve_region 的间接覆盖只采样了仓库账本里的真实 pattern；分段语义的机器形态
+# （* 不跨段 / ** 跨段 / 尾斜杠子树 / ? 单字符 / 反斜杠归一）在此逐条钉死——
+# 跨平台条款（两台机器同一答案）靠这些纯字符串断言成立，不触文件系统。
+
+def test_path_matches_literal_and_star_seg_semantics():
+    assert B.path_matches("src/atlas/core.py", "src/atlas/core.py")
+    assert not B.path_matches("src/atlas/core.py", "src/atlas/dsl.py")
+    assert B.path_matches("src/*.py", "src/core.py")
+    assert not B.path_matches("src/*.py", "src/generator/x.py"), "* 不跨段"
+
+
+def test_path_matches_double_star_and_subtree():
+    assert B.path_matches("src/**/*.py", "src/generator/emit.py")
+    assert B.path_matches("src/**/*.py", "src/core.py"), "** 可匹配零个整段"
+    assert B.path_matches("**/*.py", "a/b/c.py")
+    assert B.path_matches("flows/iservice/", "flows/iservice/x.yaml"), "尾斜杠=子树"
+
+
+def test_path_matches_question_mark_and_backslash_normalization():
+    assert B.path_matches("src/?.py", "src/a.py")
+    assert not B.path_matches("src/?.py", "src/ab.py")
+    # X1：Windows 形态反斜杠路径先归一再匹配（同一 pattern 两台机器同一答案）
+    bs = chr(92)
+    assert B.path_matches("src/atlas/*.py", f"src{bs}atlas{bs}core.py")
+
+
+def test_path_matches_empty_shapes():
+    assert B.path_matches("", "")
+    assert not B.path_matches("", "x.py")
+    assert not B.path_matches("x.py", "")
+
+
+# ── region_by_id：按 id 查区域直测（盲区补齐轮）─────────────────────────────
+
+def test_region_by_id_lookup_returns_entry_and_miss_is_none():
+    data = _ledger(_region("engine-core", paths=["src/atlas/*.py"]),
+                   _region("private", "private-knowledge", ["flows/iservice/"], optional=True))
+    reg = B.region_by_id(data, "private")
+    assert reg is data["regions"][1], "返回 region dict 本体（调用方读 disposition/decision_log）"
+    assert B.region_by_id(data, "no-such-region") is None
+
+
+def test_region_by_id_bad_inputs_never_crash():
+    data = _ledger(_region("engine-core", paths=["src/atlas/*.py"]))
+    assert B.region_by_id(data, None) is None
+    assert B.region_by_id(data, "") is None
+    assert B.region_by_id({}, "engine-core") is None, "无 regions 键"
+    # 非映射条目跳过、不裸崩
+    weird = {"regions": [None, "x", {"id": "r1"}, {"id": None}]}
+    assert B.region_by_id(weird, "r1") == {"id": "r1"}
+    assert B.region_by_id(weird, None) is None
+
+
 # ── 读侧容错（#112/#131 同纪律） ───────────────────────────────────────────────
 
 def test_load_missing_ledger_names_it_without_crash(tmp_path):

@@ -1122,7 +1122,10 @@ def emit_pytest_module(endpoints: list[Endpoint], *, flow_id: str = "",
                        base_url: str = "", global_headers: dict | None = None,
                        naming: str = "resp_{n}_{slug}",
                        fast: bool = False) -> str:
-    """从归一化模型（Endpoint[]）生成 pytest 测试模块源码文本（只生成不执行）。"""
+    """从归一化模型（Endpoint[]）生成 pytest 测试模块源码文本（只生成不执行）。
+
+    仅测试/兼容用：单文件源码形态入口；主路径 ``emit_pytest_package`` 内联同逻辑。
+    """
     specs = _specs_from_endpoints(endpoints, global_headers=global_headers, naming=naming)
     if not flow_id and endpoints:
         flow_id = slugify(f"{endpoints[0].summary} {endpoints[0].path}", fallback="flow")
@@ -1134,6 +1137,8 @@ def emit_pytest_module(endpoints: list[Endpoint], *, flow_id: str = "",
 def emit_pytest_from_flow(flow: dict, *, base_url: str = "",
                           fast: bool = False, components: dict | None = None) -> str:
     """从 flow dict 生成 pytest 测试模块源码文本（api_call→真调用；UI→fast 真渲染/skip 骨架）。
+
+    仅测试/兼容用：单文件源码形态入口；主路径 ``emit_pytest_package`` 内联同逻辑。
 
     ``components``（仅 fast 有意义）：组件库（``{"components": {...}}`` 或裸映射），供 fast 的
     auto-wire 从数据派生「任务名→组件动作」。缺省 None=无 auto-wire 数据源（UI 步仍须声明位）。

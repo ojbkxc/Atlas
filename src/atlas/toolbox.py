@@ -34,6 +34,8 @@ class ToolboxBridge(Protocol):
     def call(self, method: str, params: dict | None = None) -> Any: ...
 
 class WebToolboxSensor:
+    """外部 web-toolbox 桥接适配器，当前未接线（接线债）。"""
+
     def __init__(self, bridge: ToolboxBridge, contracts=None):
         self.bridge, self.contracts = bridge, contracts
 
@@ -93,6 +95,7 @@ class WebToolboxSensor:
         return len(self.contracts.contracts) - before
 
     def export_jmx(self, **filters) -> Any:
+        """纯透传，无 src 消费方。"""
         return self.bridge.call("export_jmx", filters)
 
     def export_har(self, **filters) -> Any:

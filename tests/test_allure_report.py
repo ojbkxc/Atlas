@@ -381,6 +381,44 @@ def test_cli_allure_serve_prints_command_not_launch(tmp_path, capsys):
     assert f"allure serve {out}" in err        # 只打印命令，不自行拉起
 
 
+# ---- --clean/--no-clean：no-op 已消除（默认即清，开关真的能关） ----
+
+def test_cli_allure_clean_parser_toggle():
+    """`--clean` 曾恒等于写死 clean=True（args.clean 从不被读 = no-op）。
+
+    现 `--clean/--no-clean` 是真开关：默认 True（默认即清），`--no-clean` 能关。
+    """
+    from atlas.cli import _parser
+    p = _parser()
+    assert p.parse_args(["--root", ".", "allure"]).clean is True
+    assert p.parse_args(["--root", ".", "allure", "--clean"]).clean is True
+    assert p.parse_args(["--root", ".", "allure", "--no-clean"]).clean is False
+
+
+def test_cli_allure_no_clean_is_effective_not_noop(tmp_path, capsys):
+    """用可观测行为钉死 args.clean 真正影响 emit_allure 的 clean 实参。
+
+    预置一个陈旧 atlas-* 结果文件：缺省 / --clean → 被清（clean=True）；
+    --no-clean → 保留（clean=False）。旧实现恒 clean=True，第三条断言当场变红。
+    """
+    from atlas.cli import main
+    runs = tmp_path / "runs.jsonl"
+    _write_runs(runs, [{"run_id": "r1", "case": "c", "env": "sit", "status": "passed", "steps": []}])
+
+    def run(*extra, out_name):
+        out = tmp_path / out_name
+        out.mkdir()
+        stale = out / "atlas-0000-stale-result.json"
+        stale.write_text("{}", encoding="utf-8")
+        rc = main(["--root", str(tmp_path), "allure", str(runs), "--out", str(out), *extra])
+        capsys.readouterr()
+        return rc, stale.exists()
+
+    assert run(out_name="a") == (0, False)                 # 缺省 = clean=True（历史行为）
+    assert run("--clean", out_name="b") == (0, False)      # 显式 --clean = True
+    assert run("--no-clean", out_name="c") == (0, True)    # --no-clean = False（真正可关）
+
+
 # ---- resolve_plugin 引擎缝零回归 ----
 
 def test_resolve_plugin_defaults_to_demo(monkeypatch):

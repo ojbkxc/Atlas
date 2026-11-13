@@ -8,12 +8,23 @@
 from __future__ import annotations
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 REMOTE_DIR = "/tmp/atlas-acceptance"
 PIP = "https://pypi.tuna.tsinghua.edu.cn/simple"
+
+
+def resolve_password(env_name: str) -> str | None:
+    """从 env_name 指定的环境变量读取密码；未设置或为空时返回 None。
+
+    原实现来自已删除的 linux_docker_acceptance 模块。此处为唯一消费方
+    （本脚本的 main()），故就近实现、不抽共享处（避免为单函数新建模块）。
+    返回 None 与调用方 `if not password:` 的「缺少凭据」语义一致。
+    """
+    return os.environ.get(env_name, "") or None
 
 
 def collect_files() -> list[tuple[Path, str]]:
@@ -30,7 +41,6 @@ def collect_files() -> list[tuple[Path, str]]:
 
 
 def main() -> int:
-    from linux_docker_acceptance import resolve_password
     ap = argparse.ArgumentParser()
     ap.add_argument("--host", required=True)
     ap.add_argument("--port", type=int, default=22)

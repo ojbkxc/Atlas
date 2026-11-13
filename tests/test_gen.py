@@ -10,7 +10,9 @@ import yaml
 
 from atlas.cli import main, _full_registry
 from atlas.generator import GenOptions, generate
-from atlas.generator.sources import SourceError, parse_source
+from atlas.generator.sources import (
+    SourceError, parse_source, re_search_method, sniff_source_type,
+)
 from atlas.generator.emit_flow import FlowEmitError
 from atlas.generator.emit_contract import grade_contract, emit_contracts
 from atlas.generator.model import Endpoint, ResponseSpec
@@ -174,6 +176,68 @@ def test_bad_utf8_replace_fallback(tmp_path):
     # 不裸崩：replace 读入后解析端点
     endpoints, _ = parse_source(p)
     assert len(endpoints) == 1
+
+
+# ---- sniff_source_type / re_search_method：判据直测（盲区补齐轮）----
+# parse_source 间接覆盖了「各格式能被识别」；这里钉住 sniff 的两个未覆盖分支：
+# declared 显式声明压过内容嗅探、YAML 形态分流（dict/list/非 openapi 映射），
+# 以及检测次序（标题/围栏先于方法行）、re_search_method 的词边界与空白要求。
+
+OPENAPI_TEXT = yaml.safe_dump({"openapi": "3.0.0", "paths": {}})
+SWAGGER2_TEXT = yaml.safe_dump({"swagger": "2.0", "paths": {}})
+
+
+def test_sniff_source_type_detects_each_format():
+    assert sniff_source_type(OPENAPI_TEXT) == "openapi"
+    assert sniff_source_type(SWAGGER2_TEXT) == "swagger"
+    assert sniff_source_type("# 接口文档\n\n## POST /api/x\n") == "markdown"
+    assert sniff_source_type("GET /api/x\n") == "text"
+    assert sniff_source_type("这是一段没有端点说明的普通文本\n") == "unknown"
+
+
+def test_sniff_source_type_declared_overrides_content():
+    """--source-type 显式声明压过内容嗅探（parse_source 的 declared 分支此前无测）。"""
+    assert sniff_source_type("total garbage, no structure", "openapi") == "openapi"
+    assert sniff_source_type(OPENAPI_TEXT, "markdown") == "markdown"
+
+
+def test_sniff_source_type_markdown_wins_over_method_line():
+    """标题/围栏检测先于 re_search_method：`## POST /api/list` 是 markdown 不是 text。"""
+    assert sniff_source_type("## POST /api/list") == "markdown"
+    assert sniff_source_type("```json\n{}\n```") == "markdown", "无标题的代码围栏也算 markdown"
+
+
+def test_sniff_source_type_yaml_shapes_fall_through():
+    # 顶层是列表：不是映射 → 落到后续嗅探
+    assert sniff_source_type("[1, 2, 3]") == "unknown"
+    # 映射但无 openapi/swagger 键 → 落到后续嗅探
+    assert sniff_source_type("name: x\n") == "unknown"
+    # swagger 值不以 2 开头 → 不判 swagger（3.x 不存在该格式，如实 unknown）
+    assert sniff_source_type(yaml.safe_dump({"swagger": "3.0", "paths": {}})) == "unknown"
+
+
+def test_sniff_source_type_heading_needs_space():
+    """`#Heading`（# 后无空白）不构成 markdown 标题（正则要求 \\s），落到方法检测。"""
+    assert sniff_source_type("#Heading POST /api/x") == "text"
+
+
+def test_sniff_source_type_empty_is_unknown():
+    assert sniff_source_type("") == "unknown"
+
+
+@pytest.mark.parametrize("text", ["GET /api/x", "get /api/x", "Delete /x", "patch /a b"])
+def test_re_search_method_positive(text):
+    assert re_search_method(text) is True
+
+
+@pytest.mark.parametrize("text", [
+    "POSTTASK /api",   # 词边界：POST 后接字母不算方法
+    "GET/api",         # 方法与路径之间必须空白
+    "/api/x",          # 无方法
+    "",
+])
+def test_re_search_method_negative(text):
+    assert re_search_method(text) is False
 
 
 # ---- 生成层 ----
