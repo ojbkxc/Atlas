@@ -200,7 +200,8 @@ Atlas 的兼容层**不替换同事引擎**，因此结果、浏览器生命周�
 # 生成新项目骨架（含 .atlas-root/.env/pyproject/flows/tests/scripts/README）
 atlas init myproj --system ics --module so
 
-# 可选：把 Atlas 仓库钉成 file:// 依赖
+# 默认已自动把当前 Atlas 源码根钉成 file:// 依赖（`atlas_dependency.mode=file`）；
+# 只有在探测不到源码根（如 Atlas 装成 site-packages）时才需要显式指定：
 atlas init myproj --system ics --module so --atlas-path /path/to/Atlas
 
 # 进入项目、建虚拟环境、装依赖、跑冒烟
@@ -208,7 +209,7 @@ cd myproj
 python -m venv .venv
 .venv/Scripts/python -m pip install -e .
 python -m playwright install chromium
-cp .env.example .env  # 填真实 URL 和凭据
+# .env 已由 atlas init 生成（值与 .env.example 相同、全空）；编辑它填真实 URL 和凭据
 atlas doctor
 pytest -q
 
@@ -613,6 +614,8 @@ PYTHONPATH=src python scripts/boundary_classify.py --diff incoming.diff --to-tow
   同期收口。**计数四处（顶部徽章、本节、AGENTS §2、CLAUDE FAQ）由 lead 统一收口，波次实施者不各自改数。**
   （#136/#137 轮实测时环境已接入真实 `.env`：`base_url_source=legacy.env`、`demo_api=true`、
   `knowledge_pitfalls=104`，doctor 因此 rc0——虚构默认下 rc1 的旧前提仅适用于裸仓库。
+  **口径更新（2026-11-13）**：私有库现为 **119 条**（`isvc-*` 104 + `mach-*` 15），
+  `atlas doctor` 的 `knowledge_pitfalls` 读 119。
   634→637 为 #140 自身补的 3 条感知器官错误形态回归测；637→668 中 #141 自身补 3 条
   Cookie 烘焙/保活回归测，其余 +28 为并发队友自有增量，如实归因。
   720→772 为 LiteFlow 吸收改造新增的 52 条离线回归测——原子编译缓存/^指针报错/

@@ -10,7 +10,9 @@ Python 3.11+ / Playwright(sync) / requests / PyYAML / pytest。**Atlas 定位 = 
 - 包：`src/atlas`
 - 业务插件：`src/atlas/plugins/demo`
 - 外部资产：`../legacy-suite`、`../legacy-api`，只读复用
-- 业务会话默认值（账号/OU/语言/division）唯一来源：`plugins/demo/knowledge/session.json`（仅账号名，无密码）
+- 业务会话默认值（账号/OU/语言/division）分层来源：显式 `ATLAS_SESSION_*` env > 私有 `session.json`
+  > 私有 `envs.json` 的环境坐标（`environments.<env>.account/ou`，仅真实业务插件消费）> 包内
+  `plugins/demo/knowledge/session.json` 结构默认（仅账号名，无密码）。空账号在开浏览器前拒（`runtime.require_account`）。
 
 ## 常用命令
 

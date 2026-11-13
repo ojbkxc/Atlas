@@ -147,7 +147,7 @@ class DemoPlugin:
 atlas init <name>
     --system SYSTEM           业务系统名（如 ics；必填，描述性标签）
     --module MODULE           业务模块名（如 so；必填，描述性标签）
-    --atlas-path PATH         可选：把 Atlas 仓库以相对/绝对 file:// 依赖钉进生成项目
+    --atlas-path PATH         显式指定 Atlas 源码根；**默认已自动探测并钉成 file:// 依赖**（2026-11-13 落地调整，见 §2.3）
     --out DIR                 输出目录（默认当前目录）
     --interactive             对话式补问缺省值（CI 不设即零交互）
 
@@ -158,13 +158,21 @@ atlas init <name>
 **输出**（stdout JSON，便于脚本消费）：
 ```json
 {"created": "<abs dir>", "files": ["pyproject.toml", ".env", ...],
- "next": ["python -m venv .venv && .venv/Scripts/python -m pip install -e .",
+ "atlas_dependency": {"mode": "file", "path": "<Atlas 源码根>"},
+ "next": ["cd <dir>", "python -m venv .venv",
+          "# 激活 venv：Windows .venv\\Scripts\\activate；Linux/macOS source .venv/bin/activate",
+          "python -m pip install -e .",
           "python -m playwright install chromium",
           "atlas doctor", "pytest -q",
           "atlas allure reports/runs.jsonl --out reports/allure-results --clean",
           "allure serve reports/allure-results"]}
 ```
 返回码：成功 0；目标冲突/参数非法 → 一行 stderr + rc 2（复用 `cli._user_error` 口径，与 #79/#80 一致）。
+
+> **落地注（2026-11-13，commit `489d041`）**：上表的 `atlas_dependency` 是新增键（设计稿没有）——
+> `mode=file` 时 `path` 是自动探测到的 Atlas 源码根，`mode=index` 时为 `null` 且 CLI 必打 `WARN:`；
+> `next` 同时改为**平台中立**（不再写 `.venv/Scripts/...` 单平台路径），并删掉了设计稿里的
+> `cp .env.example .env`（`.env` 已由 `init` 生成）。
 
 ### 2.2 生成的文件清单
 
@@ -200,7 +208,8 @@ version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
   # Atlas 作为「已安装库」复用，不复制源码。先装上：pip install -e "<Atlas 仓库>"
-  # 或用 atlas init --atlas-path 把下面这行钉成 file:// 依赖。
+  # 或用 atlas init --atlas-path 把下面这行钉成 file:// 依赖（2026-11-13 起：默认就自动钉，
+  # 只有探测不到源码根时这行才留裸索引名 + CLI WARN）。
   "atlas-test-platform",
   "playwright>=1.45",
   "requests>=2.31",
@@ -224,6 +233,15 @@ include = ["flows*", "scripts*"]
   "atlas-test-platform @ file:///{{abs_atlas_path}}",
 ```
 （Windows 用 `file:///D:/GitHub/Atlas`；生成器用 `pathlib.Path(...).as_uri()` 保证跨平台。）
+
+> **落地注（2026-11-13，commit `489d041`）**：设计稿的「可选」语义已不成立。`atlas init` 现在
+> **默认**调 `scaffold.detect_atlas_source_root()` 向上找声明 `name = "atlas-test-platform"` 的
+> `pyproject.toml`，探测到就把该路径钉成 `file://` 依赖——因为 Atlas 是**源码分发**，裸索引名
+> `atlas-test-platform` 在公共/私有索引上都解析不到，新用户接手骨架第一步 `pip install -e .`
+> 就撞 `No matching distribution found`。只有装成 site-packages（探测不到源码根）时才回落索引名，
+> 并在 CLI stderr 打 `WARN:` + 生成 README「依赖前置」段；`init` 的 stdout JSON 增
+> `atlas_dependency: {"mode": "file"|"index", "path": ...}` 如实回传。
+> `--atlas-path` 的语义相应改为「显式覆盖自动探测结果」。
 
 ### 2.4 `flows/smoke.yaml`（最小 flow）
 
@@ -308,8 +326,10 @@ def test_smoke_flow_compiles():
 
 ### 2.6 `README.md`（生成物大纲）
 
-1. 一页快速开始：`python -m venv .venv` → `pip install -e .`（含 `--atlas-path` 说明）→
-   `python -m playwright install chromium` → `cp .env.example .env` 填真实值 → `atlas doctor`。
+1. 一页快速开始：`python -m venv .venv` → `pip install -e .`（含 Atlas 依赖说明）→
+   `python -m playwright install chromium` → **直接编辑 `atlas init` 已生成的 `.env`**（值与
+   `.env.example` 相同、全空；不要再 `cp .env.example .env`，2026-11-13 落地时该重复步骤已从模板删掉）
+   → `atlas doctor`。
 2. **诚实说明**：新项目未接旧项目时 `atlas doctor` 会 rc 1（`legacy_pages`/`demo_api` 为 False），
    属预期；接了 `ATLAS_LEGACY_*` / `ATLAS_DEMO_API_*` 后转绿。
 3. `ATLAS_*` 映射表（引用 `config.py`，不新造键）+ `ATLAS_SESSION_*` 说明。
@@ -380,7 +400,8 @@ allure generate reports/allure-results -o reports/allure-report --clean
   2.39.0 是 Allure CLI 版本；与其纠缠版本号，不如按方案 A 根本不引入该依赖）。
 - 报告能力 = **纯 stdlib 直出 Allure 2.39.0 结果集**：`atlas allure <runs.jsonl> --out <allure-results>`
   （gap5 `allure_report.emit_allure`，读侧复用 `reporting` 的 `#112/#131` 容错纪律）。
-- 生成骨架的 pyproject 依赖 = `atlas-test-platform` + `playwright/requests/PyYAML` + `pytest>=8`，
+- 生成骨架的 pyproject 依赖 = `atlas-test-platform`（2026-11-13 落地后默认钉成本机源码根的
+  `file://` URI）+ `playwright/requests/PyYAML` + `pytest>=8`，
   **无 `--alluredir`**（结果不由 pytest 插件写）。
 - **Allure CLI 2.39.0** 仍按 team-lead 要求文档化安装（Scoop/Choco/官网 zip）+ `allure --version` 校验。
 - `allure-pytest` 仅作为 **gap5 P4 可选 `--via-pytest`**，届时才钉真实版本（如 `2.13.5`），默认关闭
@@ -879,8 +900,9 @@ PYTHONPATH=src python -m atlas doctor
 2. **插件加载缝（§3.0）—— 已裁决：接受**。`plugin_api.resolve_plugin()` 是本轮**唯一引擎级改动**：
    cli.py/runtime.py 里 `DemoPlugin()` → `resolve_plugin()`，机械替换、零业务语义变化；未设
    `ATLAS_PLUGIN` 时行为**完全一致**（含 `make_provider` 语义），必须新增回归测钉死零回归。
-3. **依赖形态（§2.3）—— 已确认**：默认 `atlas-test-platform`（需先 editable 安装），
-   `--atlas-path` 支持 `file://`。无需内网私有索引名。
+3. **依赖形态（§2.3）—— 已确认，并已被 2026-11-13 落地调整取代**：默认 `atlas-test-platform`（需先
+   editable 安装）→ 现为**默认自动钉本机 Atlas 源码根的 `file://` 依赖**，探测不到才回落索引名 + WARN；
+   `--atlas-path` 改为显式覆盖。无需内网私有索引名（结论不变）。
 4. **`--interactive` —— 已确认保留**：默认命令式（CI 安全），对话式仅显式开启。
 
 > 以上均以 `docs/gaps/gap5-allure.md` 为**权威口径**对齐。
@@ -889,7 +911,10 @@ PYTHONPATH=src python -m atlas doctor
 
 ## 9. 交付边界声明（诚实）
 
-- 本文档只做**设计**，未改任何源码。
+- 本文档只做**设计**（实现见 `src/atlas/scaffold.py` / `config_add.py`，状态见文档头）。
+  §2.1（CLI 参数与输出 JSON）/§2.3（pyproject 依赖）/§2.6（README 大纲）/§2.8（依赖清单）/§8 第 3 条
+  的过时点已按 2026-11-13 落地调整加注（默认钉源码根、`atlas_dependency` 键、`.env` 直接编辑、
+  平台中立 `next`）。
 - 生成物中的 Task/Probe 是**骨架**，默认抛 `NotImplementedError`——这是有意为之（红线 12），
   不声称「已能跑真实业务」。真正可跑的只有 `tests/test_smoke.py`（自包含浏览器冒烟 + 离线 compile +
   产 `runs.jsonl` 供 `atlas allure`）。

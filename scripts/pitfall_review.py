@@ -14,7 +14,7 @@
 * `root_cause`/`symptom` 被回落成 `task`/`failure_class`；
 * 且原 `isvc-*` pending 条目不会被替换 → 同一坑点两条（一条 approved、一条 pending）。
 
-所以迁移条目的人审批准走**就地翻 status**（`docs/knowledge-migration.md` §5.3 列出的路径），
+所以迁移条目的人审批准走**就地翻 status**（`docs/knowledge-migration.md` §5 第 3 点的路径），
 写回经 `KnowledgeBase.save_reviewed`——与 `approve_pitfall` 同一条知识写路径、同一把
 `_writable_root` 闸门（AGENTS 红线 #11），不是裸写文件。
 
@@ -23,7 +23,7 @@
 * 本工具**不自动批准**：`import`/`report` 只写审核塔队列（`pending_review`），知识库零改动；
   `enable` 必须由人显式点名 id 并给 `--reason`。
 * `isvc-039/040/063/064/065/095` 默认拒绝启用：源文明确要求 SKIP 或报管理员补主数据，
-  批准成「可自动重试」就等于制造假绿（`AGENTS.md` Never#6 / `knowledge-migration.md` §5.4）。
+  批准成「可自动重试」就等于制造假绿（`AGENTS.md` Never#6 / `knowledge-migration.md` §5 第 4 点）。
 
 用法
 ----
@@ -40,10 +40,10 @@ import sys
 import time
 from pathlib import Path
 
-# 源文要求 SKIP/报管理员的阻塞条目（knowledge-migration.md §5.4）——默认拒绝启用。
+# 源文要求 SKIP/报管理员的阻塞条目（knowledge-migration.md §5 第 4 点）——默认拒绝启用。
 BLOCKED_IDS = ("isvc-039", "isvc-040", "isvc-063", "isvc-064", "isvc-065", "isvc-095")
 BLOCKED_NOTE = ("环境/产品阻塞：源文要求 SKIP 或报管理员补主数据，放宽 remedy 或批准成"
-                "可自动重试 = 制造假绿（AGENTS Never#6 / knowledge-migration §5.4）")
+                "可自动重试 = 制造假绿（AGENTS Never#6 / knowledge-migration §5 第 4 点）")
 DECISIONS_NAME = "pitfall_review_decisions.jsonl"
 
 
@@ -291,7 +291,7 @@ def _build_parser() -> argparse.ArgumentParser:
                         help=f"enable：决策文件（默认 {DECISIONS_NAME}），逐行取 id")
     parser.add_argument("--reason", default="", help="enable：批准依据（必填，逐条留痕）")
     parser.add_argument("--force-blocked", action="store_true",
-                        help="enable：连阻塞条目一起启用（不建议；先读 knowledge-migration §5.4）")
+                        help="enable：连阻塞条目一起启用（不建议；先读 knowledge-migration §5 第 4 点）")
     parser.add_argument("--dry-run", action="store_true", help="只算不写")
     parser.add_argument("--json", action="store_true", help="report：输出 JSON")
     parser.add_argument("--root", type=Path, default=None, help="Atlas 项目根（默认当前目录向上找 .atlas-root）")

@@ -22,9 +22,9 @@ from typing import Any
 from ...core import Channel, Task, TaskMetadata
 from ...failures import EnvBlocked
 
-# 知识命中按 `domain in row["scope"]` 过滤（knowledge.py）。L2 私有库 104 条坑点 scope 以
+# 知识命中按 `domain in row["scope"]` 过滤（knowledge.py）。L2 私有库 119 条坑点 scope 以
 # `iservice` 为权威词（demo 仅包内虚构默认），用 "iservice" 才能让人审通过的坑点在
-# legacy_case 失败路径上真正可命中；沿用 LegacyStep 的 "legacy" 只有 4/104 条生效。
+# legacy_case 失败路径上真正可命中；沿用 LegacyStep 的 "legacy" 只有 4/119 条生效。
 TASK_DOMAIN = "iservice"
 
 

@@ -57,7 +57,7 @@ def _parser() -> argparse.ArgumentParser:
     init_parser.add_argument("--system", required=True, help="系统名（描述性标签）")
     init_parser.add_argument("--module", required=True, help="模块名（描述性标签）")
     init_parser.add_argument("--atlas-path", type=Path, default=None,
-                             help="可选：把 Atlas 仓库以 file:// 依赖钉进生成项目")
+                             help="显式指定 Atlas 源码根（默认自动探测当前源码根并钉成 file:// 依赖）")
     init_parser.add_argument("--interactive", action="store_true",
                              help="对话式补问缺省值（CI 不设即零交互）")
     init_parser.add_argument("--out", type=Path, default=Path("."),
