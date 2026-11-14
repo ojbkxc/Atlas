@@ -141,7 +141,7 @@ def test_state_machine_infer_terminal_from_empty_states():
     assert "b" in machine.terminal
 
 
-def test_state_machine_from_dict_terminal_null_not_typeerror():
+def test_state_machine_from_dict_terminal_null_not_typeerror(tmp_path):
     """#116 面1：YAML 写了 `terminal:` 但忘填值（键在、值 null）——旧实现
     raw.get("terminal", []) 返回 None（默认值只在键缺失时生效），set(None) 裸 TypeError。
     cli.machine 只捕 (OSError, ValueError, yaml.YAMLError)，TypeError 漏网→整条命令 traceback
@@ -152,14 +152,15 @@ def test_state_machine_from_dict_terminal_null_not_typeerror():
                                       "terminal": None})
     assert "b" in machine.terminal
     # CLI e2e：terminal: null 的 YAML 走 atlas machine 不再 traceback，rc 0
+    # wave4 隐患消解：探针 YAML 落 pytest tmp_path（独立临时目录，pytest 自清理），不再往
+    # 仓库 tests/ 写固定名 `_terminal_null_probe.yaml`——固定名+共享目录是并发读写竞态温床
+    # （另一 pytest 进程/编辑器/残留线程都可能撞它）。--root 只参与 AtlasConfig.from_root
+    # 构造，machine 处理器本身不读 config，空 tmp_path 下 from_root 正常——无需重建任何结构。
     import yaml
-    path = __import__("pathlib").Path(__file__).parent / "_terminal_null_probe.yaml"
+    path = tmp_path / "_terminal_null_probe.yaml"
     path.write_text(yaml.safe_dump({"initial": "a", "states": {"a": [{"to": "b", "task": "go"}], "b": []},
                                     "terminal": None}, sort_keys=False), encoding="utf-8")
-    try:
-        assert main(["--root", str(path.parent), "machine", str(path)]) == 0
-    finally:
-        path.unlink()
+    assert main(["--root", str(tmp_path), "machine", str(path)]) == 0
     # 非列表形态点名而非崩迭代器
     with pytest.raises(ValueError, match="terminal 必须是列表"):
         StateMachine.from_dict({"initial": "a", "states": {"a": []}, "terminal": 5})
