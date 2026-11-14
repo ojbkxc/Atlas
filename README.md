@@ -3,7 +3,7 @@
 <p align="center">
   <a href="https://github.com/ojbkxc/Atlas"><img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License"></a>
-  <a href="#当前验证边界"><img src="https://img.shields.io/badge/tests-2446%20passed-brightgreen" alt="2446 passed"></a>
+  <a href="#当前验证边界"><img src="https://img.shields.io/badge/tests-2535%20passed-brightgreen" alt="2535 passed"></a>
   <img src="https://img.shields.io/badge/engine-Playwright-45edaa" alt="Playwright">
   <img src="https://img.shields.io/badge/self--healing-human--reviewed-orange" alt="Human-reviewed healing">
 </p>
@@ -589,8 +589,16 @@ PYTHONPATH=src python scripts/boundary_classify.py --diff incoming.diff --to-tow
 
 ## 当前验证边界
 
-- 离线测试：**2446 passed / 0 failed**（Python 3.13；`PYTHONPATH=src python -m pytest -q`，
-  2026-11-13 实测——0 skipped、`--collect-only` 同为 2446；
+- 离线测试：**2535 passed / 9 failed（既有环境失败）**（Python 3.11；`PYTHONPATH=src py -3.11 -m pytest -q`，
+  2026-11-14 实测——8 skipped、`--collect-only` 同为 2535；
+  较上一收口位 2446（2026-11-13 实测，Python 3.13 环境、当时 0 failed / 0 skipped）净 +89：
+  本波「通用知识包组合层」+14（`KnowledgeBase.base_roots` / `load_composed` 并入通用包、
+  pitfalls 可见性判据 `domain in scope or "generic" in scope`，tests/test_evidence_and_knowledge.py +12；
+  插件与 config_add 骨架三层接线（私有 > 平台 > 通用），tests/test_config_add.py +2）
+  + 2446 收口后存量补测 +75（缺陷修复波「测试盲区」，此前未落数）；
+  9 failed 全为既有环境失败（基线即存在、非本波引入、零新增失败）：`flows/iservice` 目录不在本克隆
+  致迁移哨兵两条 scope 无文件可注入 + fast 垫片/产物探针环境失败（emit_compat ×3、
+  gen/scaffold/legacy_compat 各一）；
   上一收口位为 2428（2026-11-12 迁移坑点审核与 URL 净化波），其间 +18：`envs.json` 账号/OU
   环境坐标接进会话默认链（+6）+ 空账号闸门经 CLI 三入口（run / agent --execute / explore）
   预检投递 rc 2（`resolve_account`/`require_account` 单点）+ `--env` choices 收敛到

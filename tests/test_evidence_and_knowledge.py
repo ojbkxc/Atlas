@@ -341,6 +341,184 @@ def test_readonly_kb_save_reviewed_denied_names_env(tmp_path):
         kb.save_component_selector("c", "e", "sel", approved=True)
 
 
+def test_multiroot_fallback_prefers_earliest_root(tmp_path):
+    """多根逐文件回退（task #2）：fallback_root 传**有序 Path 列表**时，同名文件取根序列里
+    第一个存在的。顺序 = root → fallback[0] → fallback[1] …，用于「私有 > 平台包内 >
+    通用知识包」三层。私有根一旦有同名文件，连更靠前的 fallback 也被遮蔽。"""
+    priv = tmp_path / "priv"; priv.mkdir()
+    platform = tmp_path / "platform"; platform.mkdir()
+    common = tmp_path / "common"; common.mkdir()
+    (platform / "pitfalls.json").write_text(
+        json.dumps({"pitfalls": [{"id": "platform"}]}), encoding="utf-8")
+    (common / "pitfalls.json").write_text(
+        json.dumps({"pitfalls": [{"id": "common"}]}), encoding="utf-8")
+    kb = KnowledgeBase(priv, fallback_root=[platform, common])
+    assert kb.pitfalls()[0]["id"] == "platform"          # 靠前的 fallback 胜出
+    (priv / "pitfalls.json").write_text(
+        json.dumps({"pitfalls": [{"id": "private"}]}), encoding="utf-8")
+    assert kb.pitfalls()[0]["id"] == "private"           # root 遮蔽所有 fallback
+
+
+def test_multiroot_missing_file_falls_to_next_root(tmp_path):
+    """某根缺该文件时自动落到下一根——本文件在最靠前 fallback 缺、只有最后一根有；
+    三层都缺时回落空 dict（不抛，读不残缺）。各文件独立回退，互不牵连。"""
+    priv = tmp_path / "priv"; priv.mkdir()
+    empty_root = tmp_path / "platform"; empty_root.mkdir()   # 没有 components.json
+    common = tmp_path / "common"; common.mkdir()
+    (common / "components.json").write_text(
+        json.dumps({"components": {"按钮": {"selectors": {"保存": "#save"}}}}), encoding="utf-8")
+    kb = KnowledgeBase(priv, fallback_root=[empty_root, common])
+    assert kb.load("components")["components"]["按钮"]["selectors"]["保存"] == "#save"
+    assert kb.load("task_library") == {}                  # 全部根都缺 → 空 dict
+
+
+def test_multiroot_write_path_only_touches_root(tmp_path):
+    """写路径只认 root（红线 #135）：多根 fallback 一律只读——批准写回只落 root，
+    各 fallback 根字节零改动；root=None（只读库）下多根 fallback 也不放行写。"""
+    priv = tmp_path / "priv"; priv.mkdir()
+    platform = tmp_path / "platform"; platform.mkdir()
+    common = tmp_path / "common"; common.mkdir()
+    (platform / "pitfalls.json").write_text(
+        json.dumps({"pitfalls": [{"id": "platform"}]}), encoding="utf-8")
+    (common / "pitfalls.json").write_text(
+        json.dumps({"pitfalls": [{"id": "common"}]}), encoding="utf-8")
+    before_platform = (platform / "pitfalls.json").read_bytes()
+    before_common = (common / "pitfalls.json").read_bytes()
+    kb = KnowledgeBase(priv, fallback_root=[platform, common])
+    path = kb.save_reviewed("pitfalls", [{"id": "approved", "status": "approved"}], approved=True)
+    assert path == priv / "pitfalls.json"                 # 只落私有根
+    assert (priv / "pitfalls.json").exists()
+    assert (platform / "pitfalls.json").read_bytes() == before_platform   # fallback 零改动
+    assert (common / "pitfalls.json").read_bytes() == before_common
+    ro = KnowledgeBase(None, fallback_root=[platform, common])
+    with pytest.raises(PermissionError, match="ATLAS_KNOWLEDGE_DIR"):
+        ro.save_reviewed("pitfalls", [], approved=True)   # 只读库即使多根也拒写
+
+
+def test_single_path_fallback_backward_compatible(tmp_path):
+    """单 Path fallback_root 逐字后向兼容（plugins/demo、plugins/iservice 不迁移也照常工作）：
+    行为不变，且公开属性 `fallback_root` 仍等于传入的那个 Path（#135 相关插件断言
+    `fallback_root == knowledge_root` 依赖它，不能被规范化成列表）。"""
+    priv = tmp_path / "priv"; priv.mkdir()
+    pkg = tmp_path / "pkg"; pkg.mkdir()
+    (pkg / "pitfalls.json").write_text(
+        json.dumps({"pitfalls": [{"id": "p1"}]}), encoding="utf-8")
+    kb = KnowledgeBase(priv, fallback_root=pkg)
+    assert kb.fallback_root == pkg                        # 原值原样保留（非列表包裹）
+    assert kb.pitfalls()[0]["id"] == "p1"                 # 读回退照常
+    assert kb.load("components") == {}
+
+
+def test_common_knowledge_root_is_single_source():
+    """插件路径单一来源（task #2 要求 3）：common_knowledge_root() 恒指向包内
+    src/atlas/plugins/_common/knowledge，各插件不得自己拼这条路径（改一漏一即漂移）。"""
+    from pathlib import Path
+    from atlas import plugin_api
+    root = plugin_api.common_knowledge_root()
+    assert isinstance(root, Path)
+    assert root.name == "knowledge" and root.parent.name == "_common"
+    assert root == Path(plugin_api.__file__).resolve().parent / "plugins" / "_common" / "knowledge"
+    assert root.is_dir()                                  # 目录真实存在（占位待知识入库）
+
+
+def test_compose_same_id_platform_wins(tmp_path):
+    """组合层 base_roots：同名 id 的坑点行，平台（fallback，靠前）胜通用（base，靠后）——
+    通用同 id 行被去重丢弃，平台的胜出（靠前者赢）。"""
+    priv = tmp_path / "priv"; priv.mkdir()
+    plat = tmp_path / "platform"; plat.mkdir()
+    gen = tmp_path / "common"; gen.mkdir()
+    (plat / "pitfalls.json").write_text(json.dumps({"pitfalls": [
+        {"id": "gen-001", "trigger": "platform version", "scope": ["plat"]}]}), encoding="utf-8")
+    (gen / "pitfalls.json").write_text(json.dumps({"pitfalls": [
+        {"id": "gen-001", "trigger": "generic version", "scope": ["generic"]}]}), encoding="utf-8")
+    kb = KnowledgeBase(priv, fallback_root=plat, base_roots=gen)
+    rows = kb.pitfalls("plat")
+    assert [r["id"] for r in rows] == ["gen-001"]
+    assert rows[0]["trigger"] == "platform version"       # 平台赢，通用同 id 被去重
+
+
+def test_compose_generic_fills_missing_platform_entry(tmp_path):
+    """组合层：平台缺的条目由通用包**补齐**（并入而非遮蔽）——平台自带 pitfalls.json
+    时，通用条目仍可见（这正是影子遮蔽做不到的）。平台条目在前，通用补齐在后。"""
+    priv = tmp_path / "priv"; priv.mkdir()
+    plat = tmp_path / "platform"; plat.mkdir()
+    gen = tmp_path / "common"; gen.mkdir()
+    (plat / "pitfalls.json").write_text(json.dumps({"pitfalls": [
+        {"id": "snl-001", "trigger": "p", "scope": ["plat"]}]}), encoding="utf-8")
+    (gen / "pitfalls.json").write_text(json.dumps({"pitfalls": [
+        {"id": "gen-001", "trigger": "g", "scope": ["generic"]}]}), encoding="utf-8")
+    kb = KnowledgeBase(priv, fallback_root=plat, base_roots=gen)
+    assert [r["id"] for r in kb.pitfalls("plat")] == ["snl-001", "gen-001"]
+
+
+def test_compose_platform_file_missing_yields_generic_only(tmp_path):
+    """组合层：平台没有该文件时，只剩通用包内容（load() 影子回落空 + base 并入）。"""
+    priv = tmp_path / "priv"; priv.mkdir()
+    plat = tmp_path / "platform"; plat.mkdir()            # 无 pitfalls.json
+    gen = tmp_path / "common"; gen.mkdir()
+    (gen / "pitfalls.json").write_text(json.dumps({"pitfalls": [
+        {"id": "gen-001", "trigger": "g", "scope": ["generic"]}]}), encoding="utf-8")
+    kb = KnowledgeBase(priv, fallback_root=plat, base_roots=gen)
+    assert [r["id"] for r in kb.pitfalls("任意域")] == ["gen-001"]
+
+
+def test_compose_root_corrupt_bytes_falls_back(tmp_path):
+    """组合层：最靠前的 root 文件坏字节时被跳过，回落到平台 fallback 并与通用包组合。"""
+    priv = tmp_path / "priv"; priv.mkdir()
+    plat = tmp_path / "platform"; plat.mkdir()
+    gen = tmp_path / "common"; gen.mkdir()
+    (priv / "pitfalls.json").write_text('{"pitfalls": [{"id": "broken",', encoding="utf-8")  # 截断残 JSON
+    (plat / "pitfalls.json").write_text(json.dumps({"pitfalls": [
+        {"id": "snl-001", "trigger": "p", "scope": ["plat"]}]}), encoding="utf-8")
+    (gen / "pitfalls.json").write_text(json.dumps({"pitfalls": [
+        {"id": "gen-001", "trigger": "g", "scope": ["generic"]}]}), encoding="utf-8")
+    kb = KnowledgeBase(priv, fallback_root=plat, base_roots=gen)
+    ids = [r["id"] for r in kb.pitfalls("plat")]
+    assert ids == ["snl-001", "gen-001"]                  # 坏根跳过，回落平台 + 通用补齐
+    assert "broken" not in ids
+
+
+def test_compose_generic_row_visible_for_any_domain(tmp_path):
+    """可见性：scope 带 `generic` 的通用行对**任意**平台域都可见（docs §5.1）。"""
+    priv = tmp_path / "priv"; priv.mkdir()
+    gen = tmp_path / "common"; gen.mkdir()
+    (gen / "pitfalls.json").write_text(json.dumps({"pitfalls": [
+        {"id": "gen-001", "trigger": "g", "scope": ["element-ui", "generic"]}]}), encoding="utf-8")
+    kb = KnowledgeBase(priv, base_roots=gen)
+    for domain in ("snalai", "demo", "任意平台"):
+        assert [r["id"] for r in kb.pitfalls(domain)] == ["gen-001"]
+
+
+def test_compose_platform_row_invisible_for_other_domain(tmp_path):
+    """可见性：平台专有行（scope 只有平台名+机制标签，不带 generic）对本域可见、
+    对别的域**不可见**——通用包标记不能让平台行越界到别的域。"""
+    priv = tmp_path / "priv"; priv.mkdir()
+    plat = tmp_path / "platform"; plat.mkdir()
+    (plat / "pitfalls.json").write_text(json.dumps({"pitfalls": [
+        {"id": "snl-001", "trigger": "p", "scope": ["snalai", "element-ui"]}]}), encoding="utf-8")
+    kb = KnowledgeBase(priv, fallback_root=plat)
+    assert [r["id"] for r in kb.pitfalls("snalai")] == ["snl-001"]   # 本域可见
+    assert kb.pitfalls("demo") == []                                 # 别的域不可见
+
+
+def test_compose_base_roots_none_matches_load(tmp_path):
+    """后向兼容：base_roots=None（或缺省/空）时 load_composed 与 load **逐字等价**，
+    pitfalls() 行为不变；base_roots 属性如实保留 None。"""
+    priv = tmp_path / "priv"; priv.mkdir()
+    plat = tmp_path / "platform"; plat.mkdir()
+    (plat / "pitfalls.json").write_text(json.dumps({"pitfalls": [
+        {"id": "snl-001", "trigger": "p", "scope": ["snalai"]}]}), encoding="utf-8")
+    (plat / "components.json").write_text(json.dumps({"components": {
+        "btn": {"selectors": {"save": "#p"}}}}), encoding="utf-8")
+    for kb in (KnowledgeBase(priv, fallback_root=plat),
+               KnowledgeBase(priv, fallback_root=plat, base_roots=[]),
+               KnowledgeBase(priv, fallback_root=plat, base_roots=None)):
+        assert kb.load_composed("pitfalls") == kb.load("pitfalls")
+        assert kb.load_composed("components") == kb.load("components")
+        assert [r["id"] for r in kb.pitfalls("snalai")] == ["snl-001"]
+    assert KnowledgeBase(priv, fallback_root=plat, base_roots=None).base_roots is None
+
+
 def test_classify_failure_categorizes_all_classes():
     """classify_failure 必须覆盖所有失败类别。"""
     from atlas.failures import classify_failure, FailureClass

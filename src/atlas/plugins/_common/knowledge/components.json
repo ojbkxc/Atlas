@@ -1,0 +1,134 @@
+{
+  "policy": "通用 Element UI 组件探测铁律（业务中立）。来源：2026-11 对某国内 SaaS 商城后台两端（admin 管理后台 + seller 商家后台）的功能测试，把组件层的实测教训与平台坐标解耦后沉淀于此，供任何使用 Element UI（+ Vue 2）后台的新项目直接复用。selector 值只保留 Element UI 通用 CSS（.el-* 与标准 input/button），**不含任何平台路由、自定义 class 或业务文案**——平台特有的选择器（自定义命名行 class、业务化按钮文案等）留在各自插件的知识库里。核心铁律：Element UI 弹层普遍 append 到 body 且预渲染多份隐藏副本，定位一律 `:visible` 过滤或按 `getBoundingClientRect()` 过滤（AGENTS 红线 #12：不写「看起来对」的猜测选择器，猜出来的选择器会让脚本静默点错元素）。",
+  "components": {
+    "login": {
+      "selectors": {
+        "inputs": "input.el-input__inner",
+        "submit_generic": "button, .el-button"
+      },
+      "models": {
+        "success_criterion": "登录成功的判据**不是** URL 变化 / 出现头像 / 无报错，而是登录后调一个**业务只读接口**拿到 200 + 预期数据结构。URL 变化是弱判据：登录页渲染慢或前端路由异常时会假成功。",
+        "state_reuse": "登录态落盘为 Playwright storage_state（cookie + localStorage），一次登录、N 会话复用。**同一份 state 可被多实例并发共享**（实测 11 并发不互踢），比每成员各自登录省 N 倍验证码成本、也降低风控概率；每成员独立 state 文件是反模式（登录次数与失败率均 ×N）。state 过期自愈：任一请求收到 401/403 → 重登一次 → 覆写 state → 重试原请求一次，仍失败则终止并上报，不无限重试。",
+        "captcha_ocr": "固定长度图形验证码（4 位数字/字母一类）用**离线 OCR**（如 ddddocr）识别——确定性离线能力，比多模态读图稳定。只截**验证码元素本身**，不要截整页再猜坐标。识别长度不符即刷新换一张（不重试同一张），重试要有上限（如 3~8 次），超限换人工并当环境问题上报而非缺陷。滑块 / 点选 / 语义题不硬刚，人工介入或换测试账号。",
+        "credential_hygiene": "账号 / 口令 / state 文件都是凭据：只走 env，state 进 .gitignore，不进证据包、不入库、不外发。"
+      },
+      "notes": "登录页的输入框通常是 `input.el-input__inner`（顺序=用户名/密码/验证码，按 `query_selector_all` 下标取）。**登录不是准备工作，是第一个被测对象**：先确认「真的通了」（业务接口 200），再往下测。失败要分类（账号错 / 验证码错 / 风控拦截 / 代理不通 / 前端路由变了），四类处置完全不同。alg：账号/验证码/口令任何字面量绝不进脚本与知识库。"
+    },
+    "dialog_visibility": {
+      "selectors": {
+        "wrappers": ".el-dialog__wrapper,.el-drawer__wrapper,.el-message-box__wrapper",
+        "form_label": ".el-form-item__label"
+      },
+      "models": {},
+      "notes": "**一次错误的可见性判定能同时污染整轮结论**（实测：83 页探针的 dialog=false 与「空提交校验=0」全部由此产生）。`.el-dialog__wrapper` 一页里有多个，`document.querySelector` 返回**文档序第一个**——往往是关闭态的隐藏 wrapper，弹窗其实已打开。正确做法：`[...document.querySelectorAll(wrappers)].filter(w => {const cs=getComputedStyle(w); return cs.display!=='none' && cs.visibility!=='hidden';})`，取**最后一个**可见 wrapper；再兜一层 `getBoundingClientRect().height>0`。判据不要只判「存在」，要取到**弹窗标题 + `.el-form-item__label` 列表**再断言打开。"
+    },
+    "add_button": {
+      "selectors": {},
+      "models": {
+        "states": ["dialog", "route", "newtab", "toast", "nothing"]
+      },
+      "notes": "「新增/添加」有三种形态：① **路由跳独立表单页** ② **新标签页**打开另一子系统 ③ 真弹窗。判「无响应」前**必须同时比对 `page.url`**，按 dialog/route/newtab/toast/nothing 五态分类；只有 `nothing`（无请求、无提示、URL 不变）才允许写缺陷。曾一次性造出多条「按钮无响应」严重误报。"
+    },
+    "advanced_search": {
+      "selectors": {
+        "trigger": "button:has-text('高级搜索')",
+        "panel": ".el-popover.el-popper:visible",
+        "panel_buttons": ".el-popover button:visible",
+        "confirm": ".el-popover button:visible >> text=确定",
+        "clear": ".el-popover button:visible >> text=清空",
+        "clear_confirm": ".el-message-box__btns button:visible >> text=确定"
+      },
+      "models": {},
+      "notes": "高级搜索面板挂在 body（`.el-popover.el-popper`），**确定/取消/清空按钮在 `.el-form` 之外**，不能用 `.el-form button` 找。致命坑：面板内存在隐藏/可见两组同名按钮，用 `.first()` 会命中隐藏组 → 按钮点了没反应 → 误报「筛选完全失效」。**必须 `:visible` 过滤**。「清空」按钮本身可能是另一个 popover 的 reference，点了只展开二次确认，须再点确定。判定筛选是否生效用请求实参：URL 参数变化 + 响应 total 变化，不看页面提示。"
+    },
+    "row_action_dropdown": {
+      "selectors": {
+        "trigger": ".el-table__fixed-right .el-button, .el-table td:last-child .el-button",
+        "menu": ".el-dropdown-menu:visible",
+        "item": ".el-dropdown-menu:visible .el-dropdown-menu__item:has-text('{文本}')"
+      },
+      "models": {},
+      "notes": "行操作按钮常在**固定右列**（`.el-table__fixed-right`），按行索引定位时要算上固定列层的重复渲染，否则点到别的行（实测出现过「取消=保存」的行错位误报——**行错位会造出「看着成立」的假缺陷**）。菜单项在 body 里的 `.el-dropdown-menu`，须 `:visible` 过滤。"
+    },
+    "export_button": {
+      "selectors": {
+        "trigger": "button.el-dropdown-selfdefine:has-text('导出')",
+        "menu": ".el-dropdown-menu:visible",
+        "item": ".el-dropdown-menu:visible .el-dropdown-menu__item:has-text('{文本}')"
+      },
+      "models": {},
+      "notes": "**这类误报最高频。** 各页「导出」按钮的 class 带 `el-dropdown-selfdefine`，它是**下拉触发器**——点它只展开菜单，不发请求、不下载、无 toast。真实动作项在 `aria-controls` 指向的 popper 里。直接点触发器会得到「点了没反应」的假结论（一次误报出过量条假缺陷）。处置：先展开再点菜单项，或直接调端点。"
+    },
+    "table": {
+      "selectors": {
+        "root": ".el-table",
+        "row": ".el-table__body .el-table__row"
+      },
+      "models": {},
+      "notes": "列表可能存在**幻影重复行**：接口 total 正确，页面却渲染出多于 total 的行（渲染层重复渲染，勾 1 行实际选中多行）。用 `.el-table__row` 计数做断言前，**先对照接口 total** 判断是否踩到渲染层重复。另：部分列表（不同入口）真实行**不在 `.el-table__body-wrapper` 里**——换页面/换入口前先 dump 一次 DOM 再写选择器，不要硬套 `.el-table__row`。"
+    },
+    "pagination": {
+      "selectors": {
+        "current_page": ".el-pagination li.active",
+        "next": ".el-pagination button.btn-next",
+        "page_size_select": ".el-pagination .el-select"
+      },
+      "models": {},
+      "notes": "当前页判定必须读 `li.active`，**不是 `is-active`**（用 `is-active` 会永远取不到 → 误报「翻页无高亮」）。不要靠 URL 猜（列表状态通常不写 URL）。改每页条数后要等接口重新请求再断言。断言前先 dump 一次 className（形如 `['1:number active', '2:number']`）再写选择器。"
+    },
+    "date_range": {
+      "selectors": {
+        "panel": ".el-picker-panel:visible",
+        "cell": ".el-picker-panel:visible td.available"
+      },
+      "models": {},
+      "notes": "日期区间控件**不能**用 `locator.fill()` 写值（写进去不触发选择）。必须点开 picker 面板（`.el-picker-panel`），点 `td.available` 单元格。分页与筛选要配合。"
+    },
+    "checkbox": {
+      "selectors": {
+        "inner": ".el-checkbox__inner",
+        "original": ".el-checkbox__original"
+      },
+      "models": {},
+      "notes": "`.el-checkbox__original`（真实 input）被隐藏、点不动；要点 `.el-checkbox__inner`。"
+    },
+    "dialog": {
+      "selectors": {
+        "root": ".el-dialog:visible",
+        "footer_button": ".el-dialog__footer button:visible"
+      },
+      "models": {},
+      "notes": "弹窗按钮用 `.el-dialog__footer button`。注意 Element UI 按钮文案常带全角/半角空格（「确 定」「保 存」），`has-text('确定')` 可能匹配不到——用正则 `/确\\s*定/` 或点 footer 内最后一个非取消按钮，并且**点完必须验副作用**（请求有没有发出 / 列表有没有变），不能只看点击是否返回成功。"
+    },
+    "select_dropdown": {
+      "selectors": {
+        "dropdown": ".el-select-dropdown:visible",
+        "option": ".el-select-dropdown__item"
+      },
+      "models": {},
+      "notes": "下拉选项 append 到 body，不在 `.el-form-item` 内；页面存在多个 `display:none` 副本，必须按 `:visible` 或 `getBoundingClientRect().width>0` 过滤。"
+    },
+    "nav_menu": {
+      "selectors": {
+        "item": ".el-menu-item",
+        "submenu": ".el-submenu__title"
+      },
+      "models": {},
+      "notes": "左侧菜单是常规 `el-menu`。列表页的左侧导航项文本里含层级描述文案，**用文本模糊匹配抓按钮会抓到导航**——抓按钮时先限定在内容区容器内（排除 `.el-menu` / `aside`），否则得到「点了没反应」的假结论。"
+    },
+    "rich_text": {
+      "selectors": {
+        "editor": ".edui-editor",
+        "iframe_body": ".edui-editor iframe"
+      },
+      "models": {},
+      "notes": "富文本（UEditor 一类，class `edui-editor`）**用编辑器 API 写内容**（如 `editor.setContent` 或直接操作 iframe body），不要 `fill()`。**注意**：全站检索到的 `window.print` / 中文「打印」可能全部来自富文本编辑器自带的 print 插件，**不是**业务打印功能——先排除这个来源再判「有无打印能力」。",
+      "gap": false
+    },
+    "input_binding": {
+      "selectors": {},
+      "models": {},
+      "notes": "**头号自证陷阱**：Vue 2 的 v-model 不响应程序化赋值——`evaluate` 直接改 `input.value` 不触发响应，接口拿到空值。必须用 `locator.click()` + `locator.type()`（或 `fill` 后手动派发 input 事件），**禁止** `evaluate` 直接改 value。遇到「搜索无效」「保存丢失」先自查这一点，再考虑报缺陷。"
+    }
+  }
+}

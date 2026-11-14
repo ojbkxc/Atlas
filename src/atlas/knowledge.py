@@ -15,8 +15,70 @@ def _scope_list(row: dict) -> list:
     scope = row.get("scope")
     return scope if isinstance(scope, list) else []
 
+def _read_mapping(path: Path) -> dict | None:
+    """读一个知识 JSON 文件，返回其**顶层映射**；文件缺失/坏字节/坏 JSON/顶层非映射
+    一律 None（调用方据此回退下一个来源）。读取侧唯一判据，load 与 load_composed 共用
+    ——不复制第二份「坏形态视同损坏」的口径（#92 改一漏一）。"""
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+def _row_digest(row: dict) -> str:
+    """无 id 的坑点行按内容摘要去重（组合层合并时）。1 个坏值不进 sha1 就回落 repr，
+    绝不因一行坏数据抛穿合并（组合是读路径，不能先于被合并对象死）。"""
+    try:
+        blob = json.dumps(row, sort_keys=True, ensure_ascii=False)
+    except (TypeError, ValueError):
+        blob = repr(row)
+    return hashlib.sha1(blob.encode("utf-8")).hexdigest()
+
+def _merge_pitfall_rows(primary_rows, overlay_rows) -> list:
+    """pitfalls 行列表合并：靠前（primary）先入，按 id 去重，无 id 按内容摘要去重。
+    非列表/非映射的坏形态逐条跳过——组合层是读路径，坏行不得顶掉整次合并（#127 同纪律）。"""
+    rows: list = []
+    seen: set[str] = set()
+    for source in (primary_rows, overlay_rows):
+        if not isinstance(source, list):
+            continue
+        for row in source:
+            if not isinstance(row, dict):
+                continue
+            row_id = row.get("id")
+            key = row_id if isinstance(row_id, str) and row_id else _row_digest(row)
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(row)
+    return rows
+
+def _merge_components(primary, overlay) -> dict:
+    """components 子映射按组件名合并：靠前（primary）赢同名组件（整条覆盖）。"""
+    merged = dict(overlay) if isinstance(overlay, dict) else {}
+    if isinstance(primary, dict):
+        merged.update(primary)
+    return merged
+
+def _merge_composed(primary: dict, overlay: dict) -> dict:
+    """把较低特异性的 overlay（通用包等）并入 primary：顶层 dict 按 key 合并（靠前者赢），
+    pitfalls 行按 id 去重合并、components 按组件名合并，其余 key 靠前者整值覆盖。"""
+    merged = dict(overlay)
+    for key, value in primary.items():
+        if key == "pitfalls":
+            merged[key] = _merge_pitfall_rows(value, overlay.get("pitfalls"))
+        elif key == "components":
+            merged[key] = _merge_components(value, overlay.get("components"))
+        else:
+            merged[key] = value
+    return merged
+
 class KnowledgeBase:
-    def __init__(self, root: Path | None, fallback_root: Path | None = None):
+    def __init__(self, root: Path | None,
+                 fallback_root: Path | list[Path] | tuple[Path, ...] | None = None,
+                 base_roots: Path | list[Path] | tuple[Path, ...] | None = None):
         # #135（AGENTS 红线 #11「批准永不写包内文件」的代码化）：root 是**写目标**、
         # fallback_root 只供读取——两者在类型上分离，包内资产目录只能作 fallback。
         # 旧 plugin 在 ATLAS_KNOWLEDGE_DIR 缺失时构造 `KnowledgeBase(包内根)`：包内目录
@@ -30,7 +92,33 @@ class KnowledgeBase:
         self.root = root
         # 私有目录（ATLAS_KNOWLEDGE_DIR）逐文件回退包内虚构默认：
         # 内部知识不入库，读不残缺、写只落私有。
+        # fallback_root 可为单个 Path（存量调用，逐字兼容）或**有序 Path 列表**（影子层）：
+        # load() 逐文件取根序列里**第一个存在**的根，同名文件整份胜出（影子遮蔽）。原始传入
+        # 值原样保留在属性上（单 Path 仍是 Path，消费方如 plugins/demo 的校验靠它）。
+        # 通用知识包**不**进这里——影子语义会让它被平台自带的同名文件整份挡住，改走 base_roots。
         self.fallback_root = fallback_root
+        # 组合层（task #2 复核修正）：base_roots 是**最不特异**的共享知识根（如通用知识包），
+        # 与 root/fallback 的影子语义**不同**——它按 key/条目**并入**（靠前者赢），使自带同名
+        # 文件的平台插件仍能读到通用条目（影子遮蔽会整份挡住通用包）。单 Path 或有序列表；
+        # 默认 None = 零行为变化（load_composed 退化为 load，见下）。
+        self.base_roots = base_roots
+
+    @staticmethod
+    def _expand(value) -> tuple[Path | None, ...]:
+        """单 Path / 有序列表统一展开为 tuple；None → 空。"""
+        if value is None:
+            return ()
+        if isinstance(value, (list, tuple)):
+            return tuple(value)
+        return (value,)
+
+    def _read_roots(self) -> tuple[Path | None, ...]:
+        """load() 的**影子**根序列：写根 root 恒最优先，其后按 fallback_root 顺序展开
+        （单 Path 与「有序 Path 列表」同形展开，#115 旧调用逐字不变）。**不含 base_roots**
+        ——组合层由 load_composed 单独并入，影子语义不受其影响；写路径**不**经本函数，
+        只认 root（#135，见 _writable_root），fallback 与 base 一律只读。
+        """
+        return (self.root, *self._expand(self.fallback_root))
 
     def _writable_root(self) -> Path:
         """批准写回前的闸门：只读库（root=None，未配私有目录时的引擎唯一形态）拒绝写入。"""
@@ -47,31 +135,51 @@ class KnowledgeBase:
         # #127 面1：旧闸门只拦「坏字节/坏 JSON」，放过「合法 JSON 但顶层非映射」（手滑存成
         # 数组/字符串）——所有消费方按 dict 读（pitfalls/load_overlays/save 的 .get、SelectorRegistry
         # 的 [key]），穿透即 AttributeError 顶掉 engine 失败路径/自愈准入/批准写回/doctor，与坏字节
-        # 顶子系统同一后果。形态不对视同损坏：continue 换下一个来源，两级都坏回落空 dict。
-        for base in (self.root, self.fallback_root):
+        # 顶子系统同一后果。形态不对视同损坏：continue 换下一个来源，全部根都坏回落空 dict。
+        for base in self._read_roots():
             if base is None:
                 continue
-            path = Path(base) / f"{name}.json"
-            if not path.exists():
-                continue
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                continue   # 这个基目录的文件坏了：换下一个来源（私有坏→回退包内默认）
-            if isinstance(data, dict):
+            data = _read_mapping(Path(base) / f"{name}.json")
+            if data is not None:
                 return data
-            # 顶层非映射：合法 JSON 但形态不对——同属损坏，回退下一个来源，绝不返回坏形态
+            # 缺失/坏字节/坏 JSON/顶层非映射：同属损坏，回退下一个来源，绝不返回坏形态
         return {}
+
+    def load_composed(self, name: str) -> dict:
+        """组合层读取：在 **load() 的影子结果**（root → fallback，靠前者整份胜出）之上，
+        按特异性顺序并入 base_roots（通用包等，靠前者赢）。base_roots=None/空 → 与 load()
+        逐字等价（#115 零行为变化）。
+
+        为什么不用影子：snalai 这类自带 pitfalls.json/components.json 的平台插件，
+        「同名文件取第一个存在的根」会让通用包整份不可见——组合层按 key/条目并入才对
+        （通用条目补齐平台缺的那部分，平台专有条目仍胜出）。#135：写路径不在此，只认 root。
+        """
+        primary = self.load(name)
+        for base in self._expand(self.base_roots):
+            if base is None:
+                continue
+            overlay = _read_mapping(Path(base) / f"{name}.json")
+            if overlay is None:
+                continue
+            primary = _merge_composed(primary, overlay)
+        return primary
 
     def pitfalls(self, domain: str = "") -> list[dict]:
         # #127 面2：pitfalls 键值非列表（手滑写成 dict/字符串——load 的顶层闸门管不到内层键，
         # #77 同族「键在但形态不对」）或行非映射（数组直接装字符串）时逐行跳过：一条坏行
         # 不得顶掉整个坑点子系统——读侧（experience/cli doctor/engine 失败路径）都只该看到好行。
-        rows = self.load("pitfalls").get("pitfalls", [])
+        # 组合层：平台自带的坑点文件与通用包按 id 去重并入（load_composed），否则通用包整份
+        # 被影子遮蔽、对平台域永远不可见。
+        rows = self.load_composed("pitfalls").get("pitfalls", [])
         if not isinstance(rows, list):
             rows = []
+        # 可见性（task #2 复核修正 / docs §5.1）：`domain in scope or "generic" in scope`
+        # ——通用包每行 scope 带 `generic` 标记（数据层负责），故对任意平台域可见；
+        # 平台专有行 scope 只有平台名+机制标签，不带 generic，对别的域不可见（不误配）。
         return [row for row in rows
-                if isinstance(row, dict) and (not domain or domain in _scope_list(row))]
+                if isinstance(row, dict) and (not domain
+                                              or domain in _scope_list(row)
+                                              or "generic" in _scope_list(row))]
 
     def match_pitfall_from_text(self, text: str, domain: str = "",
                                 status: str | None = None) -> dict | None:

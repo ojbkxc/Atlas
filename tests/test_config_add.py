@@ -244,3 +244,36 @@ def test_plugin_no_business_literals(tmp_path, capsys):
         assert "CUST0000001" not in text, f"{f} 含 demo 业务字面量"
         assert "sales_order" not in text.replace("sales_order", "").replace(
             "sales_order", "") or True  # sales_order 是通用词，不严格检查
+
+
+# ---- 三层知识接线：通用包走 base_roots（组合层），selectors 走 load_composed ----
+
+def test_generated_plugin_wires_common_knowledge_package(tmp_path, capsys):
+    """新平台骨架开箱即得通用知识包：knowledge() 构造 base_roots=common_knowledge_root()，
+    selectors() 走 load_composed（否则通用组件被平台同名文件影子遮蔽）。"""
+    rc = main(["config", "add", "acme", "--out", str(tmp_path)])
+    assert rc == 0
+    plugin_py = (tmp_path / "plugins" / "acme" / "plugin.py").read_text(encoding="utf-8")
+    assert "common_knowledge_root" in plugin_py
+    assert "base_roots=common_knowledge_root()" in plugin_py
+    assert "load_composed(\"components\")" in plugin_py
+
+
+def test_generated_plugin_knowledge_three_layers(tmp_path, monkeypatch):
+    """resolve_plugin 出来的骨架插件：knowledge() 三层（私有/平台/通用），
+    selectors() 能吃到通用组件包（组合层并入，通用组件可见）。"""
+    rc = main(["config", "add", "acme", "--out", str(tmp_path)])
+    assert rc == 0
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.setenv("ATLAS_PLUGIN", "plugins.acme")
+
+    from atlas.plugin_api import common_knowledge_root, resolve_plugin
+    plugin = resolve_plugin()
+    kb = plugin.knowledge()
+    assert kb.base_roots == common_knowledge_root()      # 通用包走组合层（非影子）
+    # 组合层并入通用包：通用组件可见（login 等），selectors 可解析到通用条目
+    assert "login" in plugin.selectors().names()
+    # 写路径仍只认私有根（未设 ATLAS_KNOWLEDGE_DIR → 只读库）
+    import pytest
+    with pytest.raises(PermissionError, match="ATLAS_KNOWLEDGE_DIR"):
+        kb.save_reviewed("pitfalls", [], approved=True)

@@ -5,10 +5,12 @@
 > ② seller 商家后台两轮：83 页 / 7 个模块域 + 11 条跨模块复杂业务流（S5–S15），交付 89 条缺陷。
 > 期间共产生 **29 条误报**（18 + 11，全部复核并留证），本手册把这些教训固化成**判据**。
 >
-> 用途：下次换平台时按本文走一遍流程。平台特有的选择器/坑点/契约放 `plugins/<业务>/knowledge/`，
-> **本文只讲跨平台不变的东西**。
+> 用途：下次换平台时按本文走一遍流程。跨平台不变的判据已抽进**通用知识包**
+> （`src/atlas/plugins/_common/knowledge/`，见 §16）；平台特有的选择器/坑点/契约放
+> `plugins/<业务>/knowledge/`。**本文只讲跨平台不变的东西**。
 >
-> 配套：`docs/api-pitfalls.md`（接口失败现场判读）、私有知识目录 `ATLAS_KNOWLEDGE_DIR`（第一个用例的
+> 配套：`docs/api-pitfalls.md`（接口失败现场判读）、通用/平台特有分工与分类台账见 §16 与
+> `docs/element-ui-generic-knowledge.md`、私有知识目录 `ATLAS_KNOWLEDGE_DIR`（第一个用例的
 > 平台特有沉淀放这里，**不进公开仓库**：真实域名、页面路径与业务缺陷属客户资产）。
 
 ---
@@ -591,27 +593,117 @@ def login(page, ocr) -> bool:
 
 ---
 
-## 附：本文与 `plugins/<业务>/knowledge/` 的分工
+## 16. 通用知识包与平台包的分工
+
+换平台时**不需要从零总结判据**：机制性判据（组件铁律、接口篡改方法、状态机/对账方法、
+越权测试方法等）已抽进**通用知识包**；平台特有的坐标（真实路径、自定义 class、token 键、
+env 名、业务字段）留在平台包。本文 §1–§15 讲的是「流程与判据纪律」，通用知识包讲的是
+「可直接复用的判据条目」。
+
+### 16.1 三层位置：通用判据放哪、平台特有放哪
+
+| 层 | 路径 | 放什么 | 谁维护 |
+|---|---|---|---|
+| 私有目录 | `ATLAS_KNOWLEDGE_DIR`（仓库外） | 真实账号/代理/真实页面路径、人审批准成果 | 项目组私有，**不入库** |
+| **通用包** | `src/atlas/plugins/_common/knowledge/` | **脱离平台坐标可直接复用的机制判据** | 引擎层维护（业务中立、跨插件共享） |
+| 平台包 | `src/atlas/plugins/<业务>/knowledge/`（如 `snalai`） | 平台坐标与业务事实：真实路由、自定义 class、token 键、env 名、业务字段、平台具体缺陷 | 平台插件维护者 |
+
+通用包三个文件（顶层均为 `policy` + 同名键，与平台包同名文件结构一致——消费方按
+`.get("components")` / `.get("pitfalls")` / `.get("checklist")` 读，无需区分来源）：
+
+| 文件 | 内容 | 判据 |
+|---|---|---|
+| `components.json` | 15 条组件铁律（弹层多副本、触发器≠动作按钮、固定列重复渲染、分页 `li.active`…） | selector 只用 `.el-*` 等**通用 CSS**；平台自定义 class（非 `.el-*` 形态）不进通用包 |
+| `pitfalls.json` | 47 条机制坑点（症状→根因→处置） | `scope` 只用**机制标签**（`element-ui`/`vue2`/`api`/`state-machine`/`authz`/`export`/`delegation`/`data-hygiene`/`cleanup` 等，词表见台账 §5），不含平台名；`status` 一律 `pending_review` |
+| `domains.json` | 新平台接入检查清单 `checklist` | 六类通用检查项：`network_and_proxy` / `login_and_captcha` / `api_surface_and_params` / `data_hygiene` / `capability_boundaries` / `restorability` |
+
+### 16.2 什么算「通用」（提炼判据）
+
+一条知识进通用包必须能回答：**脱离平台坐标后能否直接复用？** 三种处置：
+
+- **通用**：整条是机制判据/方法 → 抽入通用包（剥掉示例里的平台坐标）。
+- **拆分**：一条里混着通用方法与平台事实 → 方法抽入通用包，平台部分留平台包。
+- **平台特有**：内容是平台事实/业务坐标/具体缺陷 → 留平台包。
+
+无法判定是否通用的一律**留平台包**并写明理由——不写「看起来对」的猜测。
+
+**分类台账**：`docs/element-ui-generic-knowledge.md`——逐条记录每个原始条目的判定与去向
+（§1/§2 逐条表、§3 数量小结、§4 无法判定/有意取舍、§5 scope 机制标签词表）。**接入新平台
+或提炼新通用条之前先查台账**，避免重复造判据；新平台上新发现的机制坑点按同口径回流通用包，
+并更新台账逐条去向。
+
+### 16.3 新平台接入顺序
+
+按依赖走，不要跳：
+
+1. **跑通登录（§11）** → 产出可复用的 storage state；
+2. **摸清代理方向（§11.5）** → 写进插件的 `network`（代理方向是站点属性，别靠人记）；
+3. **枚举页面与接口面（§8/§3）** → 写进平台包 `domains.json`；
+4. **通用包已自带机制判据**：组件铁律与机制坑点**直接可用，不必重写**——§2 的探测坑、
+   §3 的接口篡改方法、§4 的状态机检查、§5 的对账三式、§12 的越权四层判据都有对应条目；
+5. **只补平台坐标**：真实路径、自定义 class、token/localStorage 键名、env 名、业务字段名。
+
+顺序的理由：1–3 产出平台坐标（私有 → 平台包），4 复用通用判据（零成本），5 收尾补坐标。
+**没有 1–3 的产出，后面全是无效点击。**
+
+### 16.4 用 plugin_api 通用根把通用包接进新插件
+
+引擎提供通用根 helper（`src/atlas/plugin_api.py`）——**路径单一来源**，插件不得自己拼：
+
+```python
+from atlas.plugin_api import common_knowledge_root
+
+KnowledgeBase(root=私有目录,
+              fallback_root=平台包内知识,
+              base_roots=[common_knowledge_root()])
+```
+
+加载语义分两层，别混：
+
+- **影子层 `fallback_root`**：`load()` 逐文件取根序列里**第一个存在的**根，同名文件**整份胜出**
+  （影子遮蔽）。单 `Path` 传参 = 存量两级行为逐字不变。
+- **组合层 `base_roots`**：`load_composed(name)` 在 `load()` 影子结果上**并入**通用包——顶层 dict
+  按 key、pitfalls 行按 `id` 去重（无 id 按内容摘要去重）、components 按组件名合并，**靠前者赢**；
+  `base_roots=None/空` 时与 `load()` 逐字等价（零行为变化）。
+
+为什么必须用组合层而不是影子层：平台插件（如 `snalai`）自带 `pitfalls.json`，影子语义会让通用包
+**整份不可见**——组合层按条目并入，平台专有条目胜出、通用条目补齐缺口。
+
+可见性：`pitfalls(domain)` 走 `load_composed`，判据 = **`domain in scope` 或 `"generic" in scope`**。
+通用包每行 `scope` 带数据层打的 `generic` 标记 → 对任意平台域可见；平台专有行 `scope` 只有
+平台名+机制标签、不带 `generic` → 对别的域不可见（不误配）。
+
+- 写路径永远只落 `root`（私有目录，`ATLAS_KNOWLEDGE_DIR`）；影子层与组合层一律**只读**
+  （红线 #135：包内资产只读，批准写回只落私有目录）。
+
+
+## 附：本文、通用包与平台包的分工
 
 | 内容 | 放哪 |
 |---|---|
 | 判据纪律、流程、检查清单 | **本文**（跨平台不变） |
 | 登录/验证码/登录态共享配方 | **本文 §11**；账号与代理坐标走 env（`SNA_USERNAME` / `SNA_PASSWORD` / `SNA_SELLER_PROXY`），不入库 |
-| 权限强制力（认证≠授权）四层判据 | **本文 §12**；该平台的受限角色与端点清单进 `knowledge/domains.json` |
-| 组件选择器铁律 | `knowledge/components.json` |
-| 机制坑点（症状→根因→处置） | `knowledge/pitfalls.json` |
-| 接口契约与逐端点注释 | `knowledge/contracts/` |
-| 业务域坐标（模块/页面/API 前缀） | `knowledge/domains.json` |
-| 平台能力边界与不可测项 | `knowledge/domains.json` 的 `coverage_boundaries` |
+| 权限强制力（认证≠授权）四层判据 | **本文 §12**；该平台的受限角色与端点清单进平台包 `domains.json` |
+| **通用组件铁律**（Element UI 族，跨平台复用） | `_common/knowledge/components.json`（15 条；只用 `.el-*` 通用 CSS） |
+| **通用机制坑点**（症状→根因→处置，跨平台复用） | `_common/knowledge/pitfalls.json`（47 条；`scope` 只用机制标签、`status` 一律 `pending_review`） |
+| **新平台接入检查清单**（通用） | `_common/knowledge/domains.json` 的 `checklist`（6 类，见 §16.1） |
+| 平台特有的选择器/坑点 | `plugins/<业务>/knowledge/components.json` / `pitfalls.json` |
+| 接口契约与逐端点注释 | `plugins/<业务>/knowledge/contracts/` |
+| 业务域坐标（模块/页面/API 前缀） | `plugins/<业务>/knowledge/domains.json` |
+| 平台能力边界与不可测项 | `plugins/<业务>/knowledge/domains.json` 的 `coverage_boundaries` |
+| **通用包接入 helper** | `plugin_api.common_knowledge_root()`（`base_roots` 组合层根，见 §16.4） |
+| 通用/平台特有逐条去向（分类台账） | `docs/element-ui-generic-knowledge.md`（见 §16.2） |
 
-换平台时：**本文照用，另建一个插件装该平台特有的部分**。插件里的每条知识都应能回答
-「这是哪一轮、哪次误报/事故得出的」——没有出处的新条目不写（§7 的复核纪律同样约束知识库）。
+换平台时：**本文照用，另建一个插件装该平台特有的部分**，并按 §16.4 把通用包接进插件。
+插件里的每条知识都应能回答「这是哪一轮、哪次误报/事故得出的」——没有出处的新条目不写
+（§7 的复核纪律同样约束知识库）。
 
-最小接入顺序（按依赖，不要跳）：
+最小接入顺序（按依赖，不要跳；详见 §16.3）：
 
 1. 跑通登录（§11）→ 产出可复用的 storage state；
 2. 摸清网络与代理方向（§11.5）→ 写进插件的 `network`；
-3. 枚举页面与菜单（§8）→ 写进 `domains.json`；
-4. 用只读巡检抓一遍 5xx/白屏（§0 第一层）→ 拿到接口前缀与错误形态；
-5. 再开始页面级与接口层（§2/§3）——**没有 1–4 的产出，后面全是无效点击**。
+3. 枚举页面与接口面（§8/§3）→ 写进平台包 `domains.json`；
+4. 接上通用包（§16.4）→ 组件铁律/机制坑点**直接可用，不必重写判据**；
+5. 只补平台坐标（真实路径 / 自定义 class / token 键 / env 名 / 业务字段）→ 接入完成，
+   再开始页面级与接口层测试（§2/§3）——**没有 1–3 的产出，后面全是无效点击**。
 

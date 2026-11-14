@@ -1,0 +1,685 @@
+{
+  "policy": "通用机制坑点（业务中立）。来源：2026-11 对某国内 SaaS 商城后台两端（admin 管理后台 + seller 商家后台）的功能测试（admin 四轮 159 页 + seller 两轮 83 页，共 300+ 条缺陷与 29 条误报），把「每条都取自实际发生过的误报或漏报」的教训，剥离平台坐标后按机制沉淀于此。**每条都对应一次真实误报/漏报，不是推测。** status 一律 pending_review——未经人审批准的知识不冒充 approved（AGENTS 红线 #10），审批走 `atlas review --approve`（只写 ATLAS_KNOWLEDGE_DIR 私有目录）。scope 只使用**机制标签**，不含任何平台名：element-ui / vue2 / api / state-machine / authz / export / delegation / data-hygiene / cleanup / routing / validation / query / idempotency / session / infoleak / search。带平台坐标的选择器、端点、业务口径留在各自插件的知识库里，不进本包。",
+  "pitfalls": [
+    {
+      "id": "gen-001",
+      "trigger": "弹层（popover/dropdown/select）面板内元素定位",
+      "symptom": "点弹层里的按钮没反应，判为「功能失效」",
+      "root_cause": "弹层内容 append 到 body 且预渲染多份（部分 display:none）；`.first()` / querySelector 命中隐藏副本；按钮在 .el-form 之外不能用 `.el-form button` 找",
+      "remedy": "一律加 `:visible` 过滤（或 `getBoundingClientRect().width>0`）；判定生效看请求实参（URL 参数 + 响应 total 变化），不看页面提示",
+      "scope": [
+        "element-ui",
+        "generic"
+      ],
+      "severity": "high",
+      "source": "2026-11 admin 高级搜索/导出多起隐藏按钮误报（原 snl-001/snl-004 同族）",
+      "status": "pending_review"
+    },
+    {
+      "id": "gen-002",
+      "trigger": "按钮 class 含 el-dropdown-selfdefine",
+      "symptom": "点「导出」类按钮无下载、无请求、无提示，判为「导出坏了」",
+      "root_cause": "该 class 是**下拉触发器**，点它只展开菜单；真实动作项在 aria-controls 指向的 popper 里",
+      "remedy": "先展开再点真实菜单项，或直接调端点。一次这类误报能刷出多条假缺陷",
+      "scope": [
+        "element-ui",
+        "export",
+        "generic"
+      ],
+      "severity": "high",
+      "source": "2026-11 admin 导出探针多条草案全部撤回",
+      "status": "pending_review"
+    },
+    {
+      "id": "gen-003",
+      "trigger": "弹窗可见性判定",
+      "symptom": "点「新增」后判「没有弹窗 / 按钮无响应」，整轮几十页结论被污染",
+      "root_cause": "`.el-dialog__wrapper` 一页有多个，querySelector 返回文档序第一个（常是关闭态隐藏 wrapper），弹窗其实已打开",
+      "remedy": "遍历 wrappers，filter `display!=='none' && visibility!=='hidden'` 取**最后一个**可见的；再兜 `getBoundingClientRect().height>0`；判据取**弹窗标题 + form label 列表**再断言打开",
+      "scope": [
+        "element-ui",
+        "generic"
+      ],
+      "severity": "high",
+      "source": "2026-11 seller 83 页探针 dialog=false 与「空提交校验=0」全部由此产生",
+      "status": "pending_review"
+    },
+    {
+      "id": "gen-004",
+      "trigger": "Element UI 按钮文案空格",
+      "symptom": "button:has-text('确定') 匹配不到按钮，点击静默失败",
+      "root_cause": "Element UI 在中文两字按钮里插入空格（「确 定」「保 存」「取 消」）",
+      "remedy": "用正则 /确\\s*定/，或取 .el-dialog__footer 内非取消的最后一个按钮；**点完必须验副作用**",
+      "scope": [
+        "element-ui",
+        "generic"
+      ],
+      "severity": "medium",
+      "source": "2026-11 实测（弹窗按钮 enumerate 出来是 '确 定'）",
+      "status": "pending_review"
+    },
+    {
+      "id": "gen-005",
+      "trigger": "el-checkbox__original",
+      "symptom": "勾选框点不动",
+      "root_cause": "真实 input（.el-checkbox__original）被隐藏",
+      "remedy": "点 .el-checkbox__inner",
+      "scope": [
+        "element-ui",
+        "generic"
+      ],
+      "severity": "medium",
+      "source": "2026-11 实测",
+      "status": "pending_review"
+    },
+    {
+      "id": "gen-006",
+      "trigger": "日期区间控件",
+      "symptom": "fill() 写进去的值不生效",
+      "root_cause": "日期区间是 picker 面板，不是可填 input",
+      "remedy": "点开 .el-picker-panel，点 td.available 单元格；分页与筛选要配合",
+      "scope": [
+        "element-ui",
+        "generic"
+      ],
+      "severity": "medium",
+      "source": "2026-11 实测",
+      "status": "pending_review"
+    },
+    {
+      "id": "gen-007",
+      "trigger": "分页当前页 class",
+      "symptom": "用 .is-active 永远取不到当前页 → 误报「翻页无高亮」",
+      "root_cause": "Element UI 分页当前页的 class 是 `active`（`.el-pager li.active`），不是 `is-active`",
+      "remedy": "断言前先 dump 一次 className 再写选择器；不要靠 URL 猜当前页",
+      "scope": [
+        "element-ui",
+        "generic"
+      ],
+      "severity": "medium",
+      "source": "2026-11 实测教训（playbook §2.9）",
+      "status": "pending_review"
+    },
+    {
+      "id": "gen-008",
+      "trigger": "固定右列行按钮",
+      "symptom": "按行索引点操作按钮点到了别的行",
+      "root_cause": "固定列（.el-table__fixed-right）与主表重复渲染行",
+      "remedy": "在固定列容器内按行定位；**行错位会造出「看着成立」的假缺陷**",
+      "scope": [
+        "element-ui",
+        "generic"
+      ],
+      "severity": "medium",
+      "source": "2026-11 实测（曾误报「取消=保存」）",
+      "status": "pending_review"
+    },
+    {
+      "id": "gen-009",
+      "trigger": "用 .el-table__row 计数做断言",
+      "symptom": "渲染行数 = 接口条数 ×N（幻影重复行），勾 1 行选中多行",
+      "root_cause": "渲染层重复渲染，接口 total 正确",
+      "remedy": "断言前**先对照接口 total** 判断是否踩到渲染层重复；若确认是产品缺陷（勾选/批量操作会带重复行）按缺陷报",
+      "scope": [
+        "element-ui",
+        "generic"
+      ],
+      "severity": "medium",
+      "source": "2026-11 实测（商品列表 20→30 行，两名成员独立复现）",
+      "status": "pending_review"
+    },
+    {
+      "id": "gen-010",
+      "trigger": "按文本抓「导出/操作」按钮",
+      "symptom": "抓到 .el-menu-item 导航项，得到「点了没反应」",
+      "root_cause": "导航项文本含层级描述文案，模糊匹配命中",
+      "remedy": "抓按钮前先限定在内容区容器内（排除 .el-menu / aside）",
+      "scope": [
+        "element-ui",
+        "generic"
+      ],
+      "severity": "medium",
+      "source": "2026-11 实测（多条「导出无反应」误报的一半原因）",
+      "status": "pending_review"
+    },
+    {
+      "id": "gen-011",
+      "trigger": "「新增/添加」按钮无响应",
+      "symptom": "点「新增」没弹窗 ⇒ 误判「按钮无响应 / 功能死路」",
+      "root_cause": "新增入口有三种形态：① 路由跳独立表单页 ② 新标签页打开另一子系统 ③ 真弹窗",
+      "remedy": "判「无响应」前**同时比对 page.url**，按 dialog/route/newtab/toast/nothing 五态分类；只有 nothing（无请求、无提示、URL 不变）才允许写缺陷",
+      "scope": [
+        "element-ui",
+        "routing",
+        "generic"
+      ],
+      "severity": "high",
+      "source": "2026-11 实测（曾一次性造出多条严重误报）",
+      "status": "pending_review"
+    },
+    {
+      "id": "gen-012",
+      "trigger": "建单/新增类页面 page.goto() 直连",
+      "symptom": "直接打开建单页被弹回首页，判为「页面打不开」",
+      "root_cause": "路由守卫要求从列表页进入（携带来源态 / 内存上下文）",
+      "remedy": "必须从列表页点按钮进入；列表页本身一般可以直连。改动前先做「列表进入 vs 直连」对照",
+      "scope": [
+        "routing",
+        "generic"
+      ],
+      "severity": "high",
+      "source": "2026-11 多轮实测",
+      "status": "pending_review"
+    },
+    {
+      "id": "gen-013",
+      "trigger": "详情页深链 / 刷新",
+      "symptom": "从列表点进正常，刷新或直开详情 URL 被重定向到首页",
+      "root_cause": "详情页依赖列表页传入的路由态，深链无态即弹回；列表/新建/编辑路由正常，仅详情类中招",
+      "remedy": "**这是真缺陷（深链失效），不是脚本问题**。脚本化全站审计：遍历列表→点第一行进详情→记 URL→new_page.goto(该 URL)→比对最终 URL。取证保留「从列表点进正常 / 直连被弹回」两组对照",
+      "scope": [
+        "routing",
+        "generic"
+      ],
+      "severity": "medium",
+      "source": "2026-11 实测（多处详情路由中招）",
+      "status": "pending_review"
+    },
+    {
+      "id": "gen-014",
+      "trigger": "全站检索到 window.print / 中文「打印」",
+      "symptom": "以为存在单据打印模板，花时间找入口",
+      "root_cause": "检索命中来自富文本编辑器（UEditor 一类）自带的 print 插件，不是业务打印功能",
+      "remedy": "**先排除编辑器来源**再判有无打印能力；无 print 路由 / 无 print API / 详情页无打印按钮 = 能力不存在，直接跳过该维度",
+      "scope": [
+        "element-ui",
+        "generic"
+      ],
+      "severity": "low",
+      "source": "2026-11 维度排除（bundle 检索证实）",
+      "status": "pending_review"
+    },
+    {
+      "id": "gen-015",
+      "trigger": "表单校验反馈",
+      "symptom": "以为校验没生效（找不到 .el-form-item__error）",
+      "root_cause": "校验可能走 toast（.el-message）而非字段下方红字，页面上看不出区别",
+      "remedy": "**判定校验最可靠的判据 = 有没有真的发出 POST/PUT/DELETE**：没发请求=被前端拦下；发了且 200=后端接受。后端接受不该接受的输入才是缺陷；「前端没拦但后端拦了」不是缺陷（体验问题单列）",
+      "scope": [
+        "element-ui",
+        "validation",
+        "generic"
+      ],
+      "severity": "high",
+      "source": "2026-11 实测（多条误报由此而来）",
+      "status": "pending_review"
+    },
+    {
+      "id": "gen-016",
+      "trigger": "evaluate 改 input.value",
+      "symptom": "搜索/保存被判「无效」「丢失」，但手工操作正常",
+      "root_cause": "Vue2 v-model 不响应程序化赋值，接口拿到空值",
+      "remedy": "**头号自证陷阱**：必须 locator.click() + locator.type()（或 fill 后触发 input 事件），禁止 evaluate 直接改 value。遇「搜索无效/保存丢失」先自查这一点再报缺陷",
+      "scope": [
+        "vue2",
+        "element-ui",
+        "generic"
+      ],
+      "severity": "high",
+      "source": "2026-11 实测（「商品选择器搜索失效」经复核为脚本问题撤回）",
+      "status": "pending_review"
+    },
+    {
+      "id": "gen-017",
+      "trigger": "写接口 params vs JSON body",
+      "symptom": "发 JSON body 报「XX不能为空」或返回 200 却不生效",
+      "root_cause": "同一系统里写接口**按接口分别**用 params(form-urlencoded/query) 或 JSON body；前端 bundle 里的 `data:` / `params:` 字面量不可靠",
+      "remedy": "**每个写接口两种都发，以 GET 复查是否落库为准**；分不清时用 UI 填表提交一次录真实请求体。注意假成功：只吃 form 的接口收到 JSON 会返回 200 但静默不落库",
+      "scope": [
+        "api",
+        "generic"
+      ],
+      "severity": "high",
+      "source": "2026-11 广播 + 逐端点订正",
+      "status": "pending_review"
+    },
+    {
+      "id": "gen-018",
+      "trigger": "业务校验的 HTTP 状态码",
+      "symptom": "把业务规则拒绝当成「服务器崩了」",
+      "root_cause": "大量业务规则校验用 **HTTP 500** 承载（应 400/422），并配中文 message",
+      "remedy": "500 + 明确业务中文（如「XX必须大于0」）= 后端有校验，**不是**系统故障；按 message 内容分类。反向：500 +「系统发生异常」= 后端靠异常兜底，是缺陷",
+      "scope": [
+        "api",
+        "generic"
+      ],
+      "severity": "high",
+      "source": "2026-11 实测（多类校验用 500、仅少数用 400）",
+      "status": "pending_review"
+    },
+    {
+      "id": "gen-019",
+      "trigger": "类型不符字段",
+      "symptom": "传 \"abc\" 给数值字段 → 500 + 框架（如 Jackson）异常原文",
+      "root_cause": "后端无 HttpMessageNotReadableException 处理器，反序列化异常直接外泄，含内部包名与字段路径",
+      "remedy": "**信息泄露类缺陷**。取证时把内部包名/字段路径如实记入证据（响应片断），报告里对包名做必要遮蔽",
+      "scope": [
+        "api",
+        "infoleak",
+        "generic"
+      ],
+      "severity": "high",
+      "source": "2026-11 实测（多个数值字段复现）",
+      "status": "pending_review"
+    },
+    {
+      "id": "gen-020",
+      "trigger": "分页参数",
+      "symptom": "page_size 传超大/负数/字符串一律 200；或 total 与实际条数自相矛盾",
+      "root_cause": "列表接口无分页上限校验；total 与数据可能用不同分支计算",
+      "remedy": "**真缺陷**（page_size=超大返回全表，单请求可拖库；page_size=负数出现 data_total=0 却返回全量行）。取证给四组对照：10 / 100000 / 0 / -5 的 total 与实际条数；字符串会触发 500 单独记一条",
+      "scope": [
+        "api",
+        "query",
+        "generic"
+      ],
+      "severity": "medium",
+      "source": "2026-11 实测（两端均复现）",
+      "status": "pending_review"
+    },
+    {
+      "id": "gen-021",
+      "trigger": "keyword 含 % 或 _",
+      "symptom": "搜 `%` 返回全表",
+      "root_cause": "LIKE 通配符未转义",
+      "remedy": "**真缺陷**（绕过筛选、拖全表），但未突破语句边界，**不是 SQL 注入**——报的时候别升级成注入",
+      "scope": [
+        "api",
+        "query",
+        "generic"
+      ],
+      "severity": "medium",
+      "source": "2026-11 实测",
+      "status": "pending_review"
+    },
+    {
+      "id": "gen-022",
+      "trigger": "时间区间筛选",
+      "symptom": "筛选后 total 不变，判为「时间筛选失效」",
+      "root_cause": "**部分**端点忽略时间参数（非全站）",
+      "remedy": "按端点逐个验，别外推；无筛选 UI 的列表不构成缺陷。倒挂/未来区间在正常端点上正确返回 0",
+      "scope": [
+        "api",
+        "query",
+        "generic"
+      ],
+      "severity": "low",
+      "source": "2026-11 系统性排查（排除了一批误报）",
+      "status": "pending_review"
+    },
+    {
+      "id": "gen-023",
+      "trigger": "数值字段",
+      "symptom": "负数/超大值被接受并落库",
+      "root_cause": "后端普遍无范围校验",
+      "remedy": "优先打 -1 / 0 / 超大 / null / \"abc\" / 小数；**判定：200 + GET 复查落库 = 缺陷**。负数常反向影响库存/金额，超大值直接落库",
+      "scope": [
+        "api",
+        "validation",
+        "generic"
+      ],
+      "severity": "high",
+      "source": "2026-11 多轮接口篡改",
+      "status": "pending_review"
+    },
+    {
+      "id": "gen-024",
+      "trigger": "同接口字段校验不对称",
+      "symptom": "同一接口里 A 字段无范围校验（负数落库），B 字段却有 [a,b] 校验",
+      "root_cause": "同一资源不同字段、或同一资源不同方法（POST 有校验而 DELETE 无）校验不一致",
+      "remedy": "**逐个字段/逐个方法验，别测一个推全部**——不对称本身值得专门扫",
+      "scope": [
+        "api",
+        "validation",
+        "generic"
+      ],
+      "severity": "medium",
+      "source": "2026-11 实测（同接口字段校验不对称）",
+      "status": "pending_review"
+    },
+    {
+      "id": "gen-025",
+      "trigger": "探测写端点",
+      "symptom": "对某个端点反复猜参数、花时间试，实为「僵尸端点」",
+      "root_cause": "端点存在但无前端调用（无参数契约可循，返回 500 而非标准 404）",
+      "remedy": "**先从前端 bundle 找调用点**——grep 不到调用点的端点别花时间猜参数。发现写端点的最稳方式是先从建单/详情页录一次真实请求",
+      "scope": [
+        "api",
+        "generic"
+      ],
+      "severity": "low",
+      "source": "2026-11 实测（退款审核僵尸端点）",
+      "status": "pending_review"
+    },
+    {
+      "id": "gen-026",
+      "trigger": "Authorization 头",
+      "symptom": "自带 Bearer 前缀的请求 403",
+      "root_cause": "本项目 auth 头格式（是否带 Bearer 前缀、自定义业务头）与惯例不同",
+      "remedy": "**换平台时认证头格式必须实测确认**，不要套用 Bearer 惯例。最稳做法：在已登录页面上下文里发 fetch，前端拦截器会免费带上正确头（大小写、前缀、自定义业务头、cookie 域）",
+      "scope": [
+        "api",
+        "authz",
+        "generic"
+      ],
+      "severity": "medium",
+      "source": "2026-11 实测（裸 JWT 无 Bearer 前缀）",
+      "status": "pending_review"
+    },
+    {
+      "id": "gen-027",
+      "trigger": "403 响应",
+      "symptom": "并发跑的其他会话突然全部掉登录",
+      "root_cause": "前端对任何 403 触发**全局登出**，误杀正在并发跑的其他会话进程",
+      "remedy": "断言 403 的用例要预期会话被清；多进程并发时避免触发 403（或各自独立 storage_state）",
+      "scope": [
+        "authz",
+        "session",
+        "generic"
+      ],
+      "severity": "medium",
+      "source": "2026-11 实测",
+      "status": "pending_review"
+    },
+    {
+      "id": "gen-028",
+      "trigger": "角色权限树测试",
+      "symptom": "看到前端三层全生效（菜单隐藏 / URL 直访重定向 / 按钮收敛），判为「权限体系正常」",
+      "root_cause": "只验了前端；**后端零校验**——受限账号重放自己的 JWT 可拉全量数据",
+      "remedy": "**必须做第四层：接口重放**。抓受限会话真实鉴权头 → 打未授权端点 → 200+数据=缺陷（严重）。无 token 时 403 只证明认证有效，不证明授权存在；两句话分开写。重点扫读接口、写接口与 export/download 类",
+      "scope": [
+        "authz",
+        "api",
+        "generic"
+      ],
+      "severity": "high",
+      "source": "2026-11 实测（受限角色前端三绿、接口全通）",
+      "status": "pending_review"
+    },
+    {
+      "id": "gen-029",
+      "trigger": "越权矩阵",
+      "symptom": "用超管账号测越权，测不出问题",
+      "root_cause": "越权测试必须用**受限**账号；用超管永远全通",
+      "remedy": "建一个只勾最小权限的受限角色 + 独立测试账号（不改现有账号角色）；写接口只测「是否被拒」不真写入；重点扫 export/download",
+      "scope": [
+        "authz",
+        "generic"
+      ],
+      "severity": "high",
+      "source": "2026-11 实测（受限账号越权读写+删除全通）",
+      "status": "pending_review"
+    },
+    {
+      "id": "gen-030",
+      "trigger": "导出响应形态",
+      "symptom": "断言「导出返回 xlsx」失败",
+      "root_cause": "导出端点可能返回 **JSON**（无 content-disposition），由前端转成 xlsx；服务端 content-disposition 可能硬编码 filename",
+      "remedy": "断言导出看 JSON 记录数与字段，不看 content-type；文件名校验走浏览器 download 事件",
+      "scope": [
+        "export",
+        "generic"
+      ],
+      "severity": "low",
+      "source": "2026-11 实测（filename 硬编码覆盖全站导出接口）",
+      "status": "pending_review"
+    },
+    {
+      "id": "gen-031",
+      "trigger": "导出条数 vs 当前页",
+      "symptom": "以为导出只导当前页 N 条",
+      "root_cause": "导出 URL 带 page_no/page_size 但不生效，导出实为全量",
+      "remedy": "**排除项**：先用两组对照（传分页 / 不传）验证导出是否全量，再下结论。勿据此误报缺陷",
+      "scope": [
+        "export",
+        "generic"
+      ],
+      "severity": "low",
+      "source": "2026-11 实测排除",
+      "status": "pending_review"
+    },
+    {
+      "id": "gen-032",
+      "trigger": "单据状态机",
+      "symptom": "终态单据可被改回中间态并重复入账；草稿可直达终态",
+      "root_cause": "状态流转无前置校验、commit/结算无幂等；UI 上无入口，只有接口可达",
+      "remedy": "**黑盒测试产出最高的方向**。检查清单：①非法流转（终态回中间态/作废单复活）②重复操作（重复入账/退款/扣减）③幂等（同请求重放二次生效）④跨模块同步（状态变→库存/财务/统计跟随）⑤前置校验（跳过全流程直达终态）",
+      "scope": [
+        "state-machine",
+        "generic"
+      ],
+      "severity": "high",
+      "source": "2026-11 实测（本系统最严重的一族）",
+      "status": "pending_review"
+    },
+    {
+      "id": "gen-033",
+      "trigger": "终态单据可操作性",
+      "symptom": "以为终态订单不可操作，未测",
+      "root_cause": "终态未收敛：个别操作入口对「已取消/已完成」订单仍可点、点开能用",
+      "remedy": "状态机测试必须把「**终态 × 每个操作入口**」做成矩阵逐格验，别只验主流程按钮",
+      "scope": [
+        "state-machine",
+        "generic"
+      ],
+      "severity": "high",
+      "source": "2026-11 实测",
+      "status": "pending_review"
+    },
+    {
+      "id": "gen-034",
+      "trigger": "重复提交",
+      "symptom": "同数据多次提交各自成单并重复入账",
+      "root_cause": "服务端无判重/幂等；UI 双击只出 1 单靠跳转竞态，按钮无 loading/禁用",
+      "remedy": "用**接口层连发同一请求 N 次**取证（比 UI 双击可靠）；计数用列表 total 变化，不用 toast",
+      "scope": [
+        "state-machine",
+        "idempotency",
+        "generic"
+      ],
+      "severity": "medium",
+      "source": "2026-11 实测",
+      "status": "pending_review"
+    },
+    {
+      "id": "gen-035",
+      "trigger": "测试数据清理",
+      "symptom": "造出的脏数据无法回收",
+      "root_cause": "系统可能**没有冲销/作废/反审核/红冲入口**；部分单据无 DELETE（405）或受状态约束不可删",
+      "remedy": "**接平台第一天就要摸清「哪些能删、哪些只能置终态」**（从 bundle 找 method:delete；找 confirm/反审核链路），并写进派单纪律：无法复原的操作只测「是否被拒」，不真做；必须真做的先记录原值、改完立即改回，逐笔披露残留",
+      "scope": [
+        "cleanup",
+        "data-hygiene",
+        "generic"
+      ],
+      "severity": "high",
+      "source": "2026-11 全程教训（数据污染清单已单独建档）",
+      "status": "pending_review"
+    },
+    {
+      "id": "gen-036",
+      "trigger": "删除/清空类按钮",
+      "symptom": "点「全部删除」无确认框，直接删掉真实数据",
+      "root_cause": "破坏性操作可能缺二次确认（前端直接发 DELETE）",
+      "remedy": "**纪律**：第一次点击必须发生在自建数据上；没有自建数据就**不点**——「无确认框」本身可从 bundle 静态证明（handler 无 confirm/$confirm）。一旦造成真实副作用立即停止该类操作、如实申报不抹平",
+      "scope": [
+        "data-hygiene",
+        "cleanup",
+        "generic"
+      ],
+      "severity": "high",
+      "source": "2026-11 实测事故（成员如实申报）",
+      "status": "pending_review"
+    },
+    {
+      "id": "gen-037",
+      "trigger": "「没反应」类结论",
+      "symptom": "报「点 X 没反应」「筛选失效」「导出无反应」",
+      "root_cause": "绝大多数是**探测姿势错**（选择器命中隐藏副本 / 点到下拉触发器 / 抓到导航项），不是系统缺陷",
+      "remedy": "**判据纪律**：任何「没反应」结论必须给出 ①请求是否发出（抓包）②URL 参数变化 ③响应 total/数据变化。三项齐了才准写缺陷，给不出按「未验证」处理",
+      "scope": [
+        "delegation",
+        "api",
+        "generic"
+      ],
+      "severity": "high",
+      "source": "2026-11 复核纪律（绝大多数误报属此类）",
+      "status": "pending_review"
+    },
+    {
+      "id": "gen-038",
+      "trigger": "接口 500 的页面表现",
+      "symptom": "页面显示「暂无数据」，以为本来就没数据",
+      "root_cause": "前端把 500 静默吞成空态，无任何提示",
+      "remedy": "**打开页面时同时抓 responses**——有 500 而页面显示「暂无数据」= **两条缺陷**（后端 500 + 前端伪装空态）。只看 DOM 会把这类整批漏掉",
+      "scope": [
+        "element-ui",
+        "api",
+        "generic"
+      ],
+      "severity": "high",
+      "source": "2026-11 实测（多页面同族）",
+      "status": "pending_review"
+    },
+    {
+      "id": "gen-039",
+      "trigger": "统计页默认时间范围",
+      "symptom": "页面默认显示「当月」，但数值与上月一致",
+      "root_cause": "默认参数传的是上月区间（UI 文案与实际请求不一致）",
+      "remedy": "断言「默认视图 / 默认值」时必须抓请求实参（start/end 或 year/month），不能只读页面文案；再用明细逐项求和反推",
+      "scope": [
+        "api",
+        "element-ui",
+        "generic"
+      ],
+      "severity": "medium",
+      "source": "2026-11 实测",
+      "status": "pending_review"
+    },
+    {
+      "id": "gen-040",
+      "trigger": "「清空/重置」按钮",
+      "symptom": "点清空后表单空了但列表没变，判为「清空功能失效」",
+      "root_cause": "「清空」可能本身是另一个 popover 的 reference，点它只展开二次确认；且清空后前端未必自动重查",
+      "remedy": "①点清空 →②在 .el-message-box 里点确定 →③判断「表单是否清空」与「列表是否自动刷新」是**两件事**，分开断言（后者可能是真缺陷）",
+      "scope": [
+        "element-ui",
+        "generic"
+      ],
+      "severity": "medium",
+      "source": "2026-11 实测（原报「清空未生效」经复核为描述不准）",
+      "status": "pending_review"
+    },
+    {
+      "id": "gen-041",
+      "trigger": "跨模块一致性对账",
+      "symptom": "单看每页都对，合起来才错（数不一致/公式不成立）",
+      "root_cause": "同源数据在不同出口（列表/导出/统计）或明细与合计之间不一致；指标公式用错口径",
+      "remedy": "**对账三式**：①同源三出口（列表/导出/统计=同一组数？）②合计=明细之和 ③公式自洽（如 均价×数量==总成本、Σ(单价×数量)==合计、实付−成本==利润）。**注意取对字段**——用错字段会造出假缺陷",
+      "scope": [
+        "api",
+        "state-machine",
+        "generic"
+      ],
+      "severity": "high",
+      "source": "2026-11 实测（挖出财务公式错、库存三套账不一致）",
+      "status": "pending_review"
+    },
+    {
+      "id": "gen-042",
+      "trigger": "同一 popover 里累加条件",
+      "symptom": "报「多个下拉全失效」，实为条件未清空所致",
+      "root_cause": "高级搜索类面板的累加条件不自动清空，前一项条件污染后续查询",
+      "remedy": "**每次复测必须重开页面**（或显式清空所有条件）；同一现象由两人分别报、结论不一致时必须隔离复测",
+      "scope": [
+        "delegation",
+        "generic"
+      ],
+      "severity": "medium",
+      "source": "2026-11 实测（含自我更正记录）",
+      "status": "pending_review"
+    },
+    {
+      "id": "gen-043",
+      "trigger": "委派任务书",
+      "symptom": "散文式任务书 + 页面清单 = 成员「只逛不点」",
+      "root_cause": "缺可计数闸门，产出无法机器校验",
+      "remedy": "每个成员报告强制带：visitedPages（真实打开路径）、interactions（每页交互次数）、emptyPages、结构化 JSON 的 bugs[]/scenarios[]。**没有计数的报告按未完成处理**。lead 先跑一个黄金样本当模板",
+      "scope": [
+        "delegation",
+        "generic"
+      ],
+      "severity": "medium",
+      "source": "2026-11 编排纪律（playbook §14）",
+      "status": "pending_review"
+    },
+    {
+      "id": "gen-044",
+      "trigger": "派单要求看截图",
+      "symptom": "要求「看截图判断」直接导致个别成员失败",
+      "root_cause": "有模型不支持读图",
+      "remedy": "**证据一律走「接口 URL + 响应片断 + JS 取值」**，截图只作辅助留档、不作判据（也提高可复核性：响应片断可 grep）",
+      "scope": [
+        "delegation",
+        "generic"
+      ],
+      "severity": "medium",
+      "source": "2026-11 派单纪律（playbook §14.6）",
+      "status": "pending_review"
+    },
+    {
+      "id": "gen-045",
+      "trigger": "依赖外部系统的功能",
+      "symptom": "页面 500 或整页白屏，笼统记成「后端缺陷」",
+      "root_cause": "功能依赖外部凭证/白名单（未配置时返回特定业务错误码），或依赖真实 C 端才可端到端",
+      "remedy": "**先区分「凭证缺失」与「后端缺陷」**：所有只读 GET 200、写端点 500 多为字段问题而非凭证。依赖外部系统的整条链路在后台侧不可测，先排除避免白花时间",
+      "scope": [
+        "api",
+        "delegation",
+        "generic"
+      ],
+      "severity": "medium",
+      "source": "2026-11 实测（企微凭证缺失场景）",
+      "status": "pending_review"
+    },
+    {
+      "id": "gen-046",
+      "trigger": "列表页搜索",
+      "symptom": "填完关键字点「查询」找不到按钮，判为「无法搜索」",
+      "root_cause": "部分列表页**没有「查询」按钮**，靠 Enter 触发",
+      "remedy": "填完关键字按 **Enter** 触发；断言看请求是否发出 + total 变化。误判「搜索不生效」的绝大多数是没按 Enter。**换页面/换入口前先 dump 一次 DOM 再写选择器**，不要硬套另一端的交互",
+      "scope": [
+        "element-ui",
+        "search",
+        "generic"
+      ],
+      "severity": "medium",
+      "source": "2026-11 实测（多名成员踩到，误报已剔除）",
+      "status": "pending_review"
+    },
+    {
+      "id": "gen-047",
+      "trigger": "表格「空行 / 空单元格」",
+      "symptom": "选品后明细表有可见行但单元格全空、无空态、无输入框，判为「没加载出来」",
+      "root_cause": "可能确是功能死路；也可能只是 Element 隐藏测量行",
+      "remedy": "**复核方法**：dump 所有 table（含 `.hidden-columns` / `offsetParent`）确认不是隐藏测量行；再查 `.el-table__empty-text` 是否存在。确认后才判死路",
+      "scope": [
+        "element-ui",
+        "generic"
+      ],
+      "severity": "medium",
+      "source": "2026-11 实测 + 独立复核",
+      "status": "pending_review"
+    }
+  ]
+}

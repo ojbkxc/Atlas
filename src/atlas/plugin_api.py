@@ -21,6 +21,21 @@ from .plugins.demo import DemoPlugin
 
 _REGISTRY: dict[str, type] = {}
 
+# 通用知识包目录（业务中立、跨插件共享）的路径**单一来源**：平台插件把三级知识根按
+# 「私有目录 > 平台包内知识 > 通用知识包」传给 KnowledgeBase 时，最后一层从这里取，
+# 不得各自拼路径（改一漏一即漂移，同 _REGISTRY 单一入口纪律）。
+_COMMON_KNOWLEDGE_DIR = Path(__file__).resolve().parent / "plugins" / "_common" / "knowledge"
+
+
+def common_knowledge_root() -> Path:
+    """返回通用知识包目录 `src/atlas/plugins/_common/knowledge`（只读）。
+
+    用法（平台插件，多根逐文件回退，task #2）：
+        KnowledgeBase(priv, fallback_root=[self.knowledge_root, common_knowledge_root()])
+    写路径只认 root（#135），通用包恒为只读 fallback。
+    """
+    return _COMMON_KNOWLEDGE_DIR
+
 
 def register_plugin(domain: str, cls: type) -> None:
     """插件包导入时登记自己（未来多插件扩展点；引擎自带 demo 已在下方默认注册）。"""

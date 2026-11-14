@@ -83,6 +83,7 @@ import os
 from atlas.contracts import ContractRegistry
 from atlas.dsl import TaskRegistry
 from atlas.knowledge import KnowledgeBase, SelectorRegistry
+from atlas.plugin_api import common_knowledge_root
 from atlas.probes import DataProvider
 from .tasks import core_tasks
 from .probes import make_provider as _make_provider
@@ -99,13 +100,18 @@ class {{Domain}}Plugin:
         self.private_root = Path(_priv) if _priv else None
 
     def knowledge(self) -> KnowledgeBase:
+        # 三层：私有目录（写）> 平台包内知识（影子回退）> 通用知识包（组合层）。
+        # 通用包走 base_roots——影子语义会被平台自带的同名文件整份挡住，组合层并入才补齐。
         if self.private_root:
-            return KnowledgeBase(self.private_root, fallback_root=self.knowledge_root)
+            return KnowledgeBase(self.private_root, fallback_root=self.knowledge_root,
+                                 base_roots=common_knowledge_root())
         # 只读库：未设 ATLAS_KNOWLEDGE_DIR 时不产出可写实例（#135 红线 #11）
-        return KnowledgeBase(None, fallback_root=self.knowledge_root)
+        return KnowledgeBase(None, fallback_root=self.knowledge_root,
+                             base_roots=common_knowledge_root())
 
     def selectors(self) -> SelectorRegistry:
-        return SelectorRegistry(self.knowledge().load("components"))
+        # 组合层读取：通用组件包与平台组件并入（平台同名组件靠前者赢）。
+        return SelectorRegistry(self.knowledge().load_composed("components"))
 
     def contracts(self) -> ContractRegistry:
         # 与 DemoPlugin 同款：私有→包内逐文件回退，两级皆缺显式报错（红线 7）
