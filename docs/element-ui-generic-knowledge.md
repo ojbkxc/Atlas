@@ -10,8 +10,9 @@
 > - **拆分**：一条里混着「通用方法」与「平台事实」→ 方法抽入通用包，平台部分留在 snalai。
 > - 无法判定是否通用的一律**留平台包**，并在 §4 记明理由（不写「看起来对」的猜测）。
 
-通用包产物：`_common/knowledge/components.json`（15 条）/ `pitfalls.json`（47 条，`scope` 只用机制标签、
-`status` 一律 `pending_review`）/ `domains.json`（新平台接入检查清单）。
+通用包产物：`_common/knowledge/components.json`（15 组件，login 增 `login_page_security` 模型键，见 §7）/
+`pitfalls.json`（47 + wave2 35 = **82 条**，`scope` 只用机制标签、`status` 一律 `pending_review`，见 §7）/
+`domains.json`（新平台接入检查清单，wave2 增 `stack_entry_and_accounts` 节，见 §7）。
 **通用包已扫描确认不含**：平台名、真实域名、真实页面路径、账号手机号、客户业务字段名。
 
 ---
@@ -149,5 +150,69 @@ pitfalls 通用抽出 31 条（整条）+ 16 条拆分中的方法段，最终�
 
 ```bash
 py -3.11 -c "import json; [json.load(open(f,encoding='utf-8')) for f in ['src/atlas/plugins/_common/knowledge/components.json','src/atlas/plugins/_common/knowledge/pitfalls.json','src/atlas/plugins/_common/knowledge/domains.json']]; print('JSON OK')"
-grep -rniE "snalai|健康小蜗|SNA_|/admin/admin|/chain/seller|javashop|com\.enation|my-table|bg-order" src/atlas/plugins/_common/knowledge/   # 应无输出
+grep -rniE "<平台标识词表>" src/atlas/plugins/_common/knowledge/   # 应无输出（词表=平台名/业务标识/真实路径段，本地维护，不进仓库）
 ```
+
+---
+
+## 7. 第二轮提炼（wave2，2026-11-14）
+
+> 输入：三份侦察提案（仓库外 `C:/tmp/`：`gw2_proposal_api.json` 20 条 / `gw2_proposal_docs.json` 14 条 /
+> `gw2_proposal_platform.json` 12 条，共 46 条）。提案里的原始锚点（端点 JSON pointer 等平台坐标）**不进仓库**；
+> 本节与条目 source 字段只用「提案编号 + 机制名 + 业务面中性描述」溯源。合并落地唯一写手由 team-lead 指定，
+> 现有 47 条 gen-001~047 零改动（保守原则：既有条目没说透的面一律用新条目承接，不动原文）。
+
+### 7.1 产出
+
+| 文件 | 变化 |
+|---|---|
+| `pitfalls.json` | 47 → **82 条**：新增 `gen-048` ~ `gen-082`（35 条）。schema 与现有条目完全一致（id/trigger/symptom/root_cause/remedy/scope/severity/source/status），status 一律 `pending_review`，scope 全部为 §5 词表内标签 + `generic`（词表零扩展） |
+| `components.json` | `login.models` 新增 `login_page_security` 键（docs 提案 #14：登录页安全面顺手检查三点），组件数不变（15） |
+| `domains.json` | 新增 checklist 节 `stack_entry_and_accounts`（docs 提案 #12：技术栈识别 / 入口拓扑 / 权限准备），其余六节零改动 |
+
+### 7.2 三方归并决策（46 条提案 → 35 条 pitfalls + 2 条归位 + 0 条丢弃）
+
+同一机制出现在多份提案时归并为一条、来源合并，共 10 组（其中 platform #5「关系型篡改探针」按其三个探针拆三分）：
+
+| 新 id | 归并的提案 | 备注 |
+|---|---|---|
+| gen-048 | api #1 + platform #5② | UI 排除输入差集；「来源=目标」探针并入 |
+| gen-052 | api #5 + platform #8 | 静默改写/钳制/重算三态判定；severity 取并集高值 |
+| gen-053 | api #6 + platform #12 | 条件触发型故障对照取证 |
+| gen-055 | api #8 + docs #2 + platform #5① | 跨字段一致性写入探针（头额 vs 明细脱钩），三份提案同一机制 |
+| gen-058 | api #11 + platform #11 | 高频轮询污染流量统计（同源端点实测） |
+| gen-061 | api #14 + platform #7 | 读回写更新载荷（展示 DTO ≠ 更新 DTO） |
+| gen-062 | api #15 + platform #5③ | 引用完整性（幽灵引用/静默 null） |
+| gen-065 | api #18 + platform #10 | 长文本注入串落库 + 超长 500 兜底 |
+| gen-066 | api #19 + platform #2 | 写入无校验 × 清理有约束的锁死连锁；severity 取并集高值 |
+| gen-067 | api #20 + platform #9 | 超发字段（mass-assignment）阴性判读 |
+
+归位（不进 pitfalls）：docs #12 → `domains.json`（checklist 增项，其 remedy 本身已注明落点）；docs #14 → `components.json`（login 层）。
+
+丢弃：**无**。46 条提案全部落地（35 条新 pitfalls 含 9 条归并来源 + 2 条归位）；三份侦察均声明每条对应一次
+真实实测（notes.json / api-pitfalls.md / playbook 判据），未发现需按「宁缺毋滥」剔除的推测性条目。
+
+### 7.3 与现有 gen-001~047 的关系（相邻不重复判定）
+
+全部 35 条在 source 字段带一句话相邻判定，摘要：
+
+- **现有条目只说了一半，用新条目承接另一半（不动原文）**：gen-048↔gen-032⑤（「UI 上无入口」vs 输入差集探测法）、gen-055↔gen-041（读侧对账 vs 写侧脱钩探针）、gen-057↔gen-041（「取对字段」一句 vs 数据反推法）、gen-066↔gen-024/gen-035（不对称面/清理盘点 vs 连锁机制）、gen-076↔gen-036（两格 vs 四步梯度）、gen-079↔gen-041（静态恒等式 vs 方向性断言）、gen-082↔gen-026（格式实测 vs 多头组合）、gen-069↔gen-042（两格 vs 第三格「排除自家前序写入」）、gen-075↔gen-043（计数闸门 vs 不合格件处置）、gen-053↔gen-045（凭证排除 vs 参数对照）。
+- **特例 → 通用化**：gen-054↔gen-022/gen-031（时间筛选/导出分页两特例 vs 筛选参数通用形态+空值哨兵）。
+- **不同类不混**：gen-051↔gen-019（密钥回显=设计面 vs 异常栈外泄=实现面）、gen-060↔gen-027（网关伪装 200 vs 前端全局登出）。
+- **全新面**（无相邻）：gen-050、gen-058、gen-059、gen-063、gen-064、gen-068（否定性结论三要素——gen-037 只覆盖正向「没反应」类）、gen-070~074、gen-077、gen-078、gen-080、gen-081。
+
+### 7.4 对 wave1 §4 两处取舍的重新裁定（方法与口径分离）
+
+| wave1 §4 判定 | wave2 裁定 | 理由 |
+|---|---|---|
+| snl-043 整条留平台包（「按类型分桶、不要合并统计」若泛化会丢失具体分桶口径，不写看起来对的猜测） | 只抽方法 → gen-081 | gen-081 不携带任何分桶语义：断言按子类型分桶做、**桶间差异记录为口径事实而非缺陷**——方法本身不猜口径，wave1 顾虑解除；平台业务口径本体仍留平台包 |
+| snl-026「出库成本符号反向」判平台缺陷留平台包（对账三式已抽入 gen-041） | 只抽方向断言方法 → gen-079 | wave1 抽了静态恒等式、未收「变化方向」维；gen-079 只收「逐维断言方向一致」探针方法，平台缺陷本体不动 |
+
+### 7.5 wave2 自检
+
+自检命令同 §6（中立性 grep 词表按任务口径追加本波新增的平台侧标识词，词表本地维护、不进仓库），结果：
+
+- `py -3.11` JSON 解析三文件 OK；82 条 id 连续（gen-001~082）、9 键齐全、trigger 非空、status 全 `pending_review`、scope 均含 `generic`。
+- 中立性 grep（§6 词表 + 本波追加的平台标识词）对三个知识文件：**无输出（CLEAN）**。
+- 全量 pytest（`PYTHONPATH=src py -3.11 -m pytest -q`，117.5s）：**9 failed / 2535 passed / 8 skipped，与 wave2 前基线逐数一致，零新增失败**（9 个失败全部为既有环境类失败：legacy compat xcheck / migration sentinels，与知识数据无关）。
+- 台账本节不含平台坐标；提案原始锚点（含端点 JSON pointer）留在仓库外提案文件，未入库。
