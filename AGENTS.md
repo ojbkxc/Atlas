@@ -159,6 +159,15 @@ PYTHONPATH=src python -m atlas doctor
   测侧名单唯一声明位是 `tests/test_emit_fast.py` 的 `_CREDENTIAL_TABLE_NAMES`，其余测从其派生；
   产物侧判据（禁词实参形态、锁步表、`ENV_KEYS` 自证、PROD 前缀与 `config.py` 源文本比对）一律 import
   `emit_fast` 符号引用。产物不 import atlas，等值性靠锁步测钉，不靠共用实现。
+- **AI 自主探索闭环（gap14）的判据面同样单点收敛**：`autopilot` 的 assert 判据失败抛 `AssertionError`、
+  归类走 `failures.classify_failure`（经 `recorder.step` 单点继承），本模块零判词；定位全走 `locators.resolve`、
+  接口响应路径打点走 `tasks._dig`、坑点提炼的形状闸复用 `review.verification_problems`、匹配门复用
+  `knowledge.match_pitfall(status="approved")`——不留第二把尺（#92）。**证据落盘**：explore --auto 全程写
+  runs.jsonl（mode=explore-auto），失败步骤带请求实参（method/url/post_data）+ 响应快照 + 页面快照——
+  全部过 `credential_gate` 净化刀（红线 #2 同一套判据，不复制第二份名单）；请求/响应观察经 `page.on`
+  **只读**取证，绝不发新请求、绝不执行 LLM 输出的任意 JS/SQL/文件操作（白名单 + `classify_risk` 风险门
+  护栏零放松）。**坑点提炼只进塔不写知识**（红线 #9/#10）；LLM 摘要坏形态点名跳过并留痕，绝不拿坏摘要
+  冒充证据、绝不静默吞掉（红线 #7）。
 
 ## 4. Ask first（先问再做）
 

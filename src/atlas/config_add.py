@@ -127,9 +127,31 @@ class {{Domain}}Plugin:
                     continue
         raise ValueError(f"契约文件缺失或损坏：{candidates}")
 
-    def session_defaults(self) -> dict:
+    def session_defaults(self, env: str = "") -> dict:
+        """会话默认值（账号/OU/语言/division）；密码永不在这里。
+
+        **引擎契约**（runtime.resolve_account / DemoRuntime.__init__ 以
+        `session_defaults(env=...)` 调用）：env 形参必须接受——旧骨架没有它，
+        `atlas run` 在账号预检处裸 TypeError traceback（ob-1，生成的骨架跑不起来）。
+
+        三层优先级（与仓库内已实现 env 契约的平台插件同口径，单一实现）：
+        1. 包内 `knowledge/session.json`（结构默认：account/ou 留空）；
+        2. `envs.json` 环境坐标 `environments[env].account/ou`——只在 (1) 为空时兜底；
+        3. `ATLAS_SESSION_*` 显式 env（overlay_session 最后跑，恒最优先）。
+
+        env 为空（旧调用形态）时行为与只接两层的旧实现一致（红线 #11 不猜凭据）。
+        """
         from .tasks import overlay_session
-        return overlay_session(self.knowledge().load("session") or {})
+        session = self.knowledge().load("session") or {}
+        if env:
+            environments = (self.knowledge().load("envs") or {}).get("environments") or {}
+            coords = environments.get(env)
+            if isinstance(coords, dict):
+                for key in ("account", "ou"):
+                    current = session.get(key)
+                    if not (isinstance(current, str) and current.strip()) and coords.get(key):
+                        session[key] = coords[key]
+        return overlay_session(session)
 
     def tasks(self, legacy_pages_path=None):
         return core_tasks(legacy_pages_path)

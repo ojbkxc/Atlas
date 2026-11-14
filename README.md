@@ -377,8 +377,11 @@ atlas review-code tests/ --review-mode ai         # AI 增强（默认关，需�
 atlas explore --account demo_user
 atlas explore --compile reports/explore_20261103_101500.jsonl
 
-# LLM 全自动探索（gap12）：目标进去、pending_review 草稿出来，全程无人
+# LLM 全自动探索（gap12 + gap14）：目标进去、pending_review 草稿出来，全程无人
 # 需 ATLAS_LLM_BASE_URL/_API_KEY/_MODEL；LLM 只输出白名单动作，写类动作默认被审批门拦停
+# 判据动作 assert 四类（元素可见/文案匹配/接口状态码与结构/跨模块值比对）真正执行，
+# 失败步骤带请求实参+响应+快照证据写 runs.jsonl（atlas allure/summary 直接可吃），
+# 未命中已审核坑点的失败自动提炼成 pending_review 草稿（只进塔不写知识）
 atlas explore --auto --goal "在销售单列表页按客户号查询并确认列表已就绪" --account demo_user
 ```
 

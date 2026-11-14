@@ -277,3 +277,58 @@ def test_generated_plugin_knowledge_three_layers(tmp_path, monkeypatch):
     import pytest
     with pytest.raises(PermissionError, match="ATLAS_KNOWLEDGE_DIR"):
         kb.save_reviewed("pitfalls", [], approved=True)
+
+
+# ---- ob-1 回归：生成的骨架 session_defaults 必须接受 env 形参并接 envs.json 坐标 ----
+
+def test_generated_session_defaults_accepts_env_and_wires_envs_coords(tmp_path, monkeypatch):
+    """ob-1：引擎 runtime 以 `session_defaults(env=...)` 调用（resolve_account /
+    DemoRuntime.__init__）。旧骨架没有 env 形参 → `atlas run` 在账号预检处裸
+    TypeError traceback（rc 1），生成的骨架跑不起来。现骨架接 env 并照仓库内
+    已实现 env 契约的平台插件口径读 envs.json 环境坐标（account/ou 只在 session.json 为空时兜底）。
+
+    唯一 domain：`plugins.<domain>` 模块被 sys.modules 跨测试缓存，同名 domain 的
+    第二个测试会拿到第一个测试的 knowledge_root（文件内容依赖本测试的 tmp_path）。"""
+    rc = main(["config", "add", "acme_env", "--out", str(tmp_path)])
+    assert rc == 0
+    # 给骨架 envs.json 的 sit 环境补坐标（私有坐标形态，照平台插件口径）
+    envs_path = tmp_path / "plugins" / "acme_env" / "knowledge" / "envs.json"
+    envs = json.loads(envs_path.read_text(encoding="utf-8"))
+    envs["environments"]["sit"]["account"] = "sit_user"
+    envs["environments"]["sit"]["ou"] = "OU-A"
+    envs_path.write_text(json.dumps(envs, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.setenv("ATLAS_PLUGIN", "plugins.acme_env")
+    for key in ("ATLAS_SESSION_ACCOUNT", "ATLAS_SESSION_OU",
+                "ATLAS_SESSION_DIVISION", "ATLAS_SESSION_LANGUAGE"):
+        monkeypatch.delenv(key, raising=False)
+
+    from atlas.plugin_api import resolve_plugin
+    plugin = resolve_plugin()
+    # env 形参被接受（旧骨架这里 TypeError），坐标从 envs.json 接进来
+    coords = plugin.session_defaults(env="sit")
+    assert coords["account"] == "sit_user"
+    assert coords["ou"] == "OU-A"
+    # env 为空：回落结构默认（account 空），不猜凭据
+    assert plugin.session_defaults()["account"] == ""
+
+
+def test_generated_session_defaults_env_coords_only_fill_empty(tmp_path, monkeypatch):
+    """session.json 已有账号时，envs.json 坐标不覆盖（三层优先级：session.json 优先）。"""
+    rc = main(["config", "add", "acme_fill", "--out", str(tmp_path)])
+    assert rc == 0
+    session_path = tmp_path / "plugins" / "acme_fill" / "knowledge" / "session.json"
+    session = json.loads(session_path.read_text(encoding="utf-8"))
+    session["account"] = "from_session"
+    session_path.write_text(json.dumps(session, ensure_ascii=False), encoding="utf-8")
+    envs_path = tmp_path / "plugins" / "acme_fill" / "knowledge" / "envs.json"
+    envs = json.loads(envs_path.read_text(encoding="utf-8"))
+    envs["environments"]["sit"]["account"] = "from_envs"
+    envs_path.write_text(json.dumps(envs, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.setenv("ATLAS_PLUGIN", "plugins.acme_fill")
+    monkeypatch.delenv("ATLAS_SESSION_ACCOUNT", raising=False)
+
+    from atlas.plugin_api import resolve_plugin
+    plugin = resolve_plugin()
+    assert plugin.session_defaults(env="sit")["account"] == "from_session"

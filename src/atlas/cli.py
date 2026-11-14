@@ -1296,7 +1296,9 @@ def _explore_auto(args, config) -> int:
         report = autopilot.explore_auto(
             config, goal, llm=llm.LLMClient(llm_cfg), page=page, trace=trace,
             journal=journal, max_steps=args.max_steps, max_seconds=args.max_seconds,
-            agent=AtlasAgent(journal=config.reports_dir / "agent_decisions.jsonl"))
+            agent=AtlasAgent(journal=config.reports_dir / "agent_decisions.jsonl"),
+            # 坑点提炼的匹配面：命中 approved 坑点的失败不重复提炼（自愈准入同语义）
+            knowledge=getattr(getattr(runtime, "actor", None), "knowledge", None))
     except PermissionError as exc:
         print(str(exc), file=sys.stderr)
         return 1
@@ -1305,7 +1307,10 @@ def _explore_auto(args, config) -> int:
             runtime.__exit__(None, None, None)
     print(json.dumps({"trace": str(report.trace), "stopped_reason": report.stopped_reason,
                       "steps": len(report.steps), "rejected": report.rejected,
-                      "failures": report.failures, "drafts": report.drafts,
+                      "failures": report.failures, "asserts": report.asserts,
+                      "pitfall_drafts": report.pitfall_drafts,
+                      "runs": str(config.reports_dir / "runs.jsonl"),
+                      "drafts": report.drafts,
                       "next": "atlas review  # 探索产物只进 pending_review，审后成资产"},
                      ensure_ascii=False, indent=2))
     return 0
