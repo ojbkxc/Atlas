@@ -29,6 +29,8 @@ from urllib.parse import urlsplit
 
 import yaml
 
+from .atomic_io import read_text_retry
+
 # ── 维度权重（默认，可经 reviewcode.json 覆盖）────────────────────────────
 DEFAULT_WEIGHTS = {
     "assertion": 0.25,
@@ -889,10 +891,13 @@ def cross_check_runs(runs_path: Path, findings: list[dict],
     if not runs_path.exists():
         return extra_findings
 
+    # cc-2 读侧配套：runs.jsonl 写锁区间=文件头 1 字节，Windows 并发读撞锁 PermissionError
+    # （瞬态）由 read_text_retry 重试即过；判据与 atomic_io 同一把尺（#92）：只重试
+    # PermissionError，UnicodeDecodeError 直接回落 replace，其余异常原样传播。
     try:
-        raw = runs_path.read_text(encoding="utf-8")
+        raw = read_text_retry(runs_path, encoding="utf-8")
     except UnicodeDecodeError:
-        raw = runs_path.read_text(encoding="utf-8", errors="replace")
+        raw = read_text_retry(runs_path, encoding="utf-8", errors="replace")
 
     failed_assertion_cases = set()
     for line in raw.splitlines():

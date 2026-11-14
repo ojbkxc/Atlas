@@ -370,3 +370,76 @@ def test_save_har_error_dict_refuses_bad_file(tmp_path):
     good = tmp_path / "good.har"
     WebToolboxSensor(Bridge({"log": {"version": "1.2", "entries": []}})).save_har(good)
     assert good.is_file() and '"version": "1.2"' in good.read_text(encoding="utf-8")
+
+
+# ===================== cc-2 读侧：runs.jsonl 写锁区间=文件头 1 字节，读侧重试判据 =====================
+
+def test_summarize_retries_transient_lock_permission_error(tmp_path, monkeypatch):
+    """cc-2 判据（summarize 路径）：runs.jsonl 写锁区间=文件头 1 字节，Windows 并发读从
+    字节 0 起撞锁 → PermissionError（瞬态：锁持有=一次整行写的毫秒级）。summarize 必须
+    重试即过——**且只重试 PermissionError**（判据在 atomic_io.read_text_retry，#92 一把尺）。"""
+    import json
+    from pathlib import Path
+    from atlas import atomic_io as aio
+
+    runs = tmp_path / "runs.jsonl"
+    runs.write_text(json.dumps({"run_id": "r1", "case": "c", "env": "sit",
+                                "status": "passed", "steps": []}) + "\n", encoding="utf-8")
+    monkeypatch.setattr(aio, "_READ_RETRY_DELAY_S", 0.0)
+    real_read = Path.read_text
+    calls = {"n": 0}
+
+    def flaky(self, *a, **k):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise PermissionError(13, "locked")
+        return real_read(self, *a, **k)
+
+    monkeypatch.setattr(Path, "read_text", flaky)
+    summary = summarize(runs)
+    assert summary["runs"] == 1
+    assert calls["n"] == 3, "PermissionError 应被重试 3 次（前两次瞬态、第三次成功）"
+
+
+def test_summarize_does_not_retry_non_permission_error(tmp_path, monkeypatch):
+    """cc-2 负向对照：非 PermissionError（真缺陷/坏盘）原样传播点名失败，绝不重试吞掉。"""
+    import pytest
+    from pathlib import Path
+
+    runs = tmp_path / "runs.jsonl"
+    runs.write_text('{"run_id":"r1","case":"c","env":"s","steps":[]}\n', encoding="utf-8")
+
+    def boom(self, *a, **k):
+        raise ValueError("not a lock issue")
+
+    monkeypatch.setattr(Path, "read_text", boom)
+    with pytest.raises(ValueError):
+        summarize(runs)
+
+
+def test_export_runlog_retries_transient_lock_permission_error(tmp_path, monkeypatch):
+    """cc-2 判据（export_runlog 路径）：同 summarize，读侧 PermissionError 重试即过。"""
+    import json
+    from pathlib import Path
+    from atlas import atomic_io as aio
+
+    runs = tmp_path / "runs.jsonl"
+    runs.write_text(json.dumps({"run_id": "r1", "case": "c", "env": "sit",
+                                "status": "passed",
+                                "steps": [{"step": "s1", "op": "action", "ok": True, "dur_ms": 1}]})
+                    + "\n", encoding="utf-8")
+    out = tmp_path / "out.jsonl"
+    monkeypatch.setattr(aio, "_READ_RETRY_DELAY_S", 0.0)
+    real_read = Path.read_text
+    calls = {"n": 0}
+
+    def flaky(self, *a, **k):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise PermissionError(13, "locked")
+        return real_read(self, *a, **k)
+
+    monkeypatch.setattr(Path, "read_text", flaky)
+    export_runlog(runs, out)
+    assert calls["n"] == 3, "PermissionError 应被重试 3 次（前两次瞬态、第三次成功）"
+    assert '"run_id": "r1"' in out.read_text(encoding="utf-8")

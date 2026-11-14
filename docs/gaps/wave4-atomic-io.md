@@ -96,23 +96,22 @@
 登记同一 id → 恰一条行、`seen==8` 无丢更新）+ 既有 `..._no_loss_under_threads` 原样保留
 （不弱化）；50× 循环全绿。
 
-## 3. 后续待办（本批未做）
+## 3. 后续待办
 
 - **w4-1** `legacy_fast.py` 追加加锁：机制=给 vendored 垫片内联一份锁（或改其 `_dump` 写
   tmp+replace）；为何不做=零-atlas 结构上不能 import 共享实现、单次多行 open 实测 0% 丢、
-  改它破 vendor 锁步；建议波次=产物体层专项（需同步 vendor 重生成）。
-- **w4-2** cc-2 全量读侧容忍：机制=`reporting.summarize`/`export_runlog`、`allure_report`
-  读 `runs.jsonl` 加 `read_text_retry`；为何不做=属 cc-2 独立面、runs.jsonl 锁是既有形态
-  非本批引入；建议波次=wave4+1。
+  改它破 vendor 锁步；建议波次=产物体层专项（需同步 vendor 重生成）。**仍不做**。
+- ~~**w4-2** cc-2 全量读侧容忍~~ **第二批已做（§5 P1-a）**：四个 runs.jsonl 读者
+  （reporting.summarize/export_runlog、allure_report.emit_allure、review_code.cross_check_runs）
+  统一走 `read_text_retry`。
 - ~~**w4-3** cc-3 审核塔同 id 并发登记竞态（seen 计数丢）~~ **本批已做（§2.1）**：机制=
   `append_draft` 的读-改-写整体进 `update_text_locked`。原「为何不做」不成立——它是真竞态
   （6.7% 丢行），属本批「落盘写入原子性」线内。
-- **w4-4** cc-4 审核塔批准态双写竞态（人审与知识写回并发）：机制=批准链整体加锁；建议 wave4+2。
-- **w4-5** cc-5 plan_ctx 并发保存丢键：机制=`save_plan_ctx` 读盘合并 + 锁内写；建议 wave4+1。
-- **w4-6** cc-6/cc-7/cc-8/cc-9/cc-10（historyId 平台维度 / lease CAS 原子 / exports 路径 /
-  xdist 分片门控）：建议 wave4+2。
-- **w4-7** rb-2 explore trace 追加补断行守卫（本批只加了锁，未加 `leading_break`）：机制=
-  `_record_checkpoint` 追加前照 state X5 检尾字节；建议 wave4+1。
+- ~~**w4-4** cc-4 审核塔批准态双写竞态~~ **第二批已做（§5 P1-b）**：审核塔事务锁。
+- ~~**w4-5** cc-5 plan_ctx 并发保存丢键~~ **第二批已做（§5 P1-d）**：锁内读盘合并。
+- ~~**w4-6 的 cc-6（historyId 平台维度）**~~ **第二批已做（§5 P1-d，opt-in）**；
+  cc-7/cc-8/cc-9/cc-10（lease CAS 原子 / exports 路径 / xdist 分片门控）仍待 wave4+2。
+- ~~**w4-7** rb-2 explore trace 追加补断行守卫~~ **第二批已做（§5 P1-e）**。
 - **w4-8** rb-4 契约文件坏字节静默影子回退点名；**w4-9** rb-6 CDP 冻场被杀进程泄漏文档/信号
   处置：建议 wave4+1 / P2。
 
@@ -122,3 +121,37 @@
   的 byte-parity 与 write_text parity 两条测钉）。
 - runs.jsonl 仍走 recorder 的裸 `\n`（既有 LF 约定），recorder 行为逐字节不变。
 - 未设任何新开关；不碰 `snalai/`、不碰四处测试计数、引擎不含业务字面量、凭据不落盘。
+
+## 5. 第二批（P1-a..P1-e，wave4 P1 轮）
+
+- **P1-a cc-2 读侧**：四个 runs.jsonl 读者走 `read_text_retry`。**判据**（不是加大重试次数）：
+  只重试 `PermissionError`（瞬态锁冲突，锁持有=一次整行写的毫秒级）；`UnicodeDecodeError`
+  不重试、直接回落 `errors="replace"`（坏字节是确定事实）；其余异常原样传播点名失败。
+  变异取证：还原裸 `path.read_text` → 重试测红；+5 测（2 条负向对照）、10× 循环 10/10。
+- **P1-b cc-3/cc-4**：cc-3 已在第一批 §2.1 修复（`update_text_locked`），本批补**跨进程**
+  判据（8 进程×5 同 id → seen==40，50× 全绿）+ 变异取证（还原旧「锁外读+锁内写」→ 红）。
+  cc-4 新增**审核塔事务锁**：`atomic_io.exclusive_file_lock` + `exclusive_path_locks`（按
+  归一路径排序防多路径死锁），review 的 `approve`/4 个 `approve_to_*`/`reject`/`reject_kind`
+  全程持锁——「resolve → 写知识库 → 翻队列 → 留痕」不再被另一进程同草稿批准交错。
+  **可重入**：`_TowerLock` 用线程本地深度计数（同线程重入直通），因 `exclusive_file_lock`
+  每次新 fd、嵌套取同路径第二把锁会阻塞重试自己挂死；`atomic_io._INPROC_LOCK` 相应升为
+  `RLock`（同线程重入、跨线程仍严格互斥）。锁用独立 `.review.lock`（不能锁队列文件本身——
+  其状态改写走 `os.replace`，Windows 上有打开 fd 时报 WinError 5）。判据：2 进程并发批准
+  同草稿 → 恰 1 成功、决策 1 行、知识 1 行；同进程 `approve`→`approve_to_*` 两层锁不死锁。
+  变异取证：去掉 approve_to_pitfall 的锁 → 并发测红；50× 循环全绿。
+- **P1-c pf-1**：`abilities.py` 的 `import requests` 改 lazy（`CallApi.__init__` 局部 import，
+  类型标注走 `TYPE_CHECKING`）。**importtime 实测**：`import atlas.abilities` 389→72ms
+  （requests 连带 charset_normalizer/urllib3 ≈350ms 不再付）；`atlas doctor` 冷启动
+  452~511ms → 225~244ms（≈240ms 省）。判据测用**干净子进程**两半成对（导入后 requests 不在
+  sys.modules；构造 CallApi 后必须在），变异还原 eager → 红。
+- **P1-d cc-5**：`emit_fast` 模板 `save_plan_ctx` 改**锁内读盘合并**（独立 `.lock` 旁路，
+  `_exclusive_plan_lock` 复用 msvcrt/flock + `_INPROC_LOCK`）——并发保存不同键不再互相覆盖；
+  同键后写赢。2 进程并发 + 单进程顺序面 + 同键语义共 1 测；变异去合并且去锁 → 红；50× 全绿。
+- **P1-d cc-6**：`historyId` 唯一计算点 `_history_id`；**默认 `sha1(env|case)` 逐字旧口径**
+  （存量趋势线零涟漪），`atlas allure --source-dimension` opt-in 时掺来源维度
+  （run 记录 `plugin` 键 → 缺省回落当前 `resolve_plugin().name`）。口径变更会把存量历史断线，
+  故不静默默认。+4 测（默认不变 / 两平台分线 / 无 plugin 键回落当前域 / CLI 旗标真被消费）；
+  变异让来源恒被忽略 → 2 测红。
+- **P1-e rb-2**：`explore._record_checkpoint` 追加前照 state X5 检尾字节，非换行补断行——
+  腰斩残行后新 checkpoint 不再被黏连带丢。+1 测含**负向对照**（不补断行 → 一条可读记录都
+  不剩）；变异去 `leading_break` → 红。

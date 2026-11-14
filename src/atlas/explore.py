@@ -38,6 +38,7 @@ Windows 后台进程的 stdin 管道不可用：console=input 立刻 EOF/lost sy
 """
 from __future__ import annotations
 import json
+import os
 import re
 import sys
 import time
@@ -107,7 +108,17 @@ def _record_checkpoint(page, trace: Path, shots: Path, index: int) -> None:
            "snapshot_lines": len(snapshot.splitlines()) if snapshot else 0}
     # wave4 cc-1：trace 追加裸 open("a") 无锁——统一走 atomic_io 唯一加锁追加器
     # （换行 os.linesep 保旧字节形态）。
-    append_text_locked(trace, json.dumps(row, ensure_ascii=False))
+    # rb-2（同族漏网）：schedule_runs 与 experience 都有**尾行补断行**守卫，explore 此前
+    # 只加了锁没加守卫——上一轮 Ctrl-C 把 checkpoint 腰斩成无换行尾的残行时，下一条完整
+    # checkpoint 会被裸 append 黏在残行后（JSON 解析必败），compile_trace 的「跳过残行」
+    # 连坐跳掉它：登记成功、无异常、**两个 checkpoint 的证据一起消失**（#112 同族静默丢
+    # 证据，与 #102 静默 0 条同红线）。追加前检尾字节，非换行先补断行。
+    needs_break = trace.exists() and trace.stat().st_size > 0
+    if needs_break:
+        with trace.open("rb") as stream:
+            stream.seek(-1, os.SEEK_END)
+            needs_break = stream.read(1) not in (b"\n", b"\r")
+    append_text_locked(trace, json.dumps(row, ensure_ascii=False), leading_break=needs_break)
     # 纯 ASCII 标记：GBK 控制台写 "✓" 会 UnicodeEncodeError 崩掉实会话
     #（真机冒烟抓到；中文日志 GBK 可编码，不受影响）
     print(f"  OK checkpoint #{index} -> {shots / snap_name}", flush=True)

@@ -3,9 +3,11 @@ from __future__ import annotations
 import importlib.util
 import time
 from pathlib import Path
-from typing import Any
-import requests
+from typing import TYPE_CHECKING, Any
 from .core import Ability
+
+if TYPE_CHECKING:              # 仅类型标注用；运行期不 import（见 CallApi.__init__ 注释）
+    import requests
 
 class BrowseTheWeb(Ability):
     def __init__(self, page: Any):
@@ -40,7 +42,12 @@ class ApiResponse(dict):
 
 class CallApi(Ability):
     """独立、可测试的 REST 驱动；需要 Demo 语义时通过插件委托原 DemoApi。"""
-    def __init__(self, base_url: str, session: requests.Session | None = None):
+    def __init__(self, base_url: str, session: "requests.Session | None" = None):
+        # pf-1：`requests`（连带 charset_normalizer/urllib3，冷启动约 350ms）改为**用到才 import**
+        # ——`atlas doctor`/`compile`/`gen` 这些不发 HTTP 的命令不再白付这笔税。只在真正构造
+        # API Ability 时付（run/agent --execute/explore 的登录链），行为零变化：
+        # 会话对象/请求语义/异常形态全部来自同一个 requests，导入时机不影响它们。
+        import requests   # 局部 import 是「懒加载」点的单一位置（模块顶部无运行期依赖）
         self.base_url = base_url.rstrip("/")
         self.session = session or requests.Session()
         self.session.headers.update({"Accept": "application/json, text/plain, */*",

@@ -7,14 +7,23 @@
 from __future__ import annotations
 import json
 import sys
+import threading
 import time
 from pathlib import Path
 
 from . import locators
-from .atomic_io import append_text_locked, read_text_retry
+from .atomic_io import append_text_locked, exclusive_file_lock, read_text_retry
 
 QUEUE_FILE = "experience_drafts.jsonl"
 DECISIONS_FILE = "review_decisions.jsonl"
+# cc-4 事务锁：审核塔「解析 pending → 写知识/组件库 → 改队列状态 → 留痕」四步是跨文件
+# 事务，中间没有任何排他闸——两个进程可同时 resolve 到同一条 pending 草稿并各自批准
+# （实测：2 条 approve 决策对应 1 行知识，或一条状态翻转被另一方的整文件重写吞掉）。
+# 锁**不能**加在队列文件自身上：队列状态改写走 `atomic_write_text` 的 os.replace，
+# Windows 上目标文件存在任何打开 fd 时 os.replace 报 WinError 5（wave4 实测），而锁本身
+# 需要一个打开 fd。故用独立锁文件（与队列同目录、同属审核塔），锁区间/实现与原子 IO
+# 同款（`exclusive_file_lock` → 同一把 msvcrt/flock + 进程内锁）。
+QUEUE_LOCK_FILE = ".review.lock"
 PENDING, APPROVED, REJECTED = "pending_review", "approved", "rejected"
 
 # C2 证据式验收三元组（design_c2 §2）：草稿 evidence.verification 的规范键。
@@ -88,6 +97,36 @@ def _is_pending(row: dict) -> bool:
     return row.get("status") not in (APPROVED, REJECTED)
 
 
+# cc-4：线程可重入的审核塔事务锁。键含线程身份与目录，进程级共享。
+# 同线程重入只减计数（外层真持锁），跨线程由 `exclusive_file_lock` 的进程内 RLock +
+# 跨进程文件锁严格互斥——见 ReviewQueue._tower_lock docstring。
+_TOWER_LOCK_DEPTH: dict[tuple[int, str], int] = {}
+
+
+class _TowerLock:
+    def __init__(self, directory: Path):
+        self._directory = Path(directory)
+        self._key = (threading.get_ident(), str(self._directory))
+        self._inner = None
+
+    def __enter__(self):
+        if _TOWER_LOCK_DEPTH.get(self._key):
+            _TOWER_LOCK_DEPTH[self._key] += 1        # 同线程重入：外层已持锁，直通
+            return self
+        self._inner = exclusive_file_lock(self._directory / QUEUE_LOCK_FILE)
+        self._inner.__enter__()
+        _TOWER_LOCK_DEPTH[self._key] = 1
+        return self
+
+    def __exit__(self, *exc_info):
+        depth = _TOWER_LOCK_DEPTH.get(self._key, 0)
+        if depth > 1:
+            _TOWER_LOCK_DEPTH[self._key] = depth - 1   # 内层退出：只减计数
+            return False
+        _TOWER_LOCK_DEPTH.pop(self._key, None)
+        return self._inner.__exit__(*exc_info)
+
+
 class ReviewQueue:
     def __init__(self, reports_dir: Path):
         self.dir = Path(reports_dir)
@@ -156,9 +195,30 @@ class ReviewQueue:
             raise ValueError(f"{ref!r} 前缀命中 {len(hits)} 条，请加长：{[h['id'] for h in hits]}")
         return hits[0]
 
+    def _resolve_locked(self, ref) -> dict:
+        """`resolve` 的锁内版本——`_tower_lock` 调用方用（cc-4）。
+
+        语义与 `resolve` 完全相同（委托它，不留第二份判据），存在的理由只有一个：调用方
+        已持塔锁时不要再单独进入一次临界区表述，让「锁内 resolve」在调用点一眼可辨。
+        """
+        return self.resolve(ref)
+
     def _rewrite(self, rows: list[dict]) -> None:
         from .experience import ExperienceJournal
         ExperienceJournal._atomic_write(self.path, rows)
+
+    def _tower_lock(self):
+        """cc-4：审核塔事务锁（`with queue._tower_lock(): ...`）——见 QUEUE_LOCK_FILE 注释。
+
+        **可重入且必须可重入**：`approve()` 分发到 `approve_to_*`，两层都要锁；而
+        `exclusive_file_lock` 每次打开**新 fd**——同进程对不同 fd 的 msvcrt 锁是**阻塞
+        重试**（wave4 实测），嵌套取同一路径第二把锁会自己挂死。故用线程本地深度计数做
+        同线程重入直通（外层真持锁，内层只减计数），跨线程仍由文件锁 + 进程内 RLock
+        严格互斥。持锁期间**不得**对同一路径再调其它锁原语（`update_text_locked` 等）。
+        队列文件本身由 os.replace 原子换，不需要另加锁；本锁保护的是「resolve 与写回
+        之间」的窗口（知识写回、队列翻转、决策留痕三步不被另一进程的同草稿批准交错）。
+        """
+        return _TowerLock(self.dir)
 
     def _decide(self, decision: dict) -> None:
         # #130 面A：留痕尽力而为——调用顺序是「知识/组件写回 → 队列状态改写 → 决策留痕」，
@@ -176,41 +236,43 @@ class ReviewQueue:
             pass
 
     def reject(self, ref: str, reason: str = "") -> dict:
-        row = self.resolve(ref)
-        rows = self.rows()
-        for r in rows:
-            # 终验#8 续修：只翻转 pending 行。旧实现按 id 翻转**全部**同 id 行——
-            # 磁盘实锤：11-04 已批准的两条 selector_candidate 历史行，被 11-06 清塔
-            # 驳回同名 pending 重复行时静默改写成 rejected（历史改写缺陷，与
-            # append_draft「决定态不回翻」同一纪律；reject_kind 批量面早就
-            # _is_pending 过滤，单条 reject 是同族漏网）。已决定行是终态记录，
-            # 不可被后续同名操作回翻——驳回只处置「还没人决定」的行。
-            if r.get("id") == row["id"] and _is_pending(r):
-                r["status"] = REJECTED
-                r["reject_reason"] = reason
-                r["decided_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
-        self._rewrite(rows)
-        self._decide({"action": "reject", "id": row["id"], "task": row.get("task"),
-                      "reason": reason, "at": time.strftime("%Y-%m-%dT%H:%M:%S")})
-        return row
+        with self._tower_lock():                     # cc-4：整条驳回事务的序列化闸
+            row = self._resolve_locked(ref)
+            rows = self.rows()
+            for r in rows:
+                # 终验#8 续修：只翻转 pending 行。旧实现按 id 翻转**全部**同 id 行——
+                # 磁盘实锤：11-04 已批准的两条 selector_candidate 历史行，被 11-06 清塔
+                # 驳回同名 pending 重复行时静默改写成 rejected（历史改写缺陷，与
+                # append_draft「决定态不回翻」同一纪律；reject_kind 批量面早就
+                # _is_pending 过滤，单条 reject 是同族漏网）。已决定行是终态记录，
+                # 不可被后续同名操作回翻——驳回只处置「还没人决定」的行。
+                if r.get("id") == row["id"] and _is_pending(r):
+                    r["status"] = REJECTED
+                    r["reject_reason"] = reason
+                    r["decided_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+            self._rewrite(rows)
+            self._decide({"action": "reject", "id": row["id"], "task": row.get("task"),
+                          "reason": reason, "at": time.strftime("%Y-%m-%dT%H:%M:%S")})
+            return row
 
     def reject_kind(self, kind: str, reason: str) -> int:
         """一类 pending 全部驳回。驳回不动知识只动队列，但原因必填——留痕要有人判断垫底。"""
         if not reason:
             raise ValueError("批量驳回必须给原因：--reason \"为什么这一类都不入\"")
-        rows = self.rows()
-        now = time.strftime("%Y-%m-%dT%H:%M:%S")
-        count = 0
-        for r in rows:
-            if _is_pending(r) and r.get("kind", "pitfall") == kind:
-                r["status"] = REJECTED
-                r["reject_reason"] = reason
-                r["decided_at"] = now
-                count += 1
-                self._decide({"action": "reject", "id": r["id"], "task": r.get("task"),
-                              "reason": reason, "batch": kind, "at": now})
-        self._rewrite(rows)
-        return count
+        with self._tower_lock():                     # cc-4：整批驳回同一事务闸
+            rows = self.rows()
+            now = time.strftime("%Y-%m-%dT%H:%M:%S")
+            count = 0
+            for r in rows:
+                if _is_pending(r) and r.get("kind", "pitfall") == kind:
+                    r["status"] = REJECTED
+                    r["reject_reason"] = reason
+                    r["decided_at"] = now
+                    count += 1
+                    self._decide({"action": "reject", "id": r["id"], "task": r.get("task"),
+                                  "reason": reason, "batch": kind, "at": now})
+            self._rewrite(rows)
+            return count
 
     def template_rows(self, kind: str = "selector_candidate") -> list[dict]:
         """导出人可编辑的决策模板：选择器候选带 component/element + 定位位，坑点/坐标带 remedy。
@@ -298,92 +360,94 @@ class ReviewQueue:
         风险已写进 AGENTS/CLAUDE——闸本体（`verification_problems` + override 机制）
         保留未删，只是默认不生效；CI/人想要旧硬保证就传 `--require-evidence`。
         """
-        row = self.resolve(ref)
-        kind = row.get("kind", "pitfall")
-        if kind == "trace_step":
-            raise ValueError("trace_step 是步骤素材不是知识：人工写成 flow YAML 后 "
-                             "atlas compile 校验，或直接 reject 留原因")
-        if kind == "code_review":
-            raise ValueError("code_review 是代码质量评审意见：不自动写知识。"
-                             "请人工按规则处置（修改代码或在 CI 中处理）")
-        if kind == "boundary_review":
-            raise ValueError("boundary_review 是边界漂移分类决策：不自动写知识。"
-                             "请人工改判 docs/ownership/atlas-boundaries.json 条目或 decision_log 后重跑分类")
-        problems: list[str] = []
-        if kind in GATED_KINDS and require_evidence:
-            problems = verification_problems(_verification_of(row))
-            if problems:
-                if not allow_unverified:
-                    raise ValueError(
-                        f"缺少证据三元组（{'; '.join(problems)}），该项 unverified 不可晋级；"
-                        '确需人工批准：atlas review --approve <id> --require-evidence '
-                        '--allow-unverified --reason "<依据>"')
-                if not override_reason.strip():
-                    raise ValueError("override 必须留原因：--reason \"<凭什么豁免证据三元组>\""
-                                     "——无痕迹的 override 等于没闸（红线 #13）")
-        despite = bool(problems)  # 仅 override 显式放行时为非空
-        reason = override_reason if despite else ""
-        if kind == "bu_overlay":
-            result = self.approve_to_overlay(knowledge, row, remedy=remedy, source=source,
-                                             despite_unverified=despite, override_reason=reason)
-        elif kind == "flow_candidate":
-            # 落库线：跑绿固化的动作序列 → 公共任务库。--remedy 可选：显式指定库名，
-            # 缺省回落草稿的 case 名（跑绿的 flow id 本就是该序列在 runs.jsonl 里的真名）。
-            result = self.approve_to_task_library(knowledge, row, name=remedy, source=source,
-                                                  despite_unverified=despite,
-                                                  override_reason=reason)
-        elif kind == "selector_candidate":
-            if not (component and element):
-                raise ValueError("批准 selector_candidate 必须指定组件与元素："
-                                 "atlas review --approve <id> --component <c> "
-                                 "--element <e> （--remedy \"<CSS>\" 或 --role/--name）")
-            result = self.approve_to_selector(knowledge, row, component=component,
-                                              element=element, selector=remedy, source=source,
-                                              despite_unverified=despite, override_reason=reason)
-        else:
-            result = self.approve_to_pitfall(knowledge, row, remedy=remedy, trigger=trigger,
-                                             symptom=symptom, root_cause=root_cause,
-                                             scope=scope, source=source,
-                                             despite_unverified=despite, override_reason=reason)
-        if despite:
-            # X4：警示行 ASCII 前缀（GBK 控制台不崩）；原因截前 80 字符进终端，
-            # 决策留痕行里存的是 --reason 原文。
-            print(f"UNVERIFIED-override: {row.get('id')} {override_reason[:80]}",
-                  file=sys.stderr)
-        return result
+        with self._tower_lock():          # cc-4：入口层持锁；approve_to_* 重入直通（见 _TowerLock）
+            row = self._resolve_locked(ref)
+            kind = row.get("kind", "pitfall")
+            if kind == "trace_step":
+                raise ValueError("trace_step 是步骤素材不是知识：人工写成 flow YAML 后 "
+                                 "atlas compile 校验，或直接 reject 留原因")
+            if kind == "code_review":
+                raise ValueError("code_review 是代码质量评审意见：不自动写知识。"
+                                 "请人工按规则处置（修改代码或在 CI 中处理）")
+            if kind == "boundary_review":
+                raise ValueError("boundary_review 是边界漂移分类决策：不自动写知识。"
+                                 "请人工改判 docs/ownership/atlas-boundaries.json 条目或 decision_log 后重跑分类")
+            problems: list[str] = []
+            if kind in GATED_KINDS and require_evidence:
+                problems = verification_problems(_verification_of(row))
+                if problems:
+                    if not allow_unverified:
+                        raise ValueError(
+                            f"缺少证据三元组（{'; '.join(problems)}），该项 unverified 不可晋级；"
+                            '确需人工批准：atlas review --approve <id> --require-evidence '
+                            '--allow-unverified --reason "<依据>"')
+                    if not override_reason.strip():
+                        raise ValueError("override 必须留原因：--reason \"<凭什么豁免证据三元组>\""
+                                         "——无痕迹的 override 等于没闸（红线 #13）")
+            despite = bool(problems)  # 仅 override 显式放行时为非空
+            reason = override_reason if despite else ""
+            if kind == "bu_overlay":
+                result = self.approve_to_overlay(knowledge, row, remedy=remedy, source=source,
+                                                 despite_unverified=despite, override_reason=reason)
+            elif kind == "flow_candidate":
+                # 落库线：跑绿固化的动作序列 → 公共任务库。--remedy 可选：显式指定库名，
+                # 缺省回落草稿的 case 名（跑绿的 flow id 本就是该序列在 runs.jsonl 里的真名）。
+                result = self.approve_to_task_library(knowledge, row, name=remedy, source=source,
+                                                      despite_unverified=despite,
+                                                      override_reason=reason)
+            elif kind == "selector_candidate":
+                if not (component and element):
+                    raise ValueError("批准 selector_candidate 必须指定组件与元素："
+                                     "atlas review --approve <id> --component <c> "
+                                     "--element <e> （--remedy \"<CSS>\" 或 --role/--name）")
+                result = self.approve_to_selector(knowledge, row, component=component,
+                                                  element=element, selector=remedy, source=source,
+                                                  despite_unverified=despite, override_reason=reason)
+            else:
+                result = self.approve_to_pitfall(knowledge, row, remedy=remedy, trigger=trigger,
+                                                 symptom=symptom, root_cause=root_cause,
+                                                 scope=scope, source=source,
+                                                 despite_unverified=despite, override_reason=reason)
+            if despite:
+                # X4：警示行 ASCII 前缀（GBK 控制台不崩）；原因截前 80 字符进终端，
+                # 决策留痕行里存的是 --reason 原文。
+                print(f"UNVERIFIED-override: {row.get('id')} {override_reason[:80]}",
+                      file=sys.stderr)
+            return result
 
     def approve_to_overlay(self, knowledge, ref, *, remedy: str,
                            source: str = "review", despite_unverified: bool = False,
                            override_reason: str = "") -> dict:
         """批准坐标差异：remedy 填目标 BU 的真实值，写进私有 overlay 库。"""
-        row = self.resolve(ref)
-        if row.get("kind") != "bu_overlay":
-            raise ValueError(f"{row.get('id')} 不是 bu_overlay（kind={row.get('kind', 'pitfall')}）")
-        # #130 面D：evidence 键存在值为 null 时 `.get(key, {})` 默认不生效（#77 红线，
-        # #127 在 knowledge 修过的同形态）——批准当场 AttributeError、塔清不动（#73 场景）。
-        # 与 evidence_card 的 `or {}` 同口径回落。
-        ev = row.get("evidence") or {}
-        other_bu = ev.get("other_bu", "")
-        key = str(row.get("task", "")).split("overlay:", 1)[-1]
-        if not (other_bu and key and remedy):
-            raise ValueError("批准坐标需要目标 BU、键与值：--remedy \"<该 BU 的真实坐标值>\"")
-        record = knowledge.save_overlay(other_bu, key, remedy, approved=True, source=source)
-        rows = self.rows()
-        for r in rows:
-            # ③ 镜像纪律（终验#8 续修，与 reject pending-only、append_draft「决定态
-            # 不回翻」同族）：批准只翻 pending 行——同 id 的已驳回历史行不得被
-            # 后续同名批准静默回翻成 approved（驳回决定被改写，#130 重放防线的翻转面）。
-            if r.get("id") == row["id"] and _is_pending(r):
-                r["status"] = APPROVED
-                r["overlay_ref"] = f"{other_bu}.{key}"
-                r["decided_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
-                if despite_unverified:
-                    r["approved_despite_unverified"] = True
-        self._rewrite(rows)
-        self._decide({"action": "approve_overlay", "id": row["id"], "task": row.get("task"),
-                      "bu": other_bu, "key": key, "value": remedy[:120],
-                      **_override_marks(despite_unverified, override_reason),
-                      "at": time.strftime("%Y-%m-%dT%H:%M:%S")})
+        with self._tower_lock():
+            row = self._resolve_locked(ref)
+            if row.get("kind") != "bu_overlay":
+                raise ValueError(f"{row.get('id')} 不是 bu_overlay（kind={row.get('kind', 'pitfall')}）")
+            # #130 面D：evidence 键存在值为 null 时 `.get(key, {})` 默认不生效（#77 红线，
+            # #127 在 knowledge 修过的同形态）——批准当场 AttributeError、塔清不动（#73 场景）。
+            # 与 evidence_card 的 `or {}` 同口径回落。
+            ev = row.get("evidence") or {}
+            other_bu = ev.get("other_bu", "")
+            key = str(row.get("task", "")).split("overlay:", 1)[-1]
+            if not (other_bu and key and remedy):
+                raise ValueError("批准坐标需要目标 BU、键与值：--remedy \"<该 BU 的真实坐标值>\"")
+            record = knowledge.save_overlay(other_bu, key, remedy, approved=True, source=source)
+            rows = self.rows()
+            for r in rows:
+                # ③ 镜像纪律（终验#8 续修，与 reject pending-only、append_draft「决定态
+                # 不回翻」同族）：批准只翻 pending 行——同 id 的已驳回历史行不得被
+                # 后续同名批准静默回翻成 approved（驳回决定被改写，#130 重放防线的翻转面）。
+                if r.get("id") == row["id"] and _is_pending(r):
+                    r["status"] = APPROVED
+                    r["overlay_ref"] = f"{other_bu}.{key}"
+                    r["decided_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+                    if despite_unverified:
+                        r["approved_despite_unverified"] = True
+            self._rewrite(rows)
+            self._decide({"action": "approve_overlay", "id": row["id"], "task": row.get("task"),
+                          "bu": other_bu, "key": key, "value": remedy[:120],
+                          **_override_marks(despite_unverified, override_reason),
+                          "at": time.strftime("%Y-%m-%dT%H:%M:%S")})
         return record
 
     def approve_to_task_library(self, knowledge, ref, *, name: str = "",
@@ -397,36 +461,37 @@ class ReviewQueue:
         即更新同库同名条目。名字缺省回落草稿 task（case 名）：跑绿的 flow id 本就是
         该序列的真名，--remedy 才是显式改名。
         """
-        row = self.resolve(ref)
-        if row.get("kind") != "flow_candidate":
-            raise ValueError(f"{row.get('id')} 不是 flow_candidate"
-                             f"（kind={row.get('kind', 'pitfall')}）")
-        entry_name = str(name or row.get("task", "")).strip()
-        if not entry_name:
-            raise ValueError("任务库条目名为空：--remedy \"<库名>\" 显式指定，"
-                             "或补齐草稿的 task 字段")
-        ev = row.get("evidence") or {}
-        record = knowledge.save_task_entry(
-            {"name": entry_name, "steps": ev.get("steps", []),
-             "assert": ev.get("assert"),
-             "source_run": ev.get("run_id", ""),
-             "description": f"来源：跑绿固化（草稿 {row.get('id')}）"},
-            approved=True, source=source)
-        rows = self.rows()
-        for r in rows:
-            # ③ 镜像纪律（与 reject/approve_to_* 同族）：批准只翻 pending 行，
-            # 已驳回历史行不回翻（决定态是终态记录）。
-            if r.get("id") == row["id"] and _is_pending(r):
-                r["status"] = APPROVED
-                r["task_ref"] = entry_name
-                r["decided_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
-                if despite_unverified:
-                    r["approved_despite_unverified"] = True
-        self._rewrite(rows)
-        self._decide({"action": "approve_flow", "id": row["id"], "task": row.get("task"),
-                      "library_name": entry_name, "steps": record["steps"],
-                      **_override_marks(despite_unverified, override_reason),
-                      "at": time.strftime("%Y-%m-%dT%H:%M:%S")})
+        with self._tower_lock():
+            row = self._resolve_locked(ref)
+            if row.get("kind") != "flow_candidate":
+                raise ValueError(f"{row.get('id')} 不是 flow_candidate"
+                                 f"（kind={row.get('kind', 'pitfall')}）")
+            entry_name = str(name or row.get("task", "")).strip()
+            if not entry_name:
+                raise ValueError("任务库条目名为空：--remedy \"<库名>\" 显式指定，"
+                                 "或补齐草稿的 task 字段")
+            ev = row.get("evidence") or {}
+            record = knowledge.save_task_entry(
+                {"name": entry_name, "steps": ev.get("steps", []),
+                 "assert": ev.get("assert"),
+                 "source_run": ev.get("run_id", ""),
+                 "description": f"来源：跑绿固化（草稿 {row.get('id')}）"},
+                approved=True, source=source)
+            rows = self.rows()
+            for r in rows:
+                # ③ 镜像纪律（与 reject/approve_to_* 同族）：批准只翻 pending 行，
+                # 已驳回历史行不回翻（决定态是终态记录）。
+                if r.get("id") == row["id"] and _is_pending(r):
+                    r["status"] = APPROVED
+                    r["task_ref"] = entry_name
+                    r["decided_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+                    if despite_unverified:
+                        r["approved_despite_unverified"] = True
+            self._rewrite(rows)
+            self._decide({"action": "approve_flow", "id": row["id"], "task": row.get("task"),
+                          "library_name": entry_name, "steps": record["steps"],
+                          **_override_marks(despite_unverified, override_reason),
+                          "at": time.strftime("%Y-%m-%dT%H:%M:%S")})
         return record
 
     def approve_to_selector(self, knowledge, ref, *, component: str, element: str,
@@ -439,36 +504,37 @@ class ReviewQueue:
         `{"label":..}` / `{"testid":..}`——探索产出的 ARIA 候选不再需要人手抄成 CSS。
         形态判据在 `locators.parse`（写盘前），这里只做「空值点名 + 留痕用 canonical 文本」。
         """
-        row = self.resolve(ref)
-        if row.get("kind") != "selector_candidate":
-            raise ValueError(f"{row.get('id')} 不是 selector_candidate"
-                             f"（kind={row.get('kind', 'pitfall')}）")
-        if not selector:
-            raise ValueError('批准选择器必须提供选择器本身：--remedy "<CSS 或定位描述>"；'
-                             'ARIA 候选可直接 --remedy \'{"role":"button","name":"保存"}\' '
-                             '或 --role/--name')
-        record = knowledge.save_component_selector(component, element, selector,
-            approved=True, source=source,
-            note=f"人审批准入库（来源探索候选 {row.get('id')}）")
-        rows = self.rows()
-        for r in rows:
-            # ③ 镜像纪律（终验#8 续修）：批准只翻 pending 行，已驳回历史行不回翻
-            # （与 reject/_is_pending、append_draft 决定态幂等同一族防线）。
-            if r.get("id") == row["id"] and _is_pending(r):
-                r["status"] = APPROVED
-                r["selector_ref"] = f"{component}.{element}"
-                r["decided_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
-                if despite_unverified:
-                    r["approved_despite_unverified"] = True
-        self._rewrite(rows)
-        # 留痕文本走 `locators.canonical`：旧写法 `selector[:120]` 收到结构化描述（dict）
-        # 直接 TypeError——批准已落库却崩在留痕，等于写回事实无痕（#110/#85 同族）。
-        self._decide({"action": "approve_selector", "id": row["id"], "task": row.get("task"),
-                      "component": component, "element": element,
-                      "selector": locators.canonical(selector)[:120],
-                      "overwritten": record["overwritten"],
-                      **_override_marks(despite_unverified, override_reason),
-                      "at": time.strftime("%Y-%m-%dT%H:%M:%S")})
+        with self._tower_lock():
+            row = self._resolve_locked(ref)
+            if row.get("kind") != "selector_candidate":
+                raise ValueError(f"{row.get('id')} 不是 selector_candidate"
+                                 f"（kind={row.get('kind', 'pitfall')}）")
+            if not selector:
+                raise ValueError('批准选择器必须提供选择器本身：--remedy "<CSS 或定位描述>"；'
+                                 'ARIA 候选可直接 --remedy \'{"role":"button","name":"保存"}\' '
+                                 '或 --role/--name')
+            record = knowledge.save_component_selector(component, element, selector,
+                approved=True, source=source,
+                note=f"人审批准入库（来源探索候选 {row.get('id')}）")
+            rows = self.rows()
+            for r in rows:
+                # ③ 镜像纪律（终验#8 续修）：批准只翻 pending 行，已驳回历史行不回翻
+                # （与 reject/_is_pending、append_draft 决定态幂等同一族防线）。
+                if r.get("id") == row["id"] and _is_pending(r):
+                    r["status"] = APPROVED
+                    r["selector_ref"] = f"{component}.{element}"
+                    r["decided_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+                    if despite_unverified:
+                        r["approved_despite_unverified"] = True
+            self._rewrite(rows)
+            # 留痕文本走 `locators.canonical`：旧写法 `selector[:120]` 收到结构化描述（dict）
+            # 直接 TypeError——批准已落库却崩在留痕，等于写回事实无痕（#110/#85 同族）。
+            self._decide({"action": "approve_selector", "id": row["id"], "task": row.get("task"),
+                          "component": component, "element": element,
+                          "selector": locators.canonical(selector)[:120],
+                          "overwritten": record["overwritten"],
+                          **_override_marks(despite_unverified, override_reason),
+                          "at": time.strftime("%Y-%m-%dT%H:%M:%S")})
         return record
 
     def approve_to_pitfall(self, knowledge, ref: str, *, remedy: str,
@@ -483,31 +549,32 @@ class ReviewQueue:
         被 #59 数据完整性防线永久拒绝匹配：批准「成功」、留痕齐全，知识却永不生效（死资产假成功，
         与 #102 静默 0 条同族）。空串与缺失一律回落到非空默认，绝不产出空 trigger 坑点。
         """
-        row = self.resolve(ref)
-        if not remedy:
-            raise ValueError("提升知识必须提供 remedy：没有修复动作的坑点无法被 heal 命中")
-        from .experience import ExperienceJournal
-        journal = ExperienceJournal(self.dir)
-        pitfall = journal.approve_pitfall(knowledge, row, approved=True,
-            trigger=trigger or row.get("exception_type") or "runtime_error",
-            symptom=symptom or row.get("failure_class") or "step_failed",
-            root_cause=root_cause or row.get("task", ""),
-            remedy=remedy, scope=scope or [row.get("task", "general")], source=source)
-        rows = self.rows()
-        for r in rows:
-            # ③ 镜像纪律（终验#8 续修）：批准只翻 pending 行，已驳回历史行不回翻
-            # （与 reject/_is_pending、append_draft 决定态幂等同一族防线）。
-            if r.get("id") == row["id"] and _is_pending(r):
-                r["status"] = APPROVED
-                r["pitfall_ref"] = pitfall["id"]
-                r["decided_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
-                if despite_unverified:
-                    r["approved_despite_unverified"] = True
-        self._rewrite(rows)
-        self._decide({"action": "approve", "id": row["id"], "task": row.get("task"),
-                      "remedy": remedy[:120], "pitfall": pitfall["id"],
-                      **_override_marks(despite_unverified, override_reason),
-                      "at": time.strftime("%Y-%m-%dT%H:%M:%S")})
+        with self._tower_lock():
+            row = self._resolve_locked(ref)
+            if not remedy:
+                raise ValueError("提升知识必须提供 remedy：没有修复动作的坑点无法被 heal 命中")
+            from .experience import ExperienceJournal
+            journal = ExperienceJournal(self.dir)
+            pitfall = journal.approve_pitfall(knowledge, row, approved=True,
+                trigger=trigger or row.get("exception_type") or "runtime_error",
+                symptom=symptom or row.get("failure_class") or "step_failed",
+                root_cause=root_cause or row.get("task", ""),
+                remedy=remedy, scope=scope or [row.get("task", "general")], source=source)
+            rows = self.rows()
+            for r in rows:
+                # ③ 镜像纪律（终验#8 续修）：批准只翻 pending 行，已驳回历史行不回翻
+                # （与 reject/_is_pending、append_draft 决定态幂等同一族防线）。
+                if r.get("id") == row["id"] and _is_pending(r):
+                    r["status"] = APPROVED
+                    r["pitfall_ref"] = pitfall["id"]
+                    r["decided_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+                    if despite_unverified:
+                        r["approved_despite_unverified"] = True
+            self._rewrite(rows)
+            self._decide({"action": "approve", "id": row["id"], "task": row.get("task"),
+                          "remedy": remedy[:120], "pitfall": pitfall["id"],
+                          **_override_marks(despite_unverified, override_reason),
+                          "at": time.strftime("%Y-%m-%dT%H:%M:%S")})
         return pitfall
 
     def stats(self) -> dict:

@@ -769,10 +769,54 @@ def load_plan_ctx(path) -> dict:
     return data
 
 
+def _plan_ctx_lock_path(p: Path) -> Path:
+    """plan_ctx 的独立锁文件（与 plan_ctx 同目录）。
+
+    锁**不能**加在 plan_ctx.json 自身上：落盘走 tmp+os.replace，Windows 上目标文件存在任何
+    打开 fd 时 os.replace 报 WinError 5（Atlas wave4 实测），而锁需要一个打开 fd。
+    独立 .lock 旁路沿用同一把锁实现（_lock_exclusive，与 runs.jsonl 写手同款）。"""
+    return p.with_name(p.name + ".lock")
+
+
+def _exclusive_plan_lock(p: Path):
+    """持有 plan_ctx 跨进程排他锁的上下文（线程内 _INPROC_LOCK + 跨进程 msvcrt/flock）。"""
+    lock_path = _plan_ctx_lock_path(p)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    flags = os.O_RDWR | os.O_CREAT
+    if hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+    fd = os.open(lock_path, flags, 0o644)
+
+    class _Lock:
+        def __enter__(self_inner):
+            _INPROC_LOCK.acquire()
+            _lock_exclusive(fd)
+            return self_inner
+
+        def __exit__(self_inner, *exc_info):
+            try:
+                _release_lock(fd)
+            except OSError:
+                pass   # 解锁失败不顶掉已落盘结论；锁随 fd 关闭必然释放
+            finally:
+                _INPROC_LOCK.release()
+                os.close(fd)
+            return False
+
+    return _Lock()
+
+
 def save_plan_ctx(path, ctx: dict, keys) -> None:
     """白名单落盘（先 .tmp 再 os.replace 原子换）：keys 列出**且过 safe_persist 标量闸**才写入。
 
-    坏形态逐键拒收 + WARN（B-3.5），其余合法键照常落——一条坏值不得顶掉整批前置结论。"""
+    坏形态逐键拒收 + WARN（B-3.5），其余合法键照常落——一条坏值不得顶掉整批前置结论。
+
+    cc-5 合并语义（wave4 第二批）：**读盘上已有内容并入**，再写回本次 keys 的合法键——
+    旧实现只写本次 ctx 的键、不读盘，两个并行 worker 各自保存不同键时后写者整文件覆盖
+    前者（实测 k_a 静默丢失、后继批次 require_ctx 报缺前置）。合并后：非本次 keys 的
+    既有键原样保留；本次 keys 的键照旧由本次值决定（同键后写赢=与旧行为一致）；读盘
+    也**在锁内**（读-合并-写整段进同一把跨进程锁），并行 worker 不再互相覆盖。
+    读盘坏形态按 `load_plan_ctx` 同口径回落空起点（点名 WARN，不裸崩）。"""
     p = Path(path)
     selected = {}
     if isinstance(ctx, dict):
@@ -780,10 +824,15 @@ def save_plan_ctx(path, ctx: dict, keys) -> None:
             if key in ctx and safe_persist(key, ctx[key]):
                 selected[str(key)] = ctx[key]
     p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_name(p.name + ".tmp")
-    tmp.write_text(json.dumps(selected, ensure_ascii=False, indent=2, default=_safe_default),
-                   encoding="utf-8")
-    os.replace(tmp, p)
+    # 不吞任何异常：OSError（磁盘/权限）照旧传播给调用方（conftest fixture 的
+    # `except OSError` 兜底，绝不顶用例结论）——锁与合并只改并发语义，不改失败面。
+    with _exclusive_plan_lock(p):
+        merged = load_plan_ctx(p)      # 锁内读盘（含 bad-shape 的 WARN 回落）
+        merged.update(selected)        # 本次 keys 的合法值覆盖同名旧值（同键后写赢）
+        tmp = p.with_name(p.name + ".tmp")
+        tmp.write_text(json.dumps(merged, ensure_ascii=False, indent=2, default=_safe_default),
+                       encoding="utf-8")
+        os.replace(tmp, p)
 
 
 def require_ctx(ctx: dict, key: str):

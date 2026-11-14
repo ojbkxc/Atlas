@@ -677,3 +677,31 @@ def test_keepalive_fires_on_plain_401_json():
         api.set_keepalive(lambda: fired.append(1), interval=0)
         api.request("GET", "/whoami")
         assert bool(fired) is expect_fired, f"status={status} fired={fired}"
+
+
+def test_requests_is_lazy_imported_until_api_ability_used():
+    """pf-1 判据：`atlas.abilities` 模块导入**不得**拉进 requests（连带 charset_normalizer
+    /urllib3，冷启动约 350ms）——doctor/compile/gen 这些不发 HTTP 的命令白付这笔税。
+    `CallApi.__init__` 局部 import 是唯一懒加载点（用到才付）。
+
+    两半成对：① 干净子进程里 `import atlas.abilities` 后 requests 不在 sys.modules；
+    ② 真构造 `CallApi` 后 requests 在（懒加载不是「永不加载」——能力本体照常可用）。
+    用子进程而不是本进程 state，是因为本 pytest 进程早已 import 过 requests，
+    进程内断言恒假（恒真/恒假测都是坑）。"""
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+    env = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")}
+    probe = (
+        "import sys\n"
+        "import atlas.abilities\n"
+        "assert 'requests' not in sys.modules, 'abilities 导入不应拉进 requests（pf-1 回归）'\n"
+        "atlas.abilities.CallApi('https://example.invalid')\n"
+        "assert 'requests' in sys.modules, '构造 CallApi 后 requests 必须可用（懒加载≠永不加载）'\n"
+        "print('OK')\n"
+    )
+    proc = subprocess.run([sys.executable, "-c", probe], env=env,
+                          capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == "OK"

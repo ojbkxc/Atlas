@@ -4,6 +4,7 @@ import json
 from collections import Counter
 from pathlib import Path
 
+from .atomic_io import read_text_retry
 from .failures import FLOW_STATUS_TIMEOUT, FailureClass, is_operational
 
 
@@ -50,10 +51,16 @@ def summarize(path: Path) -> dict:
     # ValueError）变裸 traceback，而 docstring 承诺「不静默返回空报告」的残行计数防线
     # 一行没轮到。先严格读保真，撞坏字节回落 errors="replace"：残行 JSON 解析必败，
     # 自然落进既有 skipped 计数分支，合法行照常聚合。
+    # cc-2 读侧配套：runs.jsonl 的写锁区间=文件头 1 字节（与 recorder 同区间=同一把锁），
+    # Windows 上并发读从字节 0 起必撞锁 → PermissionError（POSIX flock 咨询锁不挡读，无此
+    # 问题）。锁持有是「一次整行写的毫秒级瞬态」，read_text_retry 重试即过。判据（与
+    # atomic_io 同一把尺，#92）：**只重试 PermissionError**（瞬态锁冲突）；UnicodeDecodeError
+    # 不重试、直接回落 replace 读入（坏字节是确定事实，重试无用）；其余异常原样传播（点名
+    # 失败，不吞）——不是「加大重试次数」凑过，是「什么可重试、什么必须点名」的判据。
     try:
-        raw = path.read_text(encoding="utf-8")
+        raw = read_text_retry(path, encoding="utf-8")
     except UnicodeDecodeError:
-        raw = path.read_text(encoding="utf-8", errors="replace")
+        raw = read_text_retry(path, encoding="utf-8", errors="replace")
     for line in raw.splitlines():
         if not line.strip():
             continue
@@ -151,9 +158,9 @@ def export_runlog(input_path: Path, output_path: Path) -> Path:
     # CLI 的 rc2 友好口径（只捕 OSError/ValueError）失效变 traceback；
     # replace 读入后残行 JSON 解析必败，自然落进既有「跳过残行」分支。
     try:
-        raw = input_path.read_text(encoding="utf-8")
+        raw = read_text_retry(input_path, encoding="utf-8")
     except UnicodeDecodeError:
-        raw = input_path.read_text(encoding="utf-8", errors="replace")
+        raw = read_text_retry(input_path, encoding="utf-8", errors="replace")
     with output_path.open("w", encoding="utf-8") as target:
         for line in raw.splitlines():
             if not line.strip():

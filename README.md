@@ -321,6 +321,9 @@ atlas report reports/runs.jsonl reports/runlog-steps.jsonl
 # 状态映射：passed→passed；failed→failed+atlas.fail_class；env_blocked/interrupted→skipped+label（不洗绿）；unknown→broken
 atlas allure reports/runs.jsonl --out reports/allure-results
 atlas allure reports/runs.jsonl --serve   # 生成后打印 allure serve 命令（不自行拉起）
+atlas allure reports/runs.jsonl --source-dimension  # historyId 掺来源（run 的 plugin 键，缺省回落当前插件域）
+                                          # 多平台/并发同 env+case 的 run 不再合并成一条趋势线；
+                                          # 默认关=逐字旧口径 sha1(env|case)（开启会断开存量历史趋势线）
 
 # Allure 结果集解析（汇入侧）：分类汇总 + 自愈提案/审核塔草稿
 # 自产结果用 atlas.fail_class label 直接采用；外部 SCS 结果经 classify_text(message+trace) 归类

@@ -150,6 +150,10 @@ def _parser() -> argparse.ArgumentParser:
                                  "仅删 atlas-* 不误删用户附件）")
     allure_cmd.add_argument("--serve", action="store_true",
                             help="生成后打印 allure serve 命令（不自行拉起浏览器/网络）")
+    allure_cmd.add_argument("--source-dimension", action="store_true",
+                            help="historyId 掺来源维度（run 记录的 plugin 键）——多平台/并发 run "
+                                 "不再合并成一条趋势线（cc-6）。口径变更会把存量历史断线，"
+                                 "故默认关（不带本开关 = 逐字旧口径 sha1(env|case)）")
     allure_analyze_cmd = add("allure-analyze",
                              help="解析 Allure 结果集：分类汇总 + 自愈提案/审核塔草稿（Gap5 §4 汇入侧）")
     allure_analyze_cmd.add_argument("results_dir", type=Path,
@@ -607,7 +611,8 @@ def main(argv: list[str] | None = None) -> int:
             # 旧实现不传，消费侧回落 runs_path.parent=reports/ 做基准——截图明明在
             # root/artifacts/snapshots/ 却假报「无法读取」生成占位（假阴性证据）。
             # clean 由 --clean/--no-clean 控制（默认即清，与历史行为逐字节一致）
-            result = emit_allure(runs, out, clean=args.clean, attachments_dir=config.root)
+            result = emit_allure(runs, out, clean=args.clean, attachments_dir=config.root,
+                                 source_dimension=getattr(args, "source_dimension", False))
         except (OSError, ValueError) as exc:
             return _user_error(exc)
         print(json.dumps(result, ensure_ascii=False, indent=2))

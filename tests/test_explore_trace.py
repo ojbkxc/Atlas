@@ -365,3 +365,45 @@ def test_compile_trace_sanitizes_legacy_ticket_url(tmp_path):
     assert "ticket=<redacted>" in raw and "docNo=SO-1" in raw
     assert "/list?page=2" in raw, "路由坐标保留（塔行要能看出在哪个页面）"
     assert summary["steps"] == 1 and summary["selector_candidates"] == 1
+
+
+def test_record_checkpoint_breaks_after_torn_tail_keeps_both_evidence(tmp_path):
+    """rb-2：explore 的 trace 追加此前缺 schedule_runs/experience 都有的**尾行补断行**守卫。
+    复刻上一轮 Ctrl-C 腰斩（UTF-8 完整但 JSON 半行的残尾）后，下一次 checkpoint 被裸 append
+    黏在残行后 → 合成一条坏行 → compile_trace「跳过残行」把**两条证据一起**跳掉。
+    修复后：追加前检尾字节非换行先补断行，新 checkpoint 独占一行必被读回（残行照旧跳过）。
+    负向对照：同一 trace 直接追加（不补断行）确实只读回 1 条——证明守卫有牙而非恒真。"""
+    from atlas.explore import _record_checkpoint
+    from atlas.atomic_io import append_text_locked
+
+    class Page:
+        url = "https://sit/x"
+        def title(self): return "t"
+        def aria_snapshot(self): return '- button "Confirm"\n'
+
+    shots = tmp_path / "shots"; shots.mkdir()
+    # 腰斩残行：UTF-8 完整、JSON 半行、无尾换行（真机 Ctrl-C 的典型形态）
+    torn = json.dumps({"checkpoint": 1, "url": "https://sit/x"})[:20]
+    t_guarded = tmp_path / "guarded.jsonl"
+    t_guarded.write_text(torn, encoding="utf-8")
+    _record_checkpoint(Page(), t_guarded, shots, 2)
+    def _readable(path):
+        out = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                out.append(json.loads(line))     # 与 compile_trace 同口径：残行解析必败→跳过
+            except json.JSONDecodeError:
+                continue
+        return out
+    rows = _readable(t_guarded)
+    assert [r["checkpoint"] for r in rows] == [2], f"新 checkpoint 必须独占一行被读回：{rows}"
+
+    # 负向对照：同样起点，裸追加（不补断行）→ 黏连成一条坏行，checkpoint 2 消失
+    t_naive = tmp_path / "naive.jsonl"
+    t_naive.write_text(torn, encoding="utf-8")
+    append_text_locked(t_naive, json.dumps({"ts": "x", "checkpoint": 2, "url": "https://sit/x",
+                                            "title": "t", "snapshot_file": "f",
+                                            "snapshot_lines": 1}, ensure_ascii=False))
+    assert _readable(t_naive) == [], "不补断行的对照应一条可读记录都不剩（黏连坏行）"

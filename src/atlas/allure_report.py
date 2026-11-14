@@ -9,7 +9,9 @@
 - unknown                       → broken + atlas.fail_class=unknown
 
 读侧复用 reporting 容错纪律（#131/#112）：UnicodeDecodeError → errors="replace"，
-残行/非对象行跳过并计数，绝不因一条坏行整份失败。historyId=sha1(env|case) 稳定
+残行/非对象行跳过并计数，绝不因一条坏行整份失败；cc-2：runs.jsonl 写锁区间=文件头 1
+字节，Windows 并发读撞锁 PermissionError（瞬态）由 read_text_retry 重试（判据见 reporting）。
+historyId=sha1(env|case) 稳定
 （跨运行聚合趋势）；uuid 每份结果独立。clean 只删 Atlas 命名前缀（atlas-*）文件，
 不误删用户附件。附件源缺失/坏字节降级为 text/plain 占位附件，不顶掉整份报告。
 
@@ -26,6 +28,8 @@ import json
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+
+from .atomic_io import read_text_retry
 
 # Allure 结果集目录名（与 `atlas allure` 默认输出、devops-sync 的读取子路径同值）。
 # 单点定义：消费方 import 这里，不各自手抄字面量（#92 改一漏一）。
@@ -322,17 +326,42 @@ def _result_labels(env: str, status: str, extra: dict, *, align: bool) -> list[d
     return labels
 
 
+def _history_id(env: str, case: str, source: str = "") -> str:
+    """historyId 唯一计算点（cc-6）。
+
+    - `source=""`（默认，`emit_allure(source_dimension=False)`）：`sha1(env|case)` **逐字旧口径**
+      ——存量结果集/趋势线零涟漪（#115）。
+    - `source=<平台域>`（`--source-dimension` 开启时）：`sha1(env|source|case)`——同 env+case 的
+      不同平台 run 不再坍缩成一条趋势线（提案实测 40 run → 1 unique historyId 的失真）。
+      **口径变更必然把存量历史与新结果断线**，故为显式 opt-in，不静默改默认（红线：默认路径
+      逐字节不变）。
+    """
+    key = f"{env}|{source}|{case}" if source else f"{env}|{case}"
+    return hashlib.sha1(key.encode("utf-8")).hexdigest()
+
+
+def _run_source(run: dict, fallback: str = "") -> str:
+    """run 的「平台来源」维度（cc-6）：优先取 run 记录里的 `plugin` 键（产物 runlog/外部
+    记录可显式带），缺省回落 `fallback`（= 当前插件域，`emit_allure` 在 opt-in 模式下解析
+    一次）。两者都没有 → 空串 → 旧口径 sha1(env|case)（旧 records 逐字节不变）。"""
+    return str(run.get("plugin", "") or fallback or "")
+
+
 def _run_to_result(run: dict, out_dir: Path, attachments_dir: Path | None,
-                   runs_path: Path, *, align: bool = True) -> dict:
+                   runs_path: Path, *, align: bool = True,
+                   source_dimension: bool = False,
+                   source_fallback: str = "") -> dict:
     """单条 run → 一个 Allure result dict（§3.2）。
 
-    historyId=sha1(env|case) 稳定（同 case 跨运行聚合趋势图）；uuid 每份独立。
+    historyId 走 `_history_id` 唯一计算点（默认 sha1(env|case) 逐字旧口径；cc-6 opt-in
+    模式掺 run 记录的 `plugin` 键，缺省回落 `source_fallback`=当前插件域）；uuid 每份独立。
     align=True（默认）追加 description/titlePath 两个 UI AUTO TEST 恒有的字段（附加，
     不改既有键）；align=False 退回逐字旧形态。
     """
     env = str(run.get("env", ""))
     case = str(run.get("case", "flow"))
-    history_id = hashlib.sha1(f"{env}|{case}".encode("utf-8")).hexdigest()
+    history_id = _history_id(env, case,
+                             _run_source(run, source_fallback) if source_dimension else "")
     uid = uuid.uuid4().hex
     status, details, labels = _status_from_run(run)
     run_start = _parse_iso_ms(run.get("started_at")) or 0
@@ -452,7 +481,8 @@ def write_executor(out_dir: Path, executor: dict) -> Path:
 def emit_allure(runs_path: Path, out_dir: Path, *, clean: bool = True,
                 attachments_dir: Path | None = None, align: bool = True,
                 metadata: bool = True, categories: list | None = None,
-                environment: dict | None = None, executor: dict | None = None) -> dict:
+                environment: dict | None = None, executor: dict | None = None,
+                source_dimension: bool = False) -> dict:
     """把 runs.jsonl 转成 Allure 2.39.0 结果集目录（纯 stdlib）。
 
     - clean=True 时先清空 out_dir 下 Atlas 产的文件（仅删 atlas-* 前缀，不误删用户附件）。
@@ -467,6 +497,10 @@ def emit_allure(runs_path: Path, out_dir: Path, *, clean: bool = True,
       自然来源，不伪造）。三个文件均为 Allure 约定名，均**附加**——不写就不产出，旧目录内容
       除 atlas-* 外零改动。
     - 返回 {"results","steps","attachments","skipped_malformed_lines","out","metadata_files"}。
+    - source_dimension=False（默认）：historyId 逐字旧口径 sha1(env|case)——存量趋势线零涟漪。
+      True：historyId 掺 run 记录 `plugin` 来源维度（cc-6）——同 env+case 的多平台/并发 run
+      不再合并成一条趋势线。**口径变更会把存量历史断线**，故显式 opt-in；CLI 侧对应对称
+      开关 `atlas allure --source-dimension`。
     """
     runs_path = Path(runs_path)
     out_dir = Path(out_dir)
@@ -475,12 +509,25 @@ def emit_allure(runs_path: Path, out_dir: Path, *, clean: bool = True,
         _clean_atlas_files(out_dir)
     # #131：与 reporting/review/experience 同防线——腰斩多字节尾行先严格读保真，
     # 撞坏字节回落 errors="replace"：残行 JSON 解析必败自然落 skipped 计数，合法行照常产出。
+    # cc-2 读侧配套：runs.jsonl 写锁区间=文件头 1 字节，Windows 并发读从字节 0 起撞锁 →
+    # PermissionError（瞬态，锁持有是一次整行写的毫秒级）。read_text_retry 重试即过；判据
+    # 与 atomic_io 同一把尺（#92）：只重试 PermissionError，UnicodeDecodeError 直接回落
+    # replace，其余异常原样传播点名失败——不是加大重试次数凑过。
     try:
-        raw = runs_path.read_text(encoding="utf-8")
+        raw = read_text_retry(runs_path, encoding="utf-8")
     except UnicodeDecodeError:
-        raw = runs_path.read_text(encoding="utf-8", errors="replace")
+        raw = read_text_retry(runs_path, encoding="utf-8", errors="replace")
     results = steps = attachments = skipped = 0
     envs: set[str] = set()
+    # cc-6：opt-in 时解析一次当前插件域作来源回落（run 记录显式 `plugin` 键优先）。
+    # 默认关时该变量恒空串——_run_to_result 走 sha1(env|case) 旧口径，逐字节不变。
+    source_fallback = ""
+    if source_dimension:
+        try:
+            from .plugin_api import resolve_plugin
+            source_fallback = str(getattr(resolve_plugin(), "name", "") or "")
+        except Exception:      # 插件解析失败不得让报告生成整体失败（来源维度是附加信息）
+            source_fallback = ""
     for line in raw.splitlines():
         if not line.strip():
             continue
@@ -494,7 +541,9 @@ def emit_allure(runs_path: Path, out_dir: Path, *, clean: bool = True,
             skipped += 1
             continue
         results += 1
-        result = _run_to_result(run, out_dir, attachments_dir, runs_path, align=align)
+        result = _run_to_result(run, out_dir, attachments_dir, runs_path, align=align,
+                                source_dimension=source_dimension,
+                                source_fallback=source_fallback)
         _write_result(out_dir, result)
         env = str(run.get("env", ""))
         if env:

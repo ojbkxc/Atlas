@@ -992,3 +992,68 @@ def test_apply_selector_column_wins_over_prefilled_role(tmp_path):
     assert result["applied"] == 1
     saved = json.loads((kb.root / "components.json").read_text(encoding="utf-8"))
     assert saved["components"]["c"]["selectors"]["e"] == ".app-main button:has(i)"
+
+
+# ---------- cc-4：并发批准的事务锁（跨进程真并发） ----------
+
+_CC4_CHILD = (
+    "import sys, json\n"
+    "from pathlib import Path\n"
+    "from atlas.knowledge import KnowledgeBase\n"
+    "from atlas.review import ReviewQueue\n"
+    "queue = ReviewQueue(Path(sys.argv[1]))\n"
+    "kb = KnowledgeBase(Path(sys.argv[1]) / 'kb')\n"
+    "try:\n"
+    "    queue.approve_to_pitfall(kb, sys.argv[2], remedy=sys.argv[3])\n"
+    "    print('applied')\n"
+    "except (KeyError, ValueError) as exc:\n"
+    "    print('rejected:', type(exc).__name__)\n"
+)
+
+
+def test_concurrent_approve_produces_one_decision_per_knowledge_row(tmp_path):
+    """cc-4 根因面：两个进程同时批准同一条 pending 草稿——修复前可产出「2 条 approve
+    决策对应 1 行知识」（两次 resolve 都看到 pending、各自写知识、各自翻转队列）。
+    修复后塔锁把「resolve → 写知识 → 翻队列 → 留痕」整条事务串行化：**恰好一个进程成功**，
+    另一个在第一进程之后 resolve 已看到的 approved 行 → 按既有 _is_pending 口径点名拒绝。
+    判据：决策留痕行数 == 知识行数 == 1（不是 2 对 1）。"""
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    _seed(tmp_path)
+    queue = ReviewQueue(tmp_path)
+    pitfall_id = queue.pending(kind="pitfall")[0]["id"]
+    kb_root = tmp_path / "kb"
+    kb_root.mkdir(exist_ok=True)
+    (kb_root / "pitfalls.json").write_text(json.dumps({"pitfalls": []}), encoding="utf-8")
+    env = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")}
+    procs = [subprocess.Popen([sys.executable, "-c", _CC4_CHILD, str(tmp_path), pitfall_id,
+                               f"remedy-{i}"], env=env, stdout=subprocess.PIPE, text=True)
+             for i in range(2)]
+    outputs = [(p.wait(), p.stdout.read().strip()) for p in procs]
+    assert all(rc == 0 for rc, _ in outputs), outputs          # 两侧都是「预期待定」退出
+    applied = [out for _, out in outputs if out == "applied"]
+    assert len(applied) == 1, f"并发批准同一草稿应恰好一个成功，实得 {outputs}"
+    decisions = [json.loads(l) for l in (tmp_path / "review_decisions.jsonl")
+                 .read_text(encoding="utf-8").splitlines() if l.strip()]
+    knowledge_rows = json.loads((tmp_path / "kb" / "pitfalls.json")
+                                .read_text(encoding="utf-8"))["pitfalls"]
+    assert len(decisions) == 1, f"决策留痕应恰 1 行（不是 2 行对 1 行知识）：{decisions}"
+    assert len(knowledge_rows) == 1
+    assert queue.stats()["approved"] == 1                      # 队列态与知识一致
+
+
+def test_same_process_approve_is_reentrant_not_self_deadlock(tmp_path):
+    """cc-4 负向对照面：同进程 `approve` → `approve_to_pitfall` 两层都要锁——塔锁必须
+    同线程重入直通（跨 fd 嵌套取同一路径第二把锁在 Windows 上是阻塞重试 = 自己挂死）。
+    本测跑通即证「重入语义在」；挂死会被 pytest 超时/本文件跑不完暴露。"""
+    _seed(tmp_path)
+    queue = ReviewQueue(tmp_path)
+    kb = _kb(tmp_path)
+    pitfall_id = queue.pending(kind="pitfall")[0]["id"]
+    queue.approve(kb, pitfall_id, remedy="等 .app-main")        # 走 approve 分发（两层锁）
+    assert queue.stats()["approved"] == 1
+    assert json.loads((tmp_path / "kb" / "pitfalls.json")
+                      .read_text(encoding="utf-8"))["pitfalls"]

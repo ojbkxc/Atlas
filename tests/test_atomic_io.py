@@ -509,3 +509,34 @@ def test_read_text_retry_reraises_after_exhaustion(tmp_path, monkeypatch):
     with pytest.raises(PermissionError):
         aio.read_text_retry(tmp_path / "x")
 
+
+
+# ===================== cc-3 跨进程同一 id 登记（提案实测面） =====================
+
+_SAME_ID_ONE = (
+    "import sys\n"
+    "from pathlib import Path\n"
+    "from atlas.experience import ExperienceJournal\n"
+    "j = ExperienceJournal(Path(sys.argv[1]))\n"
+    "for _ in range(int(sys.argv[2])):\n"
+    "    j.append_draft({'id': 'same', 'status': 'pending_review', 'task': 't',\n"
+    "                    'exception_type': '', 'failure_class': 'x',\n"
+    "                    'pitfall_id': '', 'kind': 'pitfall'})\n"
+)
+
+
+def test_append_draft_same_id_across_processes_seen_is_exact(tmp_path):
+    """cc-3 提案实测面（8 进程 × 5 次同 id 并发登记 → 修复前 seen=31/40，24 次丢失更新）。
+    修复后读-改-写整体在 `update_text_locked` 的同一把**跨进程**文件锁内：seen 必须精确
+    等于 40，行数恰 1。判据同源 `test_experience_append_draft_same_id_merge_under_lock`
+    （线程面），本测补跨进程面——两者分别覆盖提案的两种并发形态。"""
+    path_dir = tmp_path / "exp"
+    env = {**os.environ, "PYTHONPATH": str(_SRC)}
+    procs = [subprocess.Popen([sys.executable, "-c", _SAME_ID_ONE, str(path_dir), "5"], env=env)
+             for _ in range(8)]
+    for proc in procs:
+        proc.wait()
+    assert all(proc.returncode == 0 for proc in procs), [p.returncode for p in procs]
+    rows = [json.loads(line) for line in _lines(path_dir / "experience_drafts.jsonl")]
+    assert len(rows) == 1, f"同 id 并发登记只应一条行，实得 {len(rows)}"
+    assert rows[0]["seen"] == 40, f"seen 应为 40（8×5 无丢更新），实得 {rows[0].get('seen')}"

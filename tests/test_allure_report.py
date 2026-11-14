@@ -838,3 +838,114 @@ def test_write_categories_and_executor_standalone(tmp_path):
     assert p1.name == "categories.json" and p1.exists()
     assert p2.name == "executor.json" and json.loads(p2.read_text(encoding="utf-8"))["name"] == "Atlas"
 
+
+def test_emit_allure_retries_transient_lock_permission_error(tmp_path, monkeypatch):
+    """cc-2 判据（allure 读路径）：runs.jsonl 写锁区间=文件头 1 字节，Windows 并发读撞锁
+    → PermissionError（瞬态）。emit_allure 必须重试即过——只重试 PermissionError。"""
+    from pathlib import Path
+    from atlas import atomic_io as aio
+
+    runs = tmp_path / "runs.jsonl"
+    runs.write_text(json.dumps({"run_id": "r1", "case": "c", "env": "sit",
+                                "status": "passed", "steps": []}) + "\n", encoding="utf-8")
+    out = tmp_path / "out"
+    monkeypatch.setattr(aio, "_READ_RETRY_DELAY_S", 0.0)
+    real_read = Path.read_text
+    calls = {"n": 0}
+
+    def flaky(self, *a, **k):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise PermissionError(13, "locked")
+        return real_read(self, *a, **k)
+
+    monkeypatch.setattr(Path, "read_text", flaky)
+    emit_allure(runs, out)
+    assert calls["n"] == 3, "PermissionError 应被重试 3 次（前两次瞬态、第三次成功）"
+    assert any(p.name.endswith("-result.json") for p in out.iterdir())
+
+
+def test_emit_allure_does_not_retry_non_permission_error(tmp_path, monkeypatch):
+    """cc-2 负向对照：非 PermissionError 原样传播点名失败，绝不重试吞掉。"""
+    from pathlib import Path
+
+    runs = tmp_path / "runs.jsonl"
+    runs.write_text('{"run_id":"r1","case":"c","env":"s","steps":[]}\n', encoding="utf-8")
+    out = tmp_path / "out"
+
+    def boom(self, *a, **k):
+        raise ValueError("not a lock issue")
+
+    monkeypatch.setattr(Path, "read_text", boom)
+    with pytest.raises(ValueError):
+        emit_allure(runs, out)
+
+
+
+# ---- cc-6：historyId 来源维度（opt-in；默认逐字旧口径）----
+
+def test_history_id_default_ignores_plugin_key(tmp_path):
+    """cc-6 默认关：run 记录带 `plugin` 键也不得改变 historyId——sha1(env|case) 逐字旧口径
+    （存量趋势线零涟漪，#115）。负向对照在上一条 opt-in 测里（开启后必须变）。"""
+    runs = tmp_path / "runs.jsonl"
+    runs.write_text(json.dumps({"run_id": "r1", "case": "tcX", "env": "sit",
+                                "plugin": "iservice", "status": "passed", "steps": []}) + "\n",
+                    encoding="utf-8")
+    emit_allure(runs, tmp_path / "out")
+    result = _read_results(tmp_path / "out")[0]
+    assert result["historyId"] == hashlib.sha1(b"sit|tcX").hexdigest()
+
+
+def test_history_id_source_dimension_separates_platforms(tmp_path):
+    """cc-6 判据：提案实测 40 条同 env+case 的 run → 1 个 unique historyId（失真）。
+    opt-in `--source-dimension` 后不同 `plugin` 来源的 run 必须各成一条趋势线；
+    同来源的 run 仍共享 historyId（趋势线在平台内部仍连得上——不是把所有线都打散）。"""
+    runs = tmp_path / "runs.jsonl"
+    rows = [{"run_id": f"r{i}", "case": "smoke", "env": "sit", "plugin": plugin,
+             "status": "passed", "steps": []}
+            for i, plugin in enumerate(["iservice", "iservice", "other"])]
+    runs.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+    emit_allure(runs, tmp_path / "out", source_dimension=True)
+    results = _read_results(tmp_path / "out")
+    ids = sorted(r["historyId"] for r in results)
+    assert len(set(ids)) == 2, f"两个来源应各一条趋势线，实得 {len(set(ids))} 条：{ids}"
+    expected_iservice = hashlib.sha1(b"sit|iservice|smoke").hexdigest()
+    expected_other = hashlib.sha1(b"sit|other|smoke").hexdigest()
+    assert set(ids) == {expected_iservice, expected_other}, ids
+
+
+def test_history_id_source_dimension_falls_back_to_current_plugin(tmp_path):
+    """cc-6：run 记录无 `plugin` 键时，来源回落**当前插件域**（resolve_plugin().name）——
+    旧 runs.jsonl（无来源键）在 opt-in 下也能按当前平台归线，而不是坍缩回默认环境维度。"""
+    runs = tmp_path / "runs.jsonl"
+    runs.write_text(json.dumps({"run_id": "r1", "case": "smoke", "env": "sit",
+                                "status": "passed", "steps": []}) + "\n", encoding="utf-8")
+    emit_allure(runs, tmp_path / "out", source_dimension=True)
+    result = _read_results(tmp_path / "out")[0]
+    from atlas.plugin_api import resolve_plugin
+    domain = str(getattr(resolve_plugin(), "name", "") or "")
+    assert result["historyId"] == hashlib.sha1(f"sit|{domain}|smoke".encode("utf-8")).hexdigest()
+    assert result["historyId"] != hashlib.sha1(b"sit|smoke").hexdigest()
+
+
+def test_cli_source_dimension_flag_wires_through(tmp_path):
+    """cc-6 CLI 接线：`atlas allure --source-dimension` 真的把参数传到 emit_allure（不只解析
+    旗标）；不带时结果与旧口径逐字节一致。两半成对，防「旗标解析了但没人消费」的断链。"""
+    from atlas.cli import main
+    runs = tmp_path / "runs.jsonl"
+    runs.write_text(json.dumps({"run_id": "r1", "case": "smoke", "env": "sit",
+                                "plugin": "iservice", "status": "passed", "steps": []}) + "\n",
+                    encoding="utf-8")
+    out_default = tmp_path / "out_default"
+    rc = main(["--root", str(tmp_path), "allure", str(runs), "--out", str(out_default)])
+    assert rc == 0
+    default_id = _read_results(out_default)[0]["historyId"]
+    assert default_id == hashlib.sha1(b"sit|smoke").hexdigest()     # 默认旧口径
+
+    out_opt = tmp_path / "out_opt"
+    rc = main(["--root", str(tmp_path), "allure", str(runs), "--out", str(out_opt),
+               "--source-dimension"])
+    assert rc == 0
+    opt_id = _read_results(out_opt)[0]["historyId"]
+    assert opt_id == hashlib.sha1(b"sit|iservice|smoke").hexdigest()  # 旗标真被消费
+    assert opt_id != default_id

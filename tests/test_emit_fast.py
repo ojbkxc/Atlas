@@ -2006,3 +2006,46 @@ def test_conftest_browser_launch_wiring():
     assert "missing_browser_hint(exc, browser_ch)" in CONFTEST_SRC
     assert (CONFTEST_SRC.index("browser_channel(env_snapshot)")
             < CONFTEST_SRC.index("sync_playwright().start()"))   # 判据先于驱动 start
+
+
+# ---------------------------------------------------------------------------
+# cc-5：plan_ctx 并发保存的合并语义（跨进程真并发）
+# ---------------------------------------------------------------------------
+
+_CC5_CHILD = (
+    "import sys\n"
+    "from _atlas_fast import save_plan_ctx\n"
+    "save_plan_ctx(sys.argv[1], {sys.argv[2]: sys.argv[3]}, [sys.argv[2]])\n"
+)
+
+
+def test_save_plan_ctx_merges_concurrent_distinct_keys(tmp_path, monkeypatch, request):
+    """cc-5 根因面：两个进程并发保存**不同**键——旧实现只写自身 keys、不读盘，后写者
+    整文件覆盖前者（提案实测 k_a 静默丢失，后继批次 require_ctx 报缺前置）。
+    修复后 save_plan_ctx 锁内读盘合并：两键都在。
+
+    同时是**合并语义**判据而非仅并发：单进程两次保存不同 keys 也必须两键都在
+    （旧实现第二次会抹掉第一次的键——这是行为变更点，正面向用户可见）。"""
+    import os
+    import subprocess
+    import sys
+    support, _ = _load_artifact(tmp_path, monkeypatch, request)
+    p = tmp_path / "reports" / "plan_ctx.json"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    out = tmp_path / "artifact"
+    env = {**os.environ, "PYTHONPATH": str(out) + os.pathsep + os.environ.get("PYTHONPATH", "")}
+    procs = [subprocess.Popen([sys.executable, "-c", _CC5_CHILD, str(p), key, f"v-{key}"], env=env)
+             for key in ("k_a", "k_b")]
+    for proc in procs:
+        assert proc.wait() == 0
+    merged = support.load_plan_ctx(p)
+    assert merged.get("k_a") == "v-k_a", f"并发保存的另一个键被覆盖丢失：{merged}"
+    assert merged.get("k_b") == "v-k_b"
+    # 单进程顺序面：第二次保存不得抹掉第一次的键（旧实现的覆盖形态）
+    support.save_plan_ctx(p, {"k_c": "v-c"}, ["k_c"])
+    after = support.load_plan_ctx(p)
+    assert {"k_a", "k_b", "k_c"} <= set(after), f"顺序保存也不同程度丢键：{after}"
+    # 同键语义零漂移：后写赢
+    support.save_plan_ctx(p, {"k_c": "v-c2"}, ["k_c"])
+    assert support.load_plan_ctx(p)["k_c"] == "v-c2"
+    assert not list(p.parent.glob("*.tmp"))            # 原子替换无残留

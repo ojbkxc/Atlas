@@ -41,7 +41,9 @@ from __future__ import annotations
 import os
 import threading
 import time
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
+from typing import Iterable, Iterator
 
 # 进程内串行：先经进程内 Lock 串行、再进跨进程文件锁。真机实测（verify3 变异）：
 # 同进程不同 fd 的 msvcrt.locking 并发是**阻塞重试**（不是直接 EDEADLK），但重试粒度粗——
@@ -49,7 +51,13 @@ from pathlib import Path
 # 进程内锁把同进程竞争挡在文件锁之外（快且确定），跨进程互斥仍由文件锁给。
 # 判据：tests/test_atomic_io.py::test_inproc_lock_serializes_threads_before_file_lock
 # （移除 _INPROC_LOCK 即红）。
-_INPROC_LOCK = threading.Lock()
+#
+# **必须是 RLock 不能是 Lock**：`exclusive_file_lock`（cc-4 事务锁）在持锁期间会调用
+# `append_text_locked`/`update_text_locked`（如审核塔「持塔锁 → 写决策留痕」）——同一线程
+# 二次进入。普通 `threading.Lock` 会在这种嵌套下**自己死锁**；RLock 允许同线程重入、
+# 跨线程仍严格串行（形态判据测跨线程并发进入数恒 1，重入不破坏它）。多路径 `exclusive_path_locks`
+# 同线程依次取多把锁也依赖这一点。
+_INPROC_LOCK = threading.RLock()
 
 try:
     import msvcrt
@@ -69,6 +77,60 @@ except ImportError:   # 非 Windows
 
     def _release_lock(fd: int) -> None:
         fcntl.flock(fd, fcntl.LOCK_UN)
+
+
+@contextmanager
+def exclusive_file_lock(path: Path) -> Iterator[None]:
+    """**按文件路径取同一把排他锁**（不读写该文件内容的调用方用）。
+
+    与 `append_line_locked`/`update_text_locked` **同锁区间同实现**（文件头 1 字节、
+    进程内 `_INPROC_LOCK` + 跨进程 msvcrt/flock）——因此它与这两个原语对**同一目标文件**
+    完全互斥，可直接给「读-判断-写别处」这类跨文件事务当序列化闸（如 review 的
+    「解析 pending 草稿 → 写知识库 → 改队列状态」三步：队列状态的改写本身走
+    `atomic_io`，但**知识库写回与 resolve 之间**没有任何锁，两个进程可同时 resolve 到
+    同一条 pending 各写各的知识）。
+
+    **与 `update_text_locked` 的取舍**：后者是「锁内读-改-写**同一文件**」，适用面更窄却
+    更强；本函数是「只借这把锁保护一段**跨多个文件**的事务」。两者共用同一把锁（同区间），
+    所以「持 `exclusive_file_lock(p)` 期间调用 `update_text_locked(p)`」会**同 fd 重入
+    EDEADLK**——事务体内不得再对同一路径调其它锁原语（单锁无嵌套是纪律，非缺陷）。
+
+    Windows 上该锁会挡住并发读（见 `read_text_retry` 注释）——只在「已确定要独占该文件
+    那一瞬间」持有，持有期短（一次知识写回的毫秒级）。
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    flags = os.O_RDWR | os.O_CREAT
+    if hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+    fd = os.open(path, flags, 0o644)
+    try:
+        with _INPROC_LOCK:
+            _lock_exclusive(fd)
+            try:
+                yield
+            finally:
+                try:
+                    _release_lock(fd)
+                except OSError:
+                    pass   # 解锁失败不顶掉已落盘的证据；锁随 fd 关闭必然释放
+    finally:
+        os.close(fd)
+
+
+@contextmanager
+def exclusive_path_locks(paths: Iterable[Path]) -> Iterator[None]:
+    """按**归一路径排序**依次取多把 `exclusive_file_lock`——多路径事务的死锁规避。
+
+    两个进程若按不同次序取同一组锁就必然有死锁窗口（经典锁序问题）；固定「路径字符串
+    升序」次序使任意双方取锁次序一致。同路径重复只取一次。**空集合直接放行**（无锁可持
+    时保持旧行为零涟漪）；锁在异常时由各 `exclusive_file_lock` 的 finally 逆序释放。
+    """
+    unique = sorted({str(Path(p)) for p in paths})
+    with ExitStack() as stack:
+        for item in unique:
+            stack.enter_context(exclusive_file_lock(Path(item)))
+        yield
 
 
 def append_line_locked(path: Path, payload: bytes) -> None:
