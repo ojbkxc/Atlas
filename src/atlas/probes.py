@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 from .config import AtlasConfig, PROD_WRITE_WARNING
 from . import delivery
+from .atomic_io import atomic_write_text
 from .failures import EnvBlocked
 
 @dataclass
@@ -125,9 +126,10 @@ class CreateQuota:
                 if isinstance(parsed, dict):
                     records.append(parsed)
         records.extend(self.created)
-        with path.open("w", encoding="utf-8") as stream:
-            for item in records:
-                stream.write(json.dumps(item, ensure_ascii=False) + "\n")
+        # wave4 rb-3：open("w") 截断重写非原子——写中崩把本次新造单号随崩溃一起丢
+        #（#86 回收闭环同族：单据已真实产生却再无人知道单号）。改原子写（tmp+os.replace）。
+        atomic_write_text(path, "".join(json.dumps(item, ensure_ascii=False) + "\n"
+                                        for item in records))
 
 class DataProbe(ABC):
     """每种业务对象一个探针；find 是零副作用的 API 查询。"""

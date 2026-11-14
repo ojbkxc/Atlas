@@ -26,6 +26,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from ..atomic_io import append_text_locked, read_text_retry
 from .constants import (DEFAULT_MAX_DURATION_MIN, MAX_CONSECUTIVE_FAILURES,
                         SCHEMA_VERSION)
 from .cron_parse import load_tz, min_gap_ok, parse_expr
@@ -400,12 +401,10 @@ def append_run(path: Path, line: dict) -> None:
         with path.open("rb") as stream:
             stream.seek(-1, os.SEEK_END)
             needs_break = stream.read(1) not in (b"\n", b"\r")
-    with path.open("a", encoding="utf-8") as stream:
-        if needs_break:
-            stream.write("\n")
-        stream.write(json.dumps(line, ensure_ascii=False, sort_keys=True) + "\n")
-        stream.flush()
-        os.fsync(stream.fileno())
+    # wave4 cc-1：索引追加裸 open("a") 并发丢行（本机实测 17%）——统一走原子追加器
+    # （换行 os.linesep 保旧字节形态；leading_break 承接 X5 尾行补断行守卫）。
+    append_text_locked(path, json.dumps(line, ensure_ascii=False, sort_keys=True),
+                       leading_break=needs_break)
 
 
 def read_runs(path: Path) -> list:
@@ -413,10 +412,12 @@ def read_runs(path: Path) -> list:
     path = Path(path)
     if not path.exists():
         return []
+    # cc-1 读侧配套：索引由 append_text_locked 加锁写，Windows 并发读撞锁报
+    # PermissionError（瞬态）——read_text_retry 重试即过。
     try:
-        raw = path.read_text(encoding="utf-8")
+        raw = read_text_retry(path, encoding="utf-8")
     except UnicodeDecodeError:
-        raw = path.read_text(encoding="utf-8", errors="replace")
+        raw = read_text_retry(path, encoding="utf-8", errors="replace")
     rows = []
     for line in raw.splitlines():
         if not line.strip():

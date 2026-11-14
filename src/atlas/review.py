@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 
 from . import locators
+from .atomic_io import append_text_locked, read_text_retry
 
 QUEUE_FILE = "experience_drafts.jsonl"
 DECISIONS_FILE = "review_decisions.jsonl"
@@ -98,10 +99,12 @@ class ReviewQueue:
         # #112：与 ExperienceJournal._read_queue 同族——尾行被中断腰斩出非法 UTF-8 时
         # 裸 UnicodeDecodeError 让整塔读崩，好草稿全部不可见（#109 trace 本体同口径：
         # 坏字节 replace 读入，残行 JSON 解析必败自然跳过）。两处读侧必须同防线。
+        # cc-1 读侧配套：队列由 append_text_locked 加锁写，Windows 并发读撞锁报
+        # PermissionError（瞬态）——read_text_retry 重试即过。
         try:
-            raw = self.path.read_text(encoding="utf-8")
+            raw = read_text_retry(self.path, encoding="utf-8")
         except UnicodeDecodeError:
-            raw = self.path.read_text(encoding="utf-8", errors="replace")
+            raw = read_text_retry(self.path, encoding="utf-8", errors="replace")
         rows = []
         for line in raw.splitlines():
             if line.strip():
@@ -166,8 +169,9 @@ class ReviewQueue:
         # 非 OSError 是真 bug 不静默吞；内存与业务状态不因此回滚。
         try:
             self.dir.mkdir(parents=True, exist_ok=True)
-            with (self.dir / DECISIONS_FILE).open("a", encoding="utf-8") as stream:
-                stream.write(json.dumps(decision, ensure_ascii=False) + "\n")
+            # wave4 cc-1/rb-7：决策留痕裸 open("a") 并发丢行（静默）——统一走原子追加器。
+            append_text_locked(self.dir / DECISIONS_FILE,
+                               json.dumps(decision, ensure_ascii=False))
         except OSError:
             pass
 

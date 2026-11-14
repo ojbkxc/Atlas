@@ -264,7 +264,17 @@ class FlowCompiler:
         self._cache: dict[str, tuple[int, list[Task]]] = {}
 
     def load(self, path: str | Path) -> dict:
-        text = Path(path).read_text(encoding="utf-8")
+        try:
+            text = Path(path).read_text(encoding="utf-8")
+        except UnicodeDecodeError as exc:
+            # wave4 rb-5：#112 同族——flow.yaml 腰斩（写一半被中断）留非法 UTF-8 尾字节时，
+            # 旧实现 read_text 裸 UnicodeDecodeError 直冒（cli 捕到它⊂ValueError→rc2，但消息
+            # 是原始解码错、不点名文件）。与 JSONL 日志侧「replace 回落」不同：日志对付
+            # 「部分证据仍有用」，flow 是**要执行的真相**，悄悄 replace 修好=跑一份被篡改的
+            # 流程，比报错更坏（红线 #12 不猜）。点名文件与字节位，好文件逐字节不变。
+            raise ValueError(
+                f"flow 文件 {path} 读取失败：非法 UTF-8 字节（文件可能被截断/写坏），"
+                f"位置 byte {exc.start}。请检查文件完整性后重试") from exc
         raw = self._parse(text, str(path))
         source_name = str(path)
         # 骨架实例化：`{template, slots}` → 文本级 {{slot}} 替换 → 替换后的文本才是 flow

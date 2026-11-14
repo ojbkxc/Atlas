@@ -159,6 +159,24 @@ PYTHONPATH=src python -m atlas doctor
   测侧名单唯一声明位是 `tests/test_emit_fast.py` 的 `_CREDENTIAL_TABLE_NAMES`，其余测从其派生；
   产物侧判据（禁词实参形态、锁步表、`ENV_KEYS` 自证、PROD 前缀与 `config.py` 源文本比对）一律 import
   `emit_fast` 符号引用。产物不 import atlas，等值性靠锁步测钉，不靠共用实现。
+- **落盘写入的原子/加锁实现单点在 `src/atlas/atomic_io.py`**（wave4，cc-1 + rb-1/3/8 + w4-3）：
+  `append_line_locked`（recorder 原实测安全追加器——**单次原子写是分水岭、锁是纵深防御**：
+  裸 CRT 文本模式 `open("a").write()` 丢 36%、`os.open(O_APPEND)+os.write` 单次原子写零丢失；
+  锁区间=文件头部 1 字节，防读-改-写交错，非逐条原子性。挪到此处供追加路径复用）/
+  `append_text_locked`（单行文本追加，换行 `os.linesep` 保旧字节形态）/
+  `atomic_write_text`（tmp+fsync+os.replace 整份原子写，失败清理 tmp）/ `read_text_retry`（读侧容忍
+  Windows 字节区间锁造成的瞬态 `PermissionError`）/ `update_text_locked`（**锁内读-改-写**——
+  同一把锁内读全文→`transform`→写回，读经同一个 fd、与写同一临界区，修「锁外读撞写锁丢行」
+  真竞态；纯追加只写尾段、否则原地覆写）。消费方（experience/agent/review/
+  scheduling.state/explore 的追加路径、knowledge 四处唯一知识写路径、probes 回收清单、
+  session storage_state、experience._atomic_write、experience.append_draft 的读-改-写）只许调本模块，**不得各写一份 `open("a")`
+  逐行追加或 `write_text` 直写**（#92 收敛先例：本波把此前各自写 tmp+replace 的四处
+  （`devops_sync`/`emit_fast`/`lease`/`state`）统一到此模块；逐行无锁 `open("a")` 在 Windows
+  实测丢 4.6%～19% 且完全静默，`write_text` 写中崩把已批准资产截断且命令仍 rc0 假成功）。字节形态：追加器
+  按调用方给的字节原样写（`O_BINARY` 关 CRT 换行翻译），runs.jsonl 传裸 `\n`（recorder 既有
+  LF 约定），其余文本路径经 `os.linesep` 与旧文本模式写逐字节一致；`atomic_write_text` 同
+  `write_text` 换行翻译。产物侧 `legacy_fast.py` 是 **vendored 零-atlas 垫片**（结构上不 import
+  atlas），其追加不接本模块。
 - **AI 自主探索闭环（gap14）的判据面同样单点收敛**：`autopilot` 的 assert 判据失败抛 `AssertionError`、
   归类走 `failures.classify_failure`（经 `recorder.step` 单点继承），本模块零判词；定位全走 `locators.resolve`、
   接口响应路径打点走 `tasks._dig`、坑点提炼的形状闸复用 `review.verification_problems`、匹配门复用

@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 from .failures import FailureClass, classify_failure, exception_text
 from . import locators
+from .atomic_io import atomic_write_text
 
 def _scope_list(row: dict) -> list:
     """坑点 scope 的单一判据（#127 面2）：键存在值为 null 时 `row.get("scope", [])`
@@ -230,7 +231,9 @@ class KnowledgeBase:
             raise PermissionError("知识库写回需要人工审核；请传 approved=True 明确批准")
         path = self._writable_root() / f"{name}.json"
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({name: records}, ensure_ascii=False, indent=2), encoding="utf-8")
+        # wave4 rb-1：write_text 非原子——写中崩把已批准知识截断且命令仍 rc0（假成功），
+        # 下次 load 静默回退包内虚构默认 = 资产无声消失。改原子写（tmp+fsync+os.replace）。
+        atomic_write_text(path, json.dumps({name: records}, ensure_ascii=False, indent=2))
         return path
 
     def save_component_selector(self, component: str, element: str, selector, *,
@@ -276,8 +279,7 @@ class KnowledgeBase:
             spec["notes"] = note
         path = self._writable_root() / "components.json"
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"components": components}, ensure_ascii=False, indent=2),
-                        encoding="utf-8")
+        atomic_write_text(path, json.dumps({"components": components}, ensure_ascii=False, indent=2))
         return {"component": component, "element": element, "selector": stored,
                 "status": "approved", "source": source, "overwritten": overwritten}
 
@@ -300,8 +302,7 @@ class KnowledgeBase:
         bu_map[key] = value
         path = self._writable_root() / "bu_overlays.json"
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"overlays": overlays}, ensure_ascii=False, indent=2),
-                        encoding="utf-8")
+        atomic_write_text(path, json.dumps({"overlays": overlays}, ensure_ascii=False, indent=2))
         return {"bu": bu, "key": key, "value": value, "status": "approved",
                 "source": source, "overwritten": existed}
 
@@ -352,8 +353,7 @@ class KnowledgeBase:
         tasks.append(record)
         path = self._writable_root() / "task_library.json"
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"tasks": tasks}, ensure_ascii=False, indent=2),
-                        encoding="utf-8")
+        atomic_write_text(path, json.dumps({"tasks": tasks}, ensure_ascii=False, indent=2))
         return {"id": record["id"], "name": name, "steps": len(steps),
                 "status": "approved", "source": source, "overwritten": overwritten}
 

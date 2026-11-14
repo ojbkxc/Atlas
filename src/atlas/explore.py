@@ -43,6 +43,7 @@ import sys
 import time
 from pathlib import Path
 
+from .atomic_io import append_text_locked
 from .credential_gate import sanitize_url
 
 # 可操作元素才值得成为选择器候选：其余（generic/text/grid）噪声大
@@ -104,8 +105,9 @@ def _record_checkpoint(page, trace: Path, shots: Path, index: int) -> None:
            "url": sanitize_url(page.url), "title": page.title(),
            "snapshot_file": str(shots / snap_name),
            "snapshot_lines": len(snapshot.splitlines()) if snapshot else 0}
-    with trace.open("a", encoding="utf-8") as stream:
-        stream.write(json.dumps(row, ensure_ascii=False) + "\n")
+    # wave4 cc-1：trace 追加裸 open("a") 无锁——统一走 atomic_io 唯一加锁追加器
+    # （换行 os.linesep 保旧字节形态）。
+    append_text_locked(trace, json.dumps(row, ensure_ascii=False))
     # 纯 ASCII 标记：GBK 控制台写 "✓" 会 UnicodeEncodeError 崩掉实会话
     #（真机冒烟抓到；中文日志 GBK 可编码，不受影响）
     print(f"  OK checkpoint #{index} -> {shots / snap_name}", flush=True)

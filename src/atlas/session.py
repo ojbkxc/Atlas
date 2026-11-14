@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from .actor import Actor
 from .abilities import BrowseTheWeb, CallApi
+from .atomic_io import atomic_write_text
 from .config import AtlasConfig
 
 class BrowserSession:
@@ -87,9 +88,10 @@ class BrowserSession:
             return None
         if self.config.mode == "debug" and path is not None:
             try:
-                path.with_suffix(".json").write_text(json.dumps(
+                # wave4 rb-8：storage_state 侧车直写非原子——写中崩留半残文件。改原子写。
+                atomic_write_text(path.with_suffix(".json"), json.dumps(
                     {"step": name, "url": self.page.url, "state": state or {}},
-                    ensure_ascii=False, default=str, indent=2), encoding="utf-8")
+                    ensure_ascii=False, default=str, indent=2))
             except Exception:
                 pass  # PNG 已落盘，侧车状态失败不影响取证主体
         return path

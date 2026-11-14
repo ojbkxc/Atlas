@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
+from .atomic_io import append_text_locked
 from .composition import compose_for_goal
 from .core import Task
 from .failures import AwaitingHuman, CONTROL_FLOW, DeliveryUncertain, exception_message
@@ -175,8 +176,9 @@ class AtlasAgent:
         # 只兜 OSError（盘/路径类故障）；非 OSError 是真 bug 不静默吞。
         try:
             self.journal.parent.mkdir(parents=True, exist_ok=True)
-            with self.journal.open("a", encoding="utf-8") as stream:
-                stream.write(json.dumps(decision.as_dict(), ensure_ascii=False) + "\n")
+            # wave4 cc-1/rb-7：决策留痕是审计轨迹，裸 open("a") 并发丢行（静默）——
+            # 统一走 atomic_io 唯一加锁追加器（换行 os.linesep 保旧字节形态）。
+            append_text_locked(self.journal, json.dumps(decision.as_dict(), ensure_ascii=False))
         except OSError:
             pass
 

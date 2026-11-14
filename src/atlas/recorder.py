@@ -2,7 +2,6 @@
 from __future__ import annotations
 import json
 import os
-import threading
 import time
 import uuid
 from contextlib import contextmanager
@@ -13,61 +12,10 @@ from .failures import classify_failure
 
 # ── 进程安全（并发执行层短板 #2）─────────────────────────────────────────────
 # runs.jsonl 是行级 append，多进程并发跑 `atlas run` 时裸 open("a") 会交错出残行。
-# 唯一写点 close() 改为「排他文件锁内整行一次写入」，纯 stdlib 混合锁：
-# - 进程内：threading.Lock——Windows 的 msvcrt.locking 字节区间锁**对同进程重入/并发
-#   直接 EDEADLK**（真机实测），文件锁不解决线程面；线程间串行后再进文件锁。
-# - 跨进程：
-#   * Windows: msvcrt.locking（LK_LOCK 每秒重试、约 10s 后抛 OSError——写失败保持
-#     「可重试不谎报」的既有契约；绝不无锁降级写入，一条交错残行毁掉的是整份审计链）；
-#   * POSIX: fcntl.flock 阻塞排他锁。
-# 锁区间固定为**文件头部 1 字节**：互斥要求所有写入方用同一绝对区间；O_APPEND 下写
-# 恒落 EOF（Windows CRT 是「每次写前移到 EOF」，POSIX 由内核保证），锁区间与写位置
-# 互不干扰。锁加在目标文件自身，不产生 .lock 副产品。读侧（summary/allure/reporting）
-# 不取锁——整行在锁内单次写完，读侧最坏只见「新行还没出现」，且本就有残行容错。
-_INPROC_LOCK = threading.Lock()
-
-try:
-    import msvcrt
-
-    def _lock_exclusive(fd: int) -> None:
-        os.lseek(fd, 0, os.SEEK_SET)
-        msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
-
-    def _release_lock(fd: int) -> None:
-        os.lseek(fd, 0, os.SEEK_SET)
-        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-except ImportError:   # 非 Windows
-    import fcntl
-
-    def _lock_exclusive(fd: int) -> None:
-        fcntl.flock(fd, fcntl.LOCK_EX)
-
-    def _release_lock(fd: int) -> None:
-        fcntl.flock(fd, fcntl.LOCK_UN)
-
-
-def _append_line_locked(path: Path, payload: bytes) -> None:
-    """进程内串行 + 跨进程排他锁，锁内整行一次追加；O_APPEND 保证写位置恒在 EOF。"""
-    flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
-    if hasattr(os, "O_BINARY"):
-        # Windows：关掉 CRT 文本模式的 \n→\r\n 翻译，JSONL 字节形态跨平台一致。
-        flags |= os.O_BINARY
-    fd = os.open(path, flags, 0o644)
-    try:
-        with _INPROC_LOCK:
-            _lock_exclusive(fd)
-            try:
-                view = memoryview(payload)
-                while view:                 # os.write 不承诺一次写全，短写循环补齐（仍在锁内）
-                    view = view[os.write(fd, view):]
-                os.fsync(fd)
-            finally:
-                try:
-                    _release_lock(fd)
-                except OSError:
-                    pass   # 解锁失败不顶掉已落盘的证据；锁随 fd 关闭必然释放
-    finally:
-        os.close(fd)
+# 唯一写点 close() 改为「排他文件锁内整行一次写入」——实现已提到 `atlas.atomic_io`
+# （wave4 cc-1：六条无锁追加路径统一复用同一把锁，一处实现不留第二把尺；runs.jsonl 传裸
+# `\n` 保持 recorder 既有 LF 约定）。import 别名保持本模块调用点不变。
+from .atomic_io import append_line_locked as _append_line_locked
 
 class RunRecorder:
     def __init__(self, case: str, env: str, path: Path, mode: str = "run",

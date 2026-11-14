@@ -5,6 +5,7 @@ import json
 import os
 import time
 from pathlib import Path
+from .atomic_io import atomic_write_text, read_text_retry, update_text_locked
 from .failures import classify_failure, exception_text
 
 
@@ -76,9 +77,30 @@ class ExperienceJournal:
         # 审核状态改写（跨决定历史污染）。现同 id 命中一律只增 seen、刷新 evidence，
         # 绝不追加第二条；决定态行的 status 不回翻（批准/驳回本身是终态记录，
         # seen/evidence 是聚合计数与最新证据，不伪装成新的待审素材）。
-        existing = self._read_queue(path)
+        #
+        # wave4 w4-3：「同 id 合并」是天然读-改-写；旧实现「锁外 `_read_queue` + 锁内写」
+        # 在 6 线程竞争下读侧撞写锁、`read_text_retry` 的 3×50ms 预算耗尽 →
+        # `PermissionError` 逃出 → **工作线程死亡、丢行**（循环 150 次实测 10 次失败 =
+        # 6.7%，verify3 复现）。现读-改-写整体进 `update_text_locked` 的**同一把锁**
+        # （进程内 `_INPROC_LOCK` + 跨进程文件锁）：读在同一临界区内用**同一个 fd** 完成，
+        # 不再存在「锁外读撞写锁」这个面。
+        update_text_locked(path, lambda old_text: self._merge_draft(old_text, experience))
+        return path
+
+    @staticmethod
+    def _merge_draft(old_text: str, experience: dict) -> str:
+        """`update_text_locked` 的锁内变换：返回新全文（换行 `os.linesep` 保旧字节形态）。
+
+        同 id 命中 → 增 seen、刷新 evidence（#118）后整份重写；否则尾部追加（残行缺
+        尾换行时先补断行——#112：裸 append 把新草稿黏在无尾换行残行后，读侧「跳过残行」
+        连坐把这条完整合法的新草稿一起跳掉，登记成功却永久不可见）。
+        换行用 `os.linesep`：与旧追加路径（`append_text_locked`）/旧合并路径
+        （`_atomic_write` 文本模式）逐字节一致（Windows CRLF / POSIX LF）。
+        """
+        sep = os.linesep
+        rows = ExperienceJournal._parse_rows(old_text)
         draft_id = experience.get("id")
-        for row in existing:
+        for row in rows:
             if draft_id and row.get("id") == draft_id:
                 row["seen"] = row.get("seen", 1) + 1
                 # #118：同 id 再登记时刷新证据——bu_overlay 的 id 按「键+两侧 BU」定，
@@ -88,25 +110,33 @@ class ExperienceJournal:
                 # 无害：同 id 的证据本就由同一异常派生，刷新是等值覆盖。
                 if "evidence" in experience:
                     row["evidence"] = experience["evidence"]
-                self._atomic_write(path, existing)
-                return path
-        # #112：上一轮写盘中途 Ctrl-C 会留下无换行尾的残行（腰斩出非法 UTF-8 字节，
-        # 或 UTF-8 完整但 JSON 半行）。裸 append 把整条新草稿黏在残行之后——读侧
-        # 「跳过残行」跳掉的正是这条完整合法的新草稿：登记成功、无异常、草稿却永久
-        # 不可见（静默丢审核素材，与 #102 静默 0 条同族假成功）。追加前先补断行，
-        # 新草稿独占一行必被读回；旧残字节让读侧 replace 回落自然跳过。
-        needs_break = path.exists() and path.stat().st_size > 0
-        if needs_break:
-            with path.open("rb") as stream:
-                stream.seek(-1, os.SEEK_END)
-                needs_break = stream.read(1) not in (b"\n", b"\r")
-        with path.open("a", encoding="utf-8") as stream:
-            if needs_break:
-                stream.write("\n")
-            stream.write(json.dumps(experience, ensure_ascii=False) + "\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        return path
+                return sep.join(json.dumps(r, ensure_ascii=False) for r in rows) + sep
+        line = json.dumps(experience, ensure_ascii=False)
+        needs_break = bool(old_text) and old_text[-1] not in ("\n", "\r")
+        return old_text + (sep if needs_break else "") + line + sep
+
+    @staticmethod
+    def _parse_rows(raw: str) -> list[dict]:
+        """逐行容错解析 JSONL 草稿：残行 / 合法 JSON 但非映射行一律跳过。
+
+        坏字节已由调用方 replace 回落（#112）。`_read_queue`（读盘）与本模块的锁内
+        变换 `_merge_draft`（已在内存的全文）共用这一把容错尺（#92 一处实现）。
+        """
+        rows = []
+        for line in raw.splitlines():
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue  # 崩溃残行：跳过但不丢后面的审核队列
+            # #130 面C：合法 JSON 但非映射行（`[1,2]`/null/字符串）——旧实现
+            # row.get 裸 AttributeError：append_draft（engine 失败路径的登记器）
+            # 崩在 except 块里顶掉原用例异常（#100 定性器红线），审核塔同崩。
+            # 与 review.rows 同纪律跳过——坏行无法表达为草稿，随原子重写清掉。
+            if isinstance(row, dict):
+                rows.append(row)
+        return rows
 
     @staticmethod
     def _read_queue(path: Path) -> list[dict]:
@@ -117,36 +147,23 @@ class ExperienceJournal:
         # 崩在 except 块里会把原用例异常顶掉（#100 定性器红线）；审核塔读队列同崩，
         # 好行全被一条坏字节拖死（#109 trace 本体同族）。坏字节 replace 读入后
         # 残行 JSON 解析必败，自然落进既有「跳过残行」分支，合法行照常可见。
+        # cc-1 读侧配套：本文件由加锁写路径写，Windows 上并发读撞锁报
+        # PermissionError（瞬态）——read_text_retry 重试即过。
         try:
-            raw = path.read_text(encoding="utf-8")
+            raw = read_text_retry(path, encoding="utf-8")
         except UnicodeDecodeError:
-            raw = path.read_text(encoding="utf-8", errors="replace")
-        rows = []
-        for line in raw.splitlines():
-            if line.strip():
-                try:
-                    row = json.loads(line)
-                except json.JSONDecodeError:
-                    continue  # 崩溃残行：跳过但不丢后面的审核队列
-                # #130 面C：合法 JSON 但非映射行（`[1,2]`/null/字符串）——旧实现
-                # row.get 裸 AttributeError：append_draft（engine 失败路径的登记器）
-                # 崩在 except 块里顶掉原用例异常（#100 定性器红线），审核塔同崩。
-                # 与 review.rows 同纪律跳过——坏行无法表达为草稿，随原子重写清掉。
-                if isinstance(row, dict):
-                    rows.append(row)
-        return rows
+            raw = read_text_retry(path, encoding="utf-8", errors="replace")
+        return ExperienceJournal._parse_rows(raw)
 
     @staticmethod
     def _atomic_write(path: Path, rows: list[dict]) -> None:
-        """审核状态改写必须原子+fsync：半行 JSONL 会毁掉整个队列。"""
-        tmp = path.with_suffix(".jsonl.tmp")
-        with tmp.open("w", encoding="utf-8") as stream:
-            for row in rows:
-                stream.write(json.dumps(row, ensure_ascii=False) + "\n")
-            stream.flush()
-            import os
-            os.fsync(stream.fileno())
-        os.replace(tmp, path)
+        """审核状态改写必须原子+fsync：半行 JSONL 会毁掉整个队列。
+
+        wave4 rb-*：委托 `atomic_io.atomic_write_text`（tmp+fsync+os.replace 一处实现，
+        不留第二把尺）。文本模式写，字节形态与旧实现逐字节一致。
+        """
+        atomic_write_text(path, "".join(json.dumps(row, ensure_ascii=False) + "\n"
+                                        for row in rows))
 
     def approve_pitfall(self, knowledge, draft: dict, *, trigger: str, symptom: str,
                         root_cause: str, remedy: str, scope: list[str], source: str,
