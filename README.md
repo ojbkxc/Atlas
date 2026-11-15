@@ -13,6 +13,8 @@
 > Atlas 的首选交付物是**可移植 pytest 脚本包**：把业务流探索/编排固化成零 `import atlas`、可直接进 CI 与旧仓的测试代码。
 > Atlas 平台自身是**可选的**——它只负责「生成包」与「读产物/运行记录做验证」（报告 + 人审塔），不参与产物的运行。
 
+**读者导航**：第一次接触 Atlas？先看 [docs/reader-guide.md](docs/reader-guide.md)——按读者（上手 / 运维 / 贡献 / 判据）分流的文档索引。
+
 **为什么是 Atlas：**
 
 - **产物优先（首选卖点）**：`atlas export-pytest <flow.yaml> --fast` 生成自包含 pytest 包（用例 + 共享页对象库 + 仅标准库底座），产物**零 `import atlas`**、脱离 Atlas 机也能跑——生成包就是目的，不是附赠品。
