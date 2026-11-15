@@ -494,3 +494,65 @@ def test_cli_doctor_survives_non_utf8_compose(tmp_path, capsys):
     checks = json.loads(capsys.readouterr().out)
     assert checks["docker_cmd_matches_compose"] is False
     assert checks["docker_assets_consistent"] is False
+
+
+# ── ob-7：doctor 接入清单（playbook §9 八项 → _common/domains.json）──────────
+
+def test_cli_doctor_platform_checklist_present(tmp_path, capsys):
+    """ob-7：doctor 的 platform_checklist 子项——清单随仓库分发，正常安装恒 present，
+    七类/33 条/§9 映射逐字来自 domains.json（单一真相在 knowledge.platform_checklist）。"""
+    from atlas.knowledge import PLAYBOOK_CHECKLIST_MAP
+    main(["--root", str(tmp_path), "doctor"])
+    checks = json.loads(capsys.readouterr().out)
+    pc = checks["platform_checklist"]
+    assert pc["present"] is True
+    assert pc["categories"] == 7
+    assert pc["items"] == 33
+    assert pc["playbook_sections"] == [list(p) for p in PLAYBOOK_CHECKLIST_MAP]
+    # rc 不因清单变化：presence 本身不影响 0/1 判定（缺清单 ≠ 漂移）
+    rc = main(["--root", str(tmp_path), "doctor"])
+    assert rc in (0, 1)  # 环境资产决定 rc，清单不掺
+
+
+def test_cli_doctor_platform_checklist_playbook_nine_sections(tmp_path, capsys):
+    """ob-7：playbook §9 八项逐条映射进 doctor——少一项即漏一处的 #92 漂移。"""
+    main(["--root", str(tmp_path), "doctor"])
+    checks = json.loads(capsys.readouterr().out)
+    labels = [p[0] for p in checks["platform_checklist"]["playbook_sections"]]
+    for kw in ("网络", "登录", "技术栈", "入口", "接口面", "数据卫生",
+               "能力边界", "权限", "可复原性"):
+        assert any(kw in label for label in labels), f"§9 缺项：{kw}"
+
+
+def test_platform_checklist_bad_domains_json_present_false(tmp_path, monkeypatch):
+    """坏形态如实按口径回落/缺失，不抛（#89 家族：判据函数不得先于被诊断对象死）。
+
+    读顺序是「平台 kb → 通用包」：平台坏形态视同没声明（#127 同纪律）落通用包；
+    **通用包也坏/缺失**才 present:false——monkeypatch 掉 common_knowledge_root 模拟
+    「清单资产整个不在」的精简克隆。"""
+    from atlas.knowledge import KnowledgeBase, platform_checklist
+    kb = KnowledgeBase(None, fallback_root=tmp_path)  # tmp 里没有 domains.json
+    # 平台缺声明 → 落通用包（仓库自带，恒 present）
+    assert platform_checklist(kb)["present"] is True
+    # 平台坏 JSON 视同没声明 → 落通用包
+    (tmp_path / "domains.json").write_text("{not json", encoding="utf-8")
+    assert platform_checklist(kb)["present"] is True
+    (tmp_path / "domains.json").write_text("[]", encoding="utf-8")
+    assert platform_checklist(kb)["present"] is True
+    # 通用包也缺失（精简克隆）→ present:false 不抛
+    import atlas.plugin_api as papi
+    monkeypatch.setattr(papi, "common_knowledge_root", lambda: tmp_path / "gone")
+    assert platform_checklist(kb) == {"present": False}
+
+
+def test_platform_checklist_platform_override_wins(tmp_path, monkeypatch):
+    """平台自己的 domains.json 声明了 checklist → 组合层优先于通用包（特异性高者赢）。"""
+    from atlas.knowledge import KnowledgeBase, platform_checklist
+    (tmp_path / "domains.json").write_text(json.dumps({
+        "checklist": {"custom_domain": {"question": "q", "items": ["a", "b", "c"]}},
+        "policy": "平台自有",
+    }, ensure_ascii=False), encoding="utf-8")
+    kb = KnowledgeBase(None, fallback_root=tmp_path)
+    r = platform_checklist(kb)
+    assert r["present"] is True
+    assert r["categories"] == 1 and r["items"] == 3

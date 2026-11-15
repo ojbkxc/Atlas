@@ -141,20 +141,36 @@ PLAYBOOK_CHECKLIST_MAP: tuple[tuple[str, str], ...] = (
 def platform_checklist(kb: "KnowledgeBase") -> dict:
     """ob-7：新平台接入检查清单（playbook §9）→ doctor 子项的**唯一加载/校验实现**。
 
-    读 `_common/knowledge/domains.json` 的 `checklist`（经 KnowledgeBase.load_composed
-    组合层——平台插件可用自己的 domains.json 覆盖/补全通用包条目）。纯只读、零网络；
-    缺文件/坏形态如实 `present:false`（与 boundary_ledger 缺失同口径：缺清单 ≠ 漂移），
-    绝不抛——doctor 的职责是汇报状态，判据函数不得先于被诊断对象死（#89 家族）。
+    读顺序（特异性高者赢 checklist 整值——「平台自己声明过接入清单」优先）：
+      1. kb.load_composed("domains")——平台私有/包内 domains.json（demo 的业务坐标文件
+         也叫这个名字，形态不同没有 checklist 键 → 视同没声明，落到 2）；
+      2. 通用知识包 `_common/knowledge/domains.json`（`common_knowledge_root()`，
+         checklist 真身所在；经 plugin_api 取路径，不在本模块拼第二份 #92）。
+
+    纯只读、零网络；缺文件/坏形态如实 `present:false`（与 boundary_ledger 缺失同口径：
+    缺清单 ≠ 漂移），绝不抛——doctor 的职责是汇报状态，判据函数不得先于被诊断对象死
+    （#89 家族）。函数内惰性 import plugin_api 避免模块环（knowledge ↔ plugin_api 与
+    versioning private_knowledge_root 同款纪律）。
 
     返回形态（doctor 展示面）：
         {"present": True, "categories": <类数>, "items": <总条数>,
          "playbook_sections": [[标签, 类名], ...], "policy_len": <policy 字符数>}
     缺失/坏形态：{"present": False}
     """
-    data = kb.load_composed("domains") if kb is not None else None
-    checklist = data.get("checklist") if isinstance(data, dict) else None
-    if not isinstance(checklist, dict) or not checklist:
+    candidates: list = []
+    if kb is not None:
+        candidates.append(kb.load_composed("domains"))
+    from .plugin_api import common_knowledge_root
+    candidates.append(_read_mapping(common_knowledge_root() / "domains.json"))
+    data = None
+    for cand in candidates:
+        if isinstance(cand, dict) and isinstance(cand.get("checklist"), dict) \
+                and cand["checklist"]:
+            data = cand
+            break
+    if data is None:
         return {"present": False}
+    checklist = data["checklist"]
     items = 0
     for spec in checklist.values():
         if isinstance(spec, dict) and isinstance(spec.get("items"), list):

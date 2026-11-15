@@ -9,6 +9,7 @@ from pathlib import Path
 
 import yaml
 from . import __version__, boundaries, ui_family, versioning
+from .knowledge import platform_checklist as knowledge_platform_checklist
 from .cli_render import (contracts_text, contracts_validate_text, doctor_text,
                          dump_json, dump_line, library_text, review_stats_text,
                          schedule_status_text, selectors_text, summary_text, tasks_text)
@@ -774,6 +775,12 @@ def main(argv: list[str] | None = None) -> int:
             checks["boundary_assets_consistent"] = boundary_ok
         else:
             checks["boundary_ledger"] = {"present": False, "path": boundaries.LEDGER_REL_PATH}
+        # ob-7：新平台接入检查清单（playbook §9 八项）接入 doctor——`_common/domains.json`
+        # 此前零消费方（清单只活在文档里，换平台的人不会碰它）。只读、离线、纯展示：
+        # 缺文件/坏形态如实 present:false **不改 rc**（与 boundary_ledger 缺失同口径——
+        # 缺清单 ≠ 清单漂移，两个事实分开陈述；该包随仓库分发，正常安装恒在）。
+        # 判据不在 cli 复制（#92）：加载/校验唯一实现在 atlas.knowledge.platform_checklist。
+        checks["platform_checklist"] = knowledge_platform_checklist(plugin.knowledge())
         if getattr(args, "format", "json") == "text":
             print(doctor_text(checks))
         else:

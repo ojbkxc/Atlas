@@ -133,6 +133,13 @@ def _doctor_hints(checks: dict, ledger: dict) -> dict[str, list[str]]:
             f"无边界账本（{checks.get('boundary_ledger', {}).get('path', 'docs/ownership/atlas-boundaries.json')}"
             "）——历史分支/精简克隆属正常；吸收/merge 前先跑 "
             "PYTHONPATH=src python scripts/boundary_classify.py --diff <变更集>")
+    # ob-7：接入清单缺失的 hint（与缺账本同口径——如实点名来源文件）
+    pc = checks.get("platform_checklist")
+    if isinstance(pc, dict) and not pc.get("present"):
+        hints.setdefault("接入清单", []).append(
+            "新平台接入检查清单缺失（_common/knowledge/domains.json）——"
+            "换平台开工前按 playbook §9 逐项确认（网络/登录/技术栈/入口/接口面/"
+            "数据卫生/能力边界/权限/可复原性）")
     else:
         if ledger.get("problems"):
             hints.setdefault("边界", []).append(
@@ -230,6 +237,22 @@ def doctor_text(checks: dict) -> str:
                  f" resolved={ui_family.get('resolved', '?')}"
                  f" prefix_problems={len(ui_family.get('prefix_problems') or [])}")
     lines += _hints_lines(_doctor_hints(checks, ledger).get("版本"))
+
+    # ── 接入清单（ob-7：playbook §9 八项 → _common/domains.json checklist）──
+    # 纯展示项不改 rc（与 ui_family 同口径）：清单缺失 ≠ 平台漂移，如实报缺失。
+    pc = checks.get("platform_checklist") if isinstance(checks.get("platform_checklist"), dict) else {}
+    lines.append("")
+    lines.append("[接入清单]")
+    if not pc.get("present"):
+        lines.append("  checklist=缺失（src/atlas/plugins/_common/knowledge/domains.json）"
+                     "——换平台开工前先补清单（playbook §9）")
+    else:
+        lines.append(f"  checklist=present categories={pc.get('categories', '?')}"
+                     f"  items={pc.get('items', '?')}")
+        sections = pc.get("playbook_sections") or []
+        for label, cat in sections:
+            lines.append(f"    §9·{label} -> {cat}")
+    lines += _hints_lines(_doctor_hints(checks, ledger).get("接入清单"))
     return "\n".join(lines)
 
 
