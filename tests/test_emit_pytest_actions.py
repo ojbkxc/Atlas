@@ -293,9 +293,13 @@ def test_real_fast_base_notwired_is_envblocked():
 # #17（L-HOST/L-PW）重建基线——login 骨架随 fast 页对象**无条件**渲染，加固它必然改动字节
 # （消息去 base_url、三处 raise 包 try/finally 归零凭据），这是授权改动不是漂移，故随源同步。
 _LEGACY_PAGES_HASHES = {
-    "fast_noactions": "472d0678199022a1ae9b584338fcfa035ca7e719f2d1d7cc8a2c74949373668c",
-    "fast_single": "d8138aff7cbb8c3768d413a5b276567c25febeb87e82f879cd01845ee6f80e82",
-    "nonfast_noactions": "da3e581b21c286bfff701d5915288dbc86cbbbd982d176ada467f0eb65088d7a",
+    # 2026-11-15 ae-6 剩余可读性（同用户排期，非 README 面）：三档随 atlas_pages 模板**授权改动**
+    # 重建基线（非漂移）——共同改动=形态标记行（快/慢）、models 注释加「无引擎消费方」、
+    # __all__ 折行（_py_all_lines，取值不变）、locator 两分支同判据注记。老 components.json
+    # （不写新键）的语义未变，改动纯可读性，故随源同步。
+    "fast_noactions": "745e5978cdd03c0a32c028cf272f0d8ed10c8d4bfe9312a8ba0461e7a99e11c0",
+    "fast_single": "1085d3dd394b75ac501a98a5d7d440fc5abecc9ac2980dffbdd7e6ec62cb6e08",
+    "nonfast_noactions": "fbaf5f2cc0e2f6922925da30f5287196950d9fecace057a7b72037f98c025e9d",
 }
 
 
