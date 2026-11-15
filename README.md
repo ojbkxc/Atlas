@@ -608,8 +608,8 @@ PYTHONPATH=src python scripts/boundary_classify.py --diff incoming.diff --to-tow
 ## 当前验证边界
 
 - 离线测试：**2797 passed / 9 failed（既有环境失败）**（Python 3.11；`PYTHONPATH=src py -3.11 -m pytest -q`，
-  2026-11-15 实测——8 skipped、`--collect-only` 2813（= 2797+9+8）；
-  较上一收口位 2671（2026-11-15 A 轴收口实测）净 +125，本波 wave4 B/C 轴收尾：
+  2026-11-15 实测——8 skipped、`--collect-only` 2814（= 2797+9+8）；
+  较上一收口位 2671（2026-11-15 A 轴收口实测）净 +126，本波 wave4 B/C 轴收尾：
   **ae-1~ae-4 CLI 统一渲染层**（`cli_render.py` 人读视图/机读唯一出口/doctor verdict 行/汇总行/rc2 文案核对）+
   **ae-5 allure 结果集人读摘要**（`atlas-summary.json`）+ **ae-6 产物可读性评审**（文档）+
   **ae-7 读者导航**（文档）+ **pf-4 waits 轮询节拍常量化**（`TICK_MS=25`，对齐 legacy_fast）+
