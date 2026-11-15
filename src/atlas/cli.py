@@ -9,6 +9,9 @@ from pathlib import Path
 
 import yaml
 from . import __version__, boundaries, ui_family, versioning
+from .cli_render import (contracts_text, contracts_validate_text, doctor_text,
+                         dump_json, dump_line, library_text, review_stats_text,
+                         schedule_status_text, selectors_text, summary_text, tasks_text)
 from .composition import catalog, compose_for_goal
 from .config import ENV_URL_KEYS, AtlasConfig, load_dotenv
 from .dsl import FlowCompiler, FlowDocument, TaskRegistry
@@ -51,7 +54,15 @@ def _parser() -> argparse.ArgumentParser:
     def add(name: str, **kw):
         return commands.add_parser(name, parents=[global_args], **kw)
 
-    add("doctor", help="检查依赖、配置与外部资产（不登录）")
+    def add_format(p):
+        """ae-1 命令面统一 --format（默认 json = 逐字节现状机读；text = 人读汇总/分组/hints）。
+        判据只在 cli_render（人读视图从命令已算好的 payload 派生），参数面零行为差异。"""
+        p.add_argument("--format", default="json", choices=["json", "text"],
+                       help="输出格式：json（默认，机读，与历史输出逐字节一致）或 text"
+                            "（人读：汇总行/verdict + 分组 + hints）")
+        return p
+
+    add_format(add("doctor", help="检查依赖、配置与外部资产（不登录）"))
     init_parser = add("init", help="生成新 Atlas 项目骨架（含 .atlas-root/.env/pyproject/flow/tests）")
     init_parser.add_argument("name", help="项目名（写进 pyproject/README）")
     init_parser.add_argument("--system", required=True, help="系统名（描述性标签）")
@@ -71,7 +82,7 @@ def _parser() -> argparse.ArgumentParser:
                                    help="只出 ATLAS_* 映射片段（零代码）")
     config_add_parser.add_argument("--out", type=Path, default=Path("."),
                                    help="项目根（默认当前目录）")
-    add("tasks", help="输出核心 Task 元数据")
+    add_format(add("tasks", help="输出核心 Task 元数据"))
     compose_parser = add("compose", help="验证核心 Task 依赖拼装")
     compose_parser.add_argument("--goal", default="document_no")
     flow = add("run", help="执行声明式 DSL（需已登录的 Actor，使用 Python 入口注入）")
@@ -125,11 +136,11 @@ def _parser() -> argparse.ArgumentParser:
     sm = add("machine", help="校验状态机 YAML 并输出目标路径（不执行）")
     sm.add_argument("file", type=Path)
     sm.add_argument("--target", default="", help="目标状态；省略则只做结构校验")
-    contracts_cmd = add("contracts", help="查看契约分级覆盖情况")
+    contracts_cmd = add_format(add("contracts", help="查看契约分级覆盖情况"))
     contracts_cmd.add_argument("--validate", action="store_true",
                                help="只读结构自校验契约定义：报告无法解析的契约文件、以及空 path/name 等"
                                     "「在列表里冒充覆盖率、运行时却静默跳过」的永不生效项（不发起真实请求）")
-    selectors = add("selectors", help="查询 Demo 选择器注册表")
+    selectors = add_format(add("selectors", help="查询 Demo 选择器注册表"))
     selectors.add_argument("component", nargs="?", default="")
     agent = add("agent", help="Agent 规划/风险评估（默认只规划不执行）")
     agent.add_argument("--goal", default="document_no", help="目标产出键，如 document_no")
@@ -140,7 +151,7 @@ def _parser() -> argparse.ArgumentParser:
     report = add("report", help="将 Atlas JSONL 转为 runlog 步骤格式")
     report.add_argument("input", type=Path)
     report.add_argument("output", type=Path)
-    summary = add("summary", help="聚合运行记录：状态、失败类、最慢步骤")
+    summary = add_format(add("summary", help="聚合运行记录：状态、失败类、最慢步骤"))
     summary.add_argument("input", type=Path, nargs="?", default=Path("reports/runs.jsonl"))
     allure_cmd = add("allure", help="把 runs.jsonl 转 Allure 2.39.0 结果集（纯 stdlib，不拉浏览器）")
     allure_cmd.add_argument("input", type=Path, nargs="?", default=None,
@@ -166,8 +177,8 @@ def _parser() -> argparse.ArgumentParser:
                                     help="输出格式：json（默认）或 text（人读版）")
     knowledge = add("knowledge", help="查询知识库")
     knowledge.add_argument("query", nargs="?", default="")
-    library = add("library", help="公共任务库：已审核的跨流程可复用动作序列（只读查询；"
-                                  "写路径只有 review --approve）")
+    library = add_format(add("library", help="公共任务库：已审核的跨流程可复用动作序列（只读查询；"
+                                  "写路径只有 review --approve）"))
     library.add_argument("name", nargs="?", default="",
                          help="条目名（省略则列出全部）")
     recycle = add("recycle", help="列出本次运行自动创建的单据（不自动删除）")
@@ -175,7 +186,7 @@ def _parser() -> argparse.ArgumentParser:
                          help="回收清单文件（默认 root 下 reports/recycle_list.jsonl，与 run 落盘同源）")
     recycle.add_argument("--cleanup", action="store_true",
                          help="尝试删除造的单（写操作，需人审且非生产）")
-    review = add("review", help="审核吞吐入口：草稿队列→证据卡片→批准/驳回→留痕")
+    review = add_format(add("review", help="审核吞吐入口：草稿队列→证据卡片→批准/驳回→留痕"))
     review.add_argument("--stats", action="store_true", help="队列与吞吐统计")
     review.add_argument("--approve", default=None, metavar="ID",
                         help="按 id/前缀批准：坑点进知识，选择器候选进组件库（按 kind 分发）")
@@ -315,6 +326,7 @@ def _parser() -> argparse.ArgumentParser:
                            help="确认无人值守跑含写步骤的 flow（人的决定记录，红线 #13）")
     schedule_add("list", help="台账一览")
     sched_status = schedule_add("status", help="错过几轮 / 连败 / AUTO-PAUSED 汇总（G2 交付答案）")
+    add_format(sched_status)
     sched_status.add_argument("id", nargs="?", default=None)
     for name, hint in (("enable", "重新启用（当场重置水位线与连败：改配置的瞬间不回放历史）"),
                        ("disable", "停用（保留水位线，恢复用 enable）"),
@@ -404,20 +416,20 @@ def _user_error(exc: Exception) -> int:
     print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
     return 2
 
-def _validate_contracts(plugin) -> int:
+def _validate_contracts(plugin, fmt="json") -> int:
     """契约定义的只读结构自校验（不发起任何真实请求）。
 
     为什么要它：`atlas contracts` 的清单会把每条契约都算进覆盖率，但 `Contract.validate()`
     对 `path` 为空的契约直接 `return`（contracts.py:40）——这类条目**在列表里冒充覆盖率、
     运行时却静默跳过、永不生效**，正撞红线 #7/#12（不得有看似完整实则不校验的断言层）。
     另外真实项目用 ATLAS_KNOWLEDGE_DIR 私有覆盖契约时，手改坏的 core.json 会让运行时/展示
-    裸崩；这里把解析失败也变成可读报告。返回码：全部 OK=0，有问题=2（不改判定、只点名）。"""
+    裸崩；这里把解析失败也变成可读报告。返回码：全部 OK=0，有问题=2（不改判定、只点名）。
+    """
     try:
         registry = plugin.contracts()
     except Exception as exc:   # 私有/包内契约文件写坏：给可读报告，不裸 traceback（只读诊断，不吞成通过）
-        print(json.dumps({"ok": False, "source": "unresolved",
-                          "error": f"契约文件无法解析：{type(exc).__name__}: {exc}"},
-                         ensure_ascii=False, indent=2))
+        dump_json({"ok": False, "source": "unresolved",
+                   "error": f"契约文件无法解析：{type(exc).__name__}: {exc}"})
         return 2
     problems = []
     for method, path in sorted(registry.contracts):
@@ -429,7 +441,10 @@ def _validate_contracts(plugin) -> int:
             problems.append(f"{method} {path}: name 为空 → 校验失败信息无法归因")
     report = {"ok": not problems, "total": len(registry.contracts), "levels": registry.stats(),
               "problems": problems}
-    print(json.dumps(report, ensure_ascii=False, indent=2))
+    if fmt == "text":
+        print(contracts_validate_text(report))
+    else:
+        dump_json(report)
     return 0 if not problems else 2
 
 
@@ -483,7 +498,11 @@ def main(argv: list[str] | None = None) -> int:
         # ATLAS_PLUGIN 指到未注册 domain 是用户输入问题：一行 stderr + rc 2（#79/#80 口径）
         return _user_error(exc)
     if args.command == "tasks":
-        print(json.dumps(catalog(core_tasks()), ensure_ascii=False, indent=2))
+        rows = catalog(core_tasks())
+        if getattr(args, "format", "json") == "text":
+            print(tasks_text(rows))
+        else:
+            dump_json(rows)
         return 0
     if args.command == "compose":
         from .failures import FlowCompositionError
@@ -573,20 +592,27 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "contracts":
         if getattr(args, "validate", False):
-            return _validate_contracts(plugin)
+            return _validate_contracts(plugin, getattr(args, "format", "json"))
         registry = plugin.contracts()
         report = {"levels": registry.stats(), "total": len(registry.contracts),
                   "contracts": [{"name": c.name, "method": c.method, "path": c.path, "level": c.level}
                                 for c in registry.contracts.values()]}
-        print(json.dumps(report, ensure_ascii=False, indent=2))
+        if getattr(args, "format", "json") == "text":
+            print(contracts_text(report))
+        else:
+            dump_json(report)
         return 0
     if args.command == "selectors":
         registry = plugin.selectors()
         if args.component:
-            print(json.dumps(registry.find(args.component), ensure_ascii=False, indent=2))
+            dump_json(registry.find(args.component))
         else:
-            print(json.dumps({"components": registry.names(), "without_selectors": registry.missing()},
-                             ensure_ascii=False, indent=2))
+            payload = {"components": registry.names(),
+                       "without_selectors": registry.missing()}
+            if getattr(args, "format", "json") == "text":
+                print(selectors_text(payload))
+            else:
+                dump_json(payload)
         return 0
     if args.command == "summary":
         from .reporting import run_attention, summarize
@@ -601,7 +627,10 @@ def main(argv: list[str] | None = None) -> int:
         # summarize 本体零改动：status Counter 天然容纳新终态取值（#115），attention 是
         # 附加键，既有 status/fail_classes/versions 各键的取值形态逐字节不变。
         result["attention"] = run_attention(result, ReviewQueue(config.reports_dir).stats())
-        print(json.dumps(result, ensure_ascii=False, indent=2))
+        if getattr(args, "format", "json") == "text":
+            print(summary_text(result))
+        else:
+            dump_json(result)
         return 0
     if args.command == "allure":
         from .allure_report import ALLURE_RESULTS_DIR, emit_allure
@@ -741,7 +770,10 @@ def main(argv: list[str] | None = None) -> int:
             checks["boundary_assets_consistent"] = boundary_ok
         else:
             checks["boundary_ledger"] = {"present": False, "path": boundaries.LEDGER_REL_PATH}
-        print(json.dumps(checks, ensure_ascii=False, indent=2))
+        if getattr(args, "format", "json") == "text":
+            print(doctor_text(checks))
+        else:
+            dump_json(checks)
         return 0 if checks["legacy_pages"] and checks["demo_api"] and docker_ok and boundary_ok else 1
     if args.command == "legacy":
         try:
@@ -1237,14 +1269,18 @@ def _library(args, plugin) -> int:
             print(f"任务库没有 {args.name!r}（现有：{'、'.join(known) if known else '空库'}）",
                   file=sys.stderr)
             return 2
-        print(json.dumps(hits[0], ensure_ascii=False, indent=2))
+        dump_json(hits[0])
         return 0
-    print(json.dumps({
+    payload = {
         "total": len(tasks),
         "tasks": [{"name": t.get("name", ""),
                    "steps": len(t["steps"]) if isinstance(t.get("steps"), list) else 0,
                    "source": t.get("source", ""), "created_at": t.get("created_at", "")}
-                  for t in tasks]}, ensure_ascii=False, indent=2))
+                  for t in tasks]}
+    if getattr(args, "format", "json") == "text":
+        print(library_text(payload))
+    else:
+        dump_json(payload)
     return 0
 
 def _review(args, config, plugin) -> int:
@@ -1252,7 +1288,11 @@ def _review(args, config, plugin) -> int:
     from .review import ReviewQueue, evidence_card
     queue = ReviewQueue(config.reports_dir)
     if args.stats:
-        print(json.dumps(queue.stats(), ensure_ascii=False, indent=2))
+        stats = queue.stats()
+        if getattr(args, "format", "json") == "text":
+            print(review_stats_text(stats))
+        else:
+            dump_json(stats)
         return 0
     if args.approve:
         try:
@@ -1272,8 +1312,8 @@ def _review(args, config, plugin) -> int:
             print(str(exc), file=sys.stderr)
             return 2
         target = result.get("id") or f"{result.get('component')}.{result.get('element')}"
-        print(json.dumps({"approved": target, "kind": row.get("kind", "pitfall"),
-                          "task": row.get("task")}, ensure_ascii=False))
+        dump_line({"approved": target, "kind": row.get("kind", "pitfall"),
+                   "task": row.get("task")})
         return 0
     if args.reject:
         try:
@@ -1282,8 +1322,7 @@ def _review(args, config, plugin) -> int:
             print(str(exc), file=sys.stderr)
             return 2
         queue.reject(args.reject, args.reason)
-        print(json.dumps({"rejected": row.get("id"), "task": row.get("task")},
-                         ensure_ascii=False))
+        dump_line({"rejected": row.get("id"), "task": row.get("task")})
         return 0
     if args.reject_kind:
         try:
@@ -1291,8 +1330,7 @@ def _review(args, config, plugin) -> int:
         except ValueError as exc:
             print(str(exc), file=sys.stderr)
             return 2
-        print(json.dumps({"rejected_batch": args.reject_kind, "count": count},
-                         ensure_ascii=False))
+        dump_line({"rejected_batch": args.reject_kind, "count": count})
         return 0
     if args.template:
         rows = queue.template_rows(args.kind or "selector_candidate")
@@ -1300,10 +1338,9 @@ def _review(args, config, plugin) -> int:
         with args.template.open("w", encoding="utf-8") as stream:
             for row in rows:
                 stream.write(json.dumps(row, ensure_ascii=False) + "\n")
-        print(json.dumps({"template": str(args.template), "rows": len(rows),
-                          "next": "人填 component/element（选择器位可留空：role/name 已按候选预填）"
-                                  "或 remedy 后 atlas review --apply " + str(args.template)},
-                         ensure_ascii=False))
+        dump_line({"template": str(args.template), "rows": len(rows),
+                   "next": "人填 component/element（选择器位可留空：role/name 已按候选预填）"
+                           "或 remedy 后 atlas review --apply " + str(args.template)})
         return 0
     if args.apply:
         decisions, broken = [], []
@@ -1343,7 +1380,7 @@ def _review(args, config, plugin) -> int:
             return 2
         result["failed"] = broken + result["failed"]
         # 失败非零退出：批量里混着没填的行不能被当成全绿
-        print(json.dumps(result, ensure_ascii=False, indent=2))
+        dump_json(result)
         return 0 if not result["failed"] else 2
     pending = queue.pending(args.kind)
     if not pending:
@@ -1777,7 +1814,10 @@ def _schedule(args, config) -> int:
                 payload.append(entry)
                 if not task.get("enabled", True) and task.get("auto_paused_reason"):
                     paused.append((tid, task["auto_paused_reason"]))
-            print(json.dumps(payload, ensure_ascii=False, indent=2))
+            if getattr(args, "format", "json") == "text":
+                print(schedule_status_text(payload))
+            else:
+                dump_json(payload)
             for tid, reason in paused:
                 # §3 表 9：AUTO-PAUSED 必须醒目并带原因——「环境挂一整晚」停在一个有原因的任务上
                 print(f"AUTO-PAUSED: {tid} 连续 5 次失败已自动停用（原因：{reason}）；"
