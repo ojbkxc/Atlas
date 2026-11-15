@@ -577,10 +577,12 @@ def emit_allure(runs_path: Path, out_dir: Path, *, clean: bool = True,
     # PermissionError（瞬态，锁持有是一次整行写的毫秒级）。read_text_retry 重试即过；判据
     # 与 atomic_io 同一把尺（#92）：只重试 PermissionError，UnicodeDecodeError 直接回落
     # replace，其余异常原样传播点名失败——不是加大重试次数凑过。
-    try:
-        raw = read_text_retry(runs_path, encoding="utf-8")
-    except UnicodeDecodeError:
-        raw = read_text_retry(runs_path, encoding="utf-8", errors="replace")
+    # en-8 读侧：`ATLAS_RUNS_SPLIT=plugin` 时 runs 已被写成 `runs.<plugin>.jsonl` 分片，
+    # 裸 runs.jsonl 可能根本不存在——解析/聚合口径**委托 reporting 单点**
+    # （runs_inputs + _read_inputs_text），本模块不复制第二份分流判据（#92）。
+    # 未设置时 runs_inputs 回落 [runs_path]，读取与旧实现逐字节等价。
+    from .reporting import _read_inputs_text, runs_inputs
+    raw = _read_inputs_text(runs_inputs(runs_path))
     results = steps = attachments = skipped = 0
     envs: set[str] = set()
     # ae-5 摘要计数：不预设固定四键——按实际映射状态累计；映射若将来扩出第五态，

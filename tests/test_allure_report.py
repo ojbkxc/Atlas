@@ -949,3 +949,36 @@ def test_cli_source_dimension_flag_wires_through(tmp_path):
     opt_id = _read_results(out_opt)[0]["historyId"]
     assert opt_id == hashlib.sha1(b"sit|iservice|smoke").hexdigest()  # 旗标真被消费
     assert opt_id != default_id
+
+
+# ---- en-8：split 模式下 allure 读侧聚合分片（判据委托 reporting 单点）----
+
+def test_emit_allure_reads_plugin_shards_when_split_enabled(tmp_path, monkeypatch):
+    """`ATLAS_RUNS_SPLIT=plugin` 时 runs.jsonl 可能不存在、记录在 runs.<plugin>.jsonl 分片里。
+    allure 必须经 reporting.runs_inputs 聚合分片（不留第二份分流判据）；裸读文件会
+    FileNotFoundError，用户看到「报告生成失败」而其实数据好好在盘上。"""
+    runs = tmp_path / "runs.jsonl"
+    runs.write_text("", encoding="utf-8")           # 空壳单文件（写侧不再写它）
+    (tmp_path / "runs.iservice.jsonl").write_text(
+        json.dumps({"case": "a", "status": "passed", "env": "sit"}) + "\n", encoding="utf-8")
+    (tmp_path / "runs.snalai.jsonl").write_text(
+        json.dumps({"case": "b", "status": "failed", "env": "sit",
+                    "fail_class": "assertion"}) + "\n", encoding="utf-8")
+    monkeypatch.setenv("ATLAS_RUNS_SPLIT", "plugin")
+    out = tmp_path / "allure"
+    emit_allure(runs, out, clean=True, metadata=False)
+    cases = sorted(r["name"] for r in _read_results(out))
+    assert cases == ["a", "b"], cases
+
+
+def test_emit_allure_single_file_unchanged_without_split(tmp_path, monkeypatch):
+    """未设置 split：读路径逐字节旧行为（runs_inputs 回落 [path]），分片文件不被读。"""
+    runs = tmp_path / "runs.jsonl"
+    _write_runs(runs, [{"case": "only", "status": "passed", "env": "sit"}])
+    (tmp_path / "runs.other.jsonl").write_text(
+        json.dumps({"case": "ghost", "status": "passed", "env": "sit"}) + "\n",
+        encoding="utf-8")
+    monkeypatch.delenv("ATLAS_RUNS_SPLIT", raising=False)
+    out = tmp_path / "allure"
+    emit_allure(runs, out, clean=True, metadata=False)
+    assert [r["name"] for r in _read_results(out)] == ["only"]
