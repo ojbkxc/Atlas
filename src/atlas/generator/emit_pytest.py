@@ -22,8 +22,11 @@
 快模式（gap9，``fast=True``）：UI 腿从「恒 skip」升级为真渲染——单浏览器/单登录
 （``get_page``）＋ 跨批前置（``plan_ctx``/``require_ctx``）＋ Atlas 兼容 runs.jsonl
 （``_fast_runlog``）；底座/夹具模板来自 ``generator/emit_fast``（依赖方向单向：
-emit_pytest → emit_fast，只 import 其契约公开符号，不引用 ``_FAST_*`` 模板常量）。
-**``fast=False``（默认）输出与改造前逐字节相同**——快照测在 ``tests/test_emit_pytest.py`` 钉死。
+emit_pytest → emit_fast，只 import 其契约公开符号——``write_fast_artifacts``/
+``FastEmitError``/``FAST_SUPPORT_MODULE_NAME``/``ENV_KEYS``，不引用 ``_FAST_*`` 模板常量）。
+**``fast=False``（默认）的用例/页对象/底座输出与改造前逐字节相同**——快照测在
+``tests/test_emit_pytest.py`` 钉死；产物 README 是 ae-6 有意的两形态共同可读性改造
+（见 ``docs/gaps/wave4-artifact-readability.md`` §6，不承诺逐字节历史形态）。
 """
 from __future__ import annotations
 
@@ -42,9 +45,13 @@ from .emit_flow import _save_as_name
 PAGES_MODULE_NAME = "atlas_pages"
 SUPPORT_MODULE_NAME = "_atlas_support"
 
+# 横幅文案**不含内层加粗**：渲染时整体放在一行引用里（`> **横幅**：…`），内层再出现
+# `**…**` 会让 Markdown 嵌套加粗解析破裂（ae-6 P0-1，实测产物第 5 行渲染成断句）。
+# 双入口都点名：flow→包的主路径是 `atlas export-pytest`，文档→包才是 `atlas gen --with-pytest`；
+# 只写 gen 会让 export-pytest 产物自称错来源（ae-6 一般-5）。
 _README_BANNER = (
-    "本产物由 `atlas gen --with-pytest`（或 `generator.emit_pytest`）生成，"
-    "**只生成不执行**：鉴权值、写操作、建单须人工确认后手动运行。"
+    "本产物由 `atlas export-pytest`（flow → 包）或 `atlas gen --with-pytest`（文档 → 包）生成，"
+    "只生成不执行：鉴权值、写操作、建单须人工确认后手动运行。"
 )
 
 
@@ -1331,41 +1338,88 @@ def emit_pytest_package(*, out_dir: Path, endpoints: list[Endpoint] | None = Non
 
 def _build_readme(flow_id: str, specs: list[StepSpec], has_pages: bool,
                   *, fast: bool = False, parallel: int = 0) -> str:
+    """产物 README（读者第一接触面）。
+
+    ae-6 七条（评审 `docs/gaps/wave4-artifact-readability.md` §6）：
+    横幅不带内层加粗（外层 `> **横幅**：` 保结构）、运行命令真跑用例（`pytest -q`）、
+    快/慢两形态各自渲染未接线语义（慢=skip 占位 / 快=NotWired→env_blocked）、
+    仓库内文档链接注明「产物机上无此文件」、双入口名、env 全量键从 `emit_fast.ENV_KEYS`
+    唯一清单渲染（不手抄、不写死键数）、补本包文件清单。
+    """
     n_api = sum(1 for s in specs if s.is_api)
     n_ui = len(specs) - n_api
     n_write = sum(1 for s in specs if s.is_write)
+    mod_id = _ident_slug(flow_id or "regression", fallback="regression")
     lines = [
-        "# atlas gen pytest 产物（候选）",
+        "# Atlas pytest 产物（候选）",
         "",
         f"来源 flow：`{flow_id or '(未命名)'}`；步骤 {len(specs)}（API {n_api} / UI {n_ui}，"
         f"其中写操作 {n_write}）。",
         "",
-        f"> **横幅：{_README_BANNER}**",
+        f"> **横幅**：{_README_BANNER}",
         "",
-        "## 形态说明（评审结论见 docs/gaps/gap7-regression-code-eval.md）",
+        "## 形态说明",
         "",
         "- 主干：pytest 用例 + 共享页对象库（形态 2）；页对象库派生自 Atlas 组件库 components.json。",
         "- 底座 `_atlas_support.py` 自包含（仅标准库）——**可脱离 Atlas 运行**（形态 3 的可移植性）。",
+        "- 形态评审结论在 Atlas 仓库 `docs/gaps/gap7-regression-code-eval.md`；"
+        "本产物可脱离 Atlas 运行，产物机上没有该文件，读不到可忽略。",
+        "",
+        "## 本包文件",
+        "",
+        f"- `test_{mod_id}.py` — 生成的 pytest 用例（写操作步骤带 `[写操作-需人工确认]` 标）。",
+        f"- `{SUPPORT_MODULE_NAME}.py` — 自包含底座（仅标准库：base_url/占位符/调接口/存活断言）。",
+    ]
+    if has_pages:
+        lines.append(
+            f"- `{PAGES_MODULE_NAME}.py` — 页对象库（派生自 Atlas 组件库实测选择器）。")
+    lines.append("- `README.md` — 本文件。")
+    if fast:
+        from .emit_fast import FAST_SUPPORT_MODULE_NAME
+        lines += [
+            f"- `{FAST_SUPPORT_MODULE_NAME}.py` — 快模式底座（语义等待/会话通道/看门狗工具/"
+            "Atlas 兼容 runlog）。",
+            "- `conftest.py` — 快模式 fixtures（sole_page/get_page/plan_ctx/_case_watchdog/"
+            "_fast_runlog/_write_gate）。",
+            "- `reports/runs.jsonl` — 运行期生成（`_fast_runlog` 写，Atlas 兼容行形态；非初始文件）。",
+        ]
+    lines += [
         "",
         "## 运行",
         "",
         "```bash",
-        "# 依赖：仅 pytest（UI step 另需 playwright，未接线时以 skip 占位）",
+    ]
+    lines.append("# 依赖：pytest + playwright（零新增运行时依赖）" if fast
+                 else "# 依赖：仅 pytest（UI step 另需 playwright，未接线时以 skip 占位）")
+    lines += [
         "export ATLAS_BASE_URL='https://<host>'      # 或改 BASE_URL 默认值",
         "export ISC_APP_HEADER='<业务识别头>'        # 占位符 ${ISC_APP_HEADER} 等",
-        f"pytest {SUPPORT_MODULE_NAME}.py --pyargs -q  # 见 test_*.py",
+        "pytest -q",
         "```",
+        "",
+    ]
+    if fast:
+        lines.append(
+            "UI step 未接线时运行期显式终态 `NotWired` → runs.jsonl 记 env_blocked（点名组件/元素，"
+            "**不是跳过也不是通过**），详见下「快模式」与「页对象库」。")
+    else:
+        lines.append("未接线的 UI step 以 skip 占位（**不是通过**，须人审接线后方可跑）。")
+    lines += [
         "",
         "未解析的 `${VAR}` 占位符会**显式报错**（绝不把占位符当字面量发出）。",
     ]
     if has_pages:
-        lines += [
-            "",
-            "## 页对象库",
-            "",
-            "`atlas_pages.py` 复用 Atlas 组件库实测选择器；操作骨架为 NotImplementedError，",
-            "须人审接入后方可用于 UI step。",
-        ]
+        lines += ["", "## 页对象库", ""]
+        if fast:
+            lines.append(
+                f"`{PAGES_MODULE_NAME}.py` 复用 Atlas 组件库实测选择器；UI 动作未接线时产物显式终态"
+                "（`NotWired`→env_blocked 并点名组件/元素）。接线两条诚实腿任选：在 "
+                f"`{PAGES_MODULE_NAME}.py` 写真 Playwright 操作，或 `legacy_page_call` 只读委托旧套件"
+                "（位置/函数名来自配置，勿在产物硬编码业务字面量）。")
+        else:
+            lines.append(
+                f"`{PAGES_MODULE_NAME}.py` 复用 Atlas 组件库实测选择器；操作骨架为 "
+                "NotImplementedError，须人审接入后方可用于 UI step。")
     lines += [
         "",
         "## 人审指引",
@@ -1375,6 +1429,12 @@ def _build_readme(flow_id: str, specs: list[StepSpec], has_pages: bool,
         "3. 产物进 `atlas review` 审核塔（trace_step，不自动写知识）。",
     ]
     if fast:
+        from .emit_fast import ENV_KEYS
+        env_lines = [
+            (f"  - `{key}`（默认 `{default}`）" if default is not None
+             else f"  - `{key}`（无默认）")
+            for key, default in ENV_KEYS.items()
+        ]
         lines += [
             "",
             "## 快模式（fast，gap9）",
@@ -1388,18 +1448,36 @@ def _build_readme(flow_id: str, specs: list[StepSpec], has_pages: bool,
             "- 消费：",
             "  `pytest <本目录> -q`；",
             "  `atlas allure <本目录>/reports/runs.jsonl --out <本目录>/reports/allure-results`。",
-            "- env 旋钮（详见底座）：`ATLAS_BASE_URL`、`ATLAS_FAST_ENV`（默认 local）、",
+            "- env 旋钮常用项：`ATLAS_BASE_URL`（API 腿基址，回落 `ATLAS_FAST_BASE_URL`）、",
             "  `ATLAS_FAST_LOGIN_INDICATOR`（必填指示器选择器，缺→env_blocked）、",
             "  `ATLAS_FAST_ACCOUNT`/`ATLAS_FAST_PASSWORD`（回落 `DEMO_USERNAME`/`DEMO_PASSWORD`，凭据只从 env 读）、",
             "  `CASE_TIMEOUT`（看门狗秒数，默认 600）、`ATLAS_FAST_ALLOW_WRITES=1`（写步骤放行，默认拦停）、",
+            "  `ATLAS_FAST_CDP`+`ATLAS_FAST_INTERACTIVE=1`+`ATLAS_FAST_ATTACH_MATCH`（attach 三条件，",
+            "  见 `conftest.py` 顶部）、`ATLAS_BROWSER_CHANNEL`（chromium|chrome|firefox|webkit，缺省 chromium）、",
             "  `ATLAS_RUNS_DIR`、`ATLAS_BROWSER_EXECUTABLE`（系统浏览器逃生舱）、`CDP_DEBUG=1`（强制有头）、",
             "  `ATLAS_LEGACY_WEB`（诚实腿二：旧套件只读委托位）。",
-            "- UI 动作未接线 → 产物显式终态（`NotWired`→runs.jsonl 记 env_blocked 并点名组件/元素），",
-            "  **不是跳过也不是通过**；接线两条诚实腿任选：在 `atlas_pages.py` 写真 Playwright 操作，",
-            "  或 `legacy_page_call` 只读委托旧套件（位置/函数名来自配置，勿在产物硬编码业务字面量）。",
+            f"- 全量键清单（{len(ENV_KEYS)} 键，生成器从 `emit_fast.ENV_KEYS` 唯一清单渲染；"
+            "产物内实际读取点在 `_atlas_fast.py`；另有外键 `ATLAS_BASE_URL`/`ISC_APP_HEADER` 见「运行」段）：",
+            *env_lines,
+            "- `ATLAS_FAST_TRACE`/`ATLAS_FAST_TRACE_ACCEPT_SECRETS` 双确认才开失败腿 trace"
+            "（zip 含密码，勿外发/勿入库，红线 #2 显式例外）。",
             "- 红线警示：只生成不执行（#9）；断言不放宽（#7，`TODO(人审)` 不转恒真）；",
             "  生产禁写第二层仍由 Atlas engine 兜底，本产物 README 不豁免人工确认。",
         ]
+    if fast and parallel > 1:
+        lines += [
+            "",
+            f"## 并行分片（--parallel {parallel}，T3）",
+            "",
+            f"- 运行：`ATLAS_FAST_PARALLEL={parallel} pytest -n {parallel} -q`。",
+            "- 依赖：**pytest-xdist**（`pip install pytest-xdist`）——底座在 `pytest_configure` 校验；",
+            "  声明 `ATLAS_FAST_PARALLEL>1` 却缺 xdist 会**点名报错**，绝不静默单进程（缺依赖不降级）。",
+            "- 代价与边界：`sole_page` 是 module scope——每个 worker 首次触达某模块即各自 launch+login，",
+            f"  故 {parallel} worker ≈ 最多 {parallel} 只浏览器/{parallel} 次登录（内存与句柄线性上升）；",
+            "  跨批 `plan_ctx` 在并行下**不可靠**（worker 无固定顺序、同一文件并发读写）——",
+            "  仅适用于彼此独立的批次；有前置依赖的批次请单进程跑。",
+        ]
+    return "\n".join(lines) + "\n"
     if fast and parallel > 1:
         lines += [
             "",

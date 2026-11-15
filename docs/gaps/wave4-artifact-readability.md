@@ -104,3 +104,31 @@
 | `README.md` | 差 | 7 | P0（横幅/命令/两形态失真） |
 
 **总体判断**：底座与 conftest 的判据文档质量高（红线与失败面写透）；问题集中在**产物 README**（读者第一接触面，7 条中 4 条是渲染即失真）与**治理注记的受众错配**（产物读者读到维护者注记）。本轮零代码改动，全部建议留待 lead 排期；P0 四条改动面都在 `_build_readme` 单函数内，实施成本小。
+
+---
+
+## 实施记录（2026-11-15，ae-6 改造，用户排期）
+
+范围：README 7 条（四条 P0 + 三条 P1/P2）+ §7 样例文案。`_build_readme` / `_README_BANNER`
+改写，`examples/atlas_portable_smoke.yaml` intent 修文案（"以 requests 直调" → "以标准库
+urllib 直调，零第三方依赖"）。
+
+| 条 | 处置 |
+|---|---|
+| P0-1 横幅嵌套加粗 | banner 文案去内层 `**`，外层改 `> **横幅**：…`（结构保留、不再嵌套） |
+| P0-2 运行命令与意图不符 | `pytest _atlas_support.py --pyargs -q` → `pytest -q`（快/慢同） |
+| P0-3 两形态共用段失真 | 运行段与页对象库段按 `fast` 分叉：慢=skip 占位/NotImplementedError，快=NotWired→env_blocked |
+| P0-4 仓库相对路径死链 | 不再放小节标题；正文点名「Atlas 仓库 docs/gaps/gap7-…，产物机上没有该文件，读不到可忽略」 |
+| P1-5 入口名漏 export-pytest | 标题改 `# Atlas pytest 产物（候选）`；横幅双入口点名 |
+| P1-6 env 旋钮缺漏 + 死指针 | 保留常用项注记；新增「全量键清单」由生成器遍历 `emit_fast.ENV_KEYS` 渲染（键数 `len()` 实时算，不写死）；删除指向产物内不存在符号 `_atlas_fast.ENV_KEYS` 的表述 |
+| P2-7 无文件清单 | 新增「## 本包文件」（快包含 `_atlas_fast.py`/`conftest.py`/运行期 `reports/runs.jsonl`；慢包不列快包文件；无组件库不列页对象库） |
+
+判据测（`tests/test_emit_pytest.py` 七格）：横幅 `**` 恰 2 个；无 `--pyargs`；快慢分叉互斥；
+死链注记在位；双入口名；遍历 `ENV_KEYS` 全键在位且键数同源；文件清单按形态分列。
+`test_portable_sample_export.py` 补「`以 requests 直调` 不许回产物」。
+快照表 `_FAST_OFF_BASELINE` 仅 `readme_pages`/`readme_nopages` 两项更新（其余 10 项未动，
+理由=README 是两形态共同的可读性改造，lead 落笔）。
+
+**未做（仍然留白）**：`_atlas_fast.py` 治理注记分层（P1）、conftest `ENV_KEYS` 死指针与
+`sole_page` 拆分（P1）、`atlas_pages.py` 的 models 注释/形态标记（P2）、`_atlas_support.py`
+网络层大捕注记（P2）——均不属 ae-6 的 README 面，留后续波次。

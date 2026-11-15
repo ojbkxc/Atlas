@@ -366,6 +366,10 @@ def _sha(s: str) -> str:
 # API 腿模块哈希项（lead 裁定 1 点名）：ep_single / ep_multi / flow_api_only / flow_mixed /
 # render_spec_direct / render_empty —— 覆盖 render_test_module 与 _render_api_test 的 fast=False
 # 缺省透传路径（headers 有/无、body 有/无、note 断言、混合 flow 内 API 腿均在列）。
+# 2026-11-15 ae-6（用户排期、lead 落笔，理由=产物 README 可读性改造 §6，纯文档面）：
+# 仅 `readme_pages` / `readme_nopages` 两项哈希更新；其余 10 项**一字未动**（渲染代码零涉）。
+# 改动面=横幅去嵌套加粗 / 运行命令 pytest -q / 快慢两形态分叉 / 死链加诚实注记 /
+# 双入口名 / env 全量键渲染 / 本包文件清单——判据见同文件 ae-6 七格。
 _FAST_OFF_BASELINE = {
     "support": "1fed045a64cdc83e13ad88aeb38f869aff6dba139b6a99380095d3a4d0481d98",
     "ep_single": "4be2db1dca53e163704700f77393f595e6f727e93393a3272e5593c04ac6672e",
@@ -377,8 +381,8 @@ _FAST_OFF_BASELINE = {
     "pages_full": "a727ec05c13c95c7d535117e43d0dc5eb7b3a09d555d2dd1a3308533e42d233f",
     "pages_none": "9849353d27ad36e4c0166fab5000116d75712d900cd8edee8c5206b38ad6e98a",
     "pages_bad": "9849353d27ad36e4c0166fab5000116d75712d900cd8edee8c5206b38ad6e98a",
-    "readme_pages": "465e65dbe00377386b178a122c1f93e65183002bef5de604541b84958ed49f80",
-    "readme_nopages": "edc672a5a09068543eb3192554603015ccf67a7d1d472a23c523fec3597d7172",
+    "readme_pages": "3ec571fea0bd0b9c97a99edd3221288d62a469adc0002e18724af910db233ab2",
+    "readme_nopages": "f4fa94eb49f78fc587455a74a6bc3bd47574d752fe66596b2373633c238cfb81",
 }
 
 
@@ -921,7 +925,8 @@ def test_fast_package_with_ui_and_components_writes_full_set(tmp_path):
 
 
 def test_nonfast_package_readme_and_files_unchanged(tmp_path):
-    """fast=False 包形态零涟漪：README/文件集=历史形态（无快模式段、无底座/conftest）。"""
+    """fast=False 包形态：文件集=慢形态（无快底座/conftest），README 与生成器同源
+    （ae-6 起 README 是两形态共同的可读性改造，不再钉历史字节形态）。"""
     out = tmp_path / "p"
     written = emit_pytest_package(out_dir=out, endpoints=[_read_endpoint()],
                                   flow_id="slow", components={"components": {}})
@@ -931,6 +936,86 @@ def test_nonfast_package_readme_and_files_unchanged(tmp_path):
     assert "快模式" not in readme
     assert _sha(readme) == _sha(_build_readme("slow",
         _specs_from_endpoints([_read_endpoint()]), False))
+
+
+# ---- ae-6：产物 README 可读性判据（评审 docs/gaps/wave4-artifact-readability.md §6） ----
+# 四条 P0（横幅/运行命令/两形态失真/死链）+ 三条 P1/P2（入口名/env 全量键/文件清单）各一格。
+# 断言读生成器输出而非手抄文案全文：文案可演进，判据是「这类失真不许出现」。
+
+def _readme(fast=False, *, has_pages=False, flow_id="demo", parallel=0):
+    return _build_readme(flow_id, _specs_from_endpoints([_read_endpoint()]),
+                         has_pages, fast=fast, parallel=parallel)
+
+
+def test_readme_banner_has_no_nested_bold():
+    """P0-1：横幅内层不能再出现 **——外层 `> **横幅**：` 已加粗，嵌套会让渲染断裂。"""
+    banner = [line for line in _readme().splitlines() if line.startswith("> ")]
+    assert len(banner) == 1, "README 应恰有一行横幅引用"
+    assert banner[0].startswith("> **横幅**：")
+    assert banner[0].count("**") == 2, f"横幅出现嵌套加粗：{banner[0]}"
+
+
+@pytest.mark.parametrize("fast", [False, True])
+def test_readme_run_command_runs_tests(fast):
+    """P0-2：运行段命令必须是跑用例的 `pytest -q`，不是拿支持模块当用例。"""
+    readme = _readme(fast=fast)
+    assert "pytest -q" in readme
+    assert "--pyargs" not in readme
+    assert f"pytest {SUPPORT_MODULE_NAME}.py" not in readme
+
+
+def test_readme_forms_diverge_on_unwired_ui_semantics():
+    """P0-3：慢形态=skip 占位/NotImplementedError；快形态=NotWired→env_blocked。
+    两形态共用一个段会把快包读者读到反的语义。"""
+    slow = _readme(fast=False, has_pages=True)
+    assert "以 skip 占位" in slow and "NotImplementedError" in slow
+    assert "NotWired" not in slow
+    fast = _readme(fast=True, has_pages=True)
+    assert "NotWired" in fast and "env_blocked" in fast
+    assert "skip 占位" not in fast and "NotImplementedError" not in fast
+
+
+def test_readme_dead_repo_link_is_caveated():
+    """P0-4：仓库内文档路径在产物机上不存在——可以点名出处，但必须写明读不到可忽略，
+    且不许再当小节标题里的「评审结论见 …」（产物机上点不开的死链）。"""
+    readme = _readme()
+    assert "docs/gaps/gap7-regression-code-eval.md" in readme
+    assert "产物机上没有该文件" in readme
+    assert "## 形态说明（评审结论见" not in readme
+
+
+def test_readme_names_both_entrypoints():
+    """P1-5：flow→包的主入口是 export-pytest，只写 gen 会让 export 产物自称错来源。"""
+    readme = _readme()
+    assert "atlas export-pytest" in readme
+    assert "atlas gen --with-pytest" in readme
+
+
+def test_readme_fast_env_keys_render_full_emit_fast_list():
+    """P1-6：env 旋钮按 ENV_KEYS 唯一清单渲染（遍历字典，非手抄），且不再指向产物内
+    不存在的符号 `_atlas_fast.ENV_KEYS`。"""
+    from atlas.generator.emit_fast import ENV_KEYS
+    readme = _readme(fast=True)
+    missing = [key for key in ENV_KEYS if f"`{key}`" not in readme]
+    assert not missing, f"README 缺 env 键：{missing}"
+    assert f"{len(ENV_KEYS)} 键" in readme
+    assert "_atlas_fast.ENV_KEYS" not in readme
+
+
+def test_readme_lists_package_files():
+    """P2-7：本包文件清单——快包多 3 个文件（底座/conftest/运行期 runs.jsonl）；
+    慢包不列快包文件；无组件库时不列页对象库。"""
+    slow = _readme(fast=False, has_pages=True)
+    assert "## 本包文件" in slow
+    assert "test_demo.py" in slow
+    assert f"`{SUPPORT_MODULE_NAME}.py`" in slow
+    assert f"`{PAGES_MODULE_NAME}.py`" in slow
+    assert "_atlas_fast.py" not in slow
+    assert "conftest.py" not in slow
+    fast = _readme(fast=True, has_pages=True)
+    assert "_atlas_fast.py" in fast and "conftest.py" in fast
+    assert "reports/runs.jsonl" in fast
+    assert f"`{PAGES_MODULE_NAME}.py`" not in _readme(fast=True, has_pages=False)
 
 
 # ---- 归因面判据（lead 裁决 A/F-2）：未接线=env_blocked 家族、真缺陷不被洗 ----

@@ -18,7 +18,7 @@ id: atlas-portable-smoke
 steps:
   - task: api_call
     id: query_customer
-    intent: 查询客户详情（API 腿；产物里以 requests 直调）
+    intent: 查询客户详情（API 腿；产物里以标准库 urllib 直调，零第三方依赖）
     method: POST
     path: /web/legacy-web-mdm/orgCustomerInfo/findEntireCustDetails
     body:

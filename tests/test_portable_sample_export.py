@@ -51,6 +51,9 @@ def test_sample_exports_fast(tmp_path):
     all_src = "\n".join(p.read_text(encoding="utf-8") for p in out.rglob("*.py"))
     assert "open_doc_list" in all_src          # UI 步的 legacy_pages 委托
     assert "findEntireCustDetails" in all_src  # API 步的 path
+    # ae-6 附带项：样例 intent 曾写「产物里以 requests 直调」，与底座仅标准库（urllib）矛盾；
+    # 生成器忠实渲染 intent，文案漂移会原样进产物——钉「那句失真文案不许回来」。
+    assert "以 requests 直调" not in all_src
 
 
 def test_artifact_has_no_atlas_package_import(tmp_path):
