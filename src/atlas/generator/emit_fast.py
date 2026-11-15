@@ -45,15 +45,40 @@ Gap9 快模式运行底座。产物目录内与 Atlas 解耦运行：**不 impor
 src/atlas/{waits,failures,recorder}.py；产物侧为同源派生版，更新靠重新生成，漂移由
 tests/test_emit_fast.py 锁步测（gap9 E.1.4）拦截，不在产物内独立演化（#92 派生治理）。
 
-纪律：
-- 红线 #7：终态只有 RUN_STATUS_VOCAB 六值；缺配置/缺前置/未接线一律显式 EnvBlocked 终止，
-  绝不静默跳过、绝不把失败映射成通过。`NotWired` 是「未经人审接线」唯一异常出口——
-  归因只看类型（继承 EnvBlocked），不按消息文本/op 猜（那是给真缺陷开洗成 skipped 的门）。
-- 红线 #11：不含具体业务字面量——URL/账号/登录指示器只从 env 读（无默认值即 EnvBlocked）。
-- F3/F-3/F-4：等待一律语义轮询；每处 page.wait_for_timeout 的实参恰为裸标识符 TICK_MS
-  （禁字面毫秒、禁对 tick 做算术、禁 time.sleep）。
-- F4：成功步骤不截图；仅失败腿尽力而为补 step["attachment"]（绝对路径，Allure 直收）。
+=== 本文件结构（读者导航：想改什么→看哪节）===
+- 终态词汇 RUN_STATUS_VOCAB / 异常出口 EnvBlocked·NotWired·AwaitingHuman：改「一条 run 最终叫什么」。
+- 分类 classify_fail_class / FAIL_CLASS_MAP：改「失败怎么归因」（只看异常类型）。
+- 会话通道 session_channel / attach_denied_by_prod：改「launch 还是 attach / 生产禁 attach」。
+- 等待语义 wait_for_rows / wait_for_mask_gone / wait_for_vue_field / wait_for_url_change：
+  改「等表格/遮罩/Vue 字段/URL 变」的判据（轮询 tick=TICK_MS，无固定睡眠）。
+- 浏览器矩阵 browser_channel / browser_family / launch_kwargs / missing_browser_hint：改「用哪个浏览器引擎」。
+- 跨批上下文 load_plan_ctx / save_plan_ctx / safe_persist / require_ctx：改「前置值怎么存/校验」。
+- runlog RunWriter / framework_reason：改「runs.jsonl 行怎么写」。
+- 看门狗与用例外壳 fast_case / trace_enabled：改「单用例超时/失败留证」。
+
+=== 产物读者：runs.jsonl 一行长这样（_fast_runlog 写，Atlas 兼容）===
+{"run_id": "…", "case": "test_01_…", "env": "local", "mode": "run", "status": "passed",
+ "started_at": "…Z", "finished_at": "…Z", "steps": [{"step": "…", "op": "…", "ok": true,
+ "dur_ms": 12.3}], "reason": "…"?}
+（缺配置/前置/未接线时 status 是 env_blocked 且 reason 点名在等什么；等人=waiting；
+ 断言失败=failed；被看门狗掐表=timeout。具体键缺省不写，与 Atlas recorder.py 逐字对齐。）
+
+=== 治理注记对照表（维护者看这里；产物接线人可跳过）===
+产物侧出现的一切 #编号/F-x/锁步引用，其裁决与出处集中在下表，正文只保留「行为+判据+失败面」：
+- 红线 #7：终态决策——缺配置/缺前置/未接线一律显式 EnvBlocked/NotWired 终止，绝不静默跳过、
+  绝不把失败映射成通过（对齐 AGENTS §红线 #7）。
+- 红线 #11：模板零业务字面量——URL/账号/登录指示器/遮罩选择器以外的业务值只从 env 读。
+- 红线 #2：失败腿 trace.zip 含密码，双确认才开（默认关=成功腿零开销）。
+- F-2：NotWired 是未接线唯一出口，归因只看类型（继承 EnvBlocked），不按文本猜。
+- F-3/F-4：等待一律语义轮询，page.wait_for_timeout 实参恰为裸 TICK_MS（禁字面毫秒/乘算/time.sleep）。
 - F-5：run 级 reason 只经 framework_reason() 取框架点名文案（非空才写键、截 200）。
+- F-6：底座模板唯一来源是本模块（别处在生成期 import 这些符号，不复制第二份模板文本）。
+- F-11/B-3：attach 三条件（CDP 非空 ∧ ATLAS_FAST_INTERACTIVE==1 ∧ 非 prod-）单一判据在 session_channel。
+- T3/T5/T4：分片(--parallel)/浏览器矩阵/trace 三个运行期旋钮的判据各自成节。
+- uf-1：UI 族签名 UI_FAMILY* 由通用包 ui_family.json 固化，锁步测比对（不留两份漂移）。
+- #92：派生治理——上游改一处、产物重生成，锁步测拦截漂移，不在产物内独立演化。
+- #36/G11：等待垫片默认关；本底座只做语义轮询，不默认置位 ATLAS_FAST_WAITS。
+- #31/#30：装配状态读 _STATE 事实而非 env 面文本（「以为开了其实没装」教训）。
 """
 from __future__ import annotations
 
@@ -76,8 +101,10 @@ except ImportError:
 
     _LOCK_KIND = "fcntl"
 
-# ── 终态词汇（锁步 atlas.failures：env_blocked/interrupted/waiting ∈ FailureClass 值域，
-#    timeout == failures.FLOW_STATUS_TIMEOUT；passed/failed 是 run 级终态非失败类）──────
+# ---------------------------------------------------------------------------
+# 终态词汇（锁步 atlas.failures：env_blocked/interrupted/waiting ∈ FailureClass 值域，
+#    timeout == failures.FLOW_STATUS_TIMEOUT；passed/failed 是 run 级终态非失败类）
+# ---------------------------------------------------------------------------
 FLOW_STATUS_TIMEOUT = "timeout"
 RUN_STATUS_VOCAB = ("passed", "failed", "env_blocked", "interrupted", "waiting",
                     FLOW_STATUS_TIMEOUT)
@@ -178,7 +205,9 @@ def framework_reason(exc: BaseException) -> str:
     return ""
 
 
-# ── 会话通道判据单点（gap9b B-3；conftest 只调不复制）────────────────────────
+# ---------------------------------------------------------------------------
+# 会话通道（gap9b B-3；conftest 只调不复制）
+# ---------------------------------------------------------------------------
 # attach 的语义前提=「有人看着这次运行」。CI/shell 残留的 ATLAS_FAST_CDP 绝不允许
 # 悄悄接管网页——在场闸（ATLAS_FAST_INTERACTIVE=="1"）是有意的冗余（F-16 裁决）。
 # prod 前缀判据与 Atlas config.py 的 `env.startswith("prod-")` 等值：锁步测从 config.py
@@ -222,7 +251,9 @@ def attach_denied_by_prod(env) -> bool:
     return bool(_attach_endpoint(env)) and _is_production(env)
 
 
-# ── 并行分片（T3）：ATLAS_FAST_PARALLEL 运行期旋钮 + 缺依赖点名（绝不静默降级）──────
+# ---------------------------------------------------------------------------
+# 并行分片（T3）：ATLAS_FAST_PARALLEL 运行期旋钮 + 缺依赖点名（绝不静默降级）
+# ---------------------------------------------------------------------------
 # 产物默认单进程（不引新依赖）；>1 才需 pytest-xdist。判据单点在本模块，conftest 只调不复制。
 # 边界（写清「怎么坏」）：xdist 按**用例**分发，本底座 sole_page 是 module scope——每个
 # worker 首次触达某模块即各自 launch+login 一次，故 N worker ≈ 最多 N 只浏览器/N 次登录；
@@ -994,7 +1025,8 @@ Gap9 快模式 conftest（产物侧，不 import atlas 包；依赖栈 = pytest 
 - **reason 边界（F-5）**：run 级 reason 只取框架点名文案（framework_reason 单点），
   其它异常文本（HTTP 正文/URL query）不落盘——产物里没有第二把净化刀，也不该有。
 
-运行期 env 旋钮（全量以 _atlas_fast.ENV_KEYS 为准，唯一清单+自证测见 emit_fast）：
+运行期 env 旋钮（全量清单见本文件顶部列表；生成器侧自证测 `emit_fast.ENV_KEYS` 穷举这些键，
+产物内无独立 ENV_KEYS 常量）：
 CASE_TIMEOUT / ATLAS_FAST_ENV / ATLAS_FAST_LOGIN_INDICATOR / ATLAS_FAST_ACCOUNT(→DEMO_USERNAME) /
 ATLAS_FAST_PASSWORD(→DEMO_PASSWORD) / ATLAS_FAST_ALLOW_WRITES / ATLAS_RUNS_DIR /
 ATLAS_BROWSER_EXECUTABLE / ATLAS_BROWSER_CHANNEL(T5 浏览器矩阵) / CDP_DEBUG / CDP_PORT /
@@ -1121,6 +1153,43 @@ def _attach_pick_page(browser, match_value: str):
     return hits[0]
 
 
+def _attach_channel(pw, env_snapshot):
+    """attach 通道（B-3.1）：借用人已打开的目标页——不 new_context/new_page（那是人的浏览器）。
+
+    CDP 是 Chromium 家族专有，attach 通道恒走 chromium（与 browser_fam 解耦，不猜）。
+    返回 (browser, context, page)；人为错误一律 EnvBlocked 点名（不兜 pages[0]）。
+    """
+    browser = pw.chromium.connect_over_cdp(
+        env_snapshot.get("ATLAS_FAST_CDP", "").strip())
+    match_value = os.environ.get("ATLAS_FAST_ATTACH_MATCH", "").strip()
+    if not match_value:
+        raise EnvBlocked(
+            "attach 需 ATLAS_FAST_ATTACH_MATCH 点名目标页（URL 子串；"
+            "业务域名只来自 env，模板零默认——红线 #11）")
+    page = _attach_pick_page(browser, match_value)
+    return browser, page.context, page
+
+
+def _launch_channel(pw, browser_fam, headless, env_snapshot):
+    """launch 通道（缺省）：自起浏览器 + 新上下文 + 新页（生命周期自理）。
+
+    家族由 browser_family 判定（firefox/webkit 各自 launch 对象，其余走 chromium）。
+    返回 (browser, context, page)；启动故障原样传播（真因不套皮，由 sole_page 归因）。
+    """
+    kwargs = launch_kwargs(headless, env_snapshot)
+    if browser_fam == "firefox":
+        browser = pw.firefox.launch(**kwargs)
+    elif browser_fam == "webkit":
+        browser = pw.webkit.launch(**kwargs)
+    else:
+        browser = pw.chromium.launch(**kwargs)
+    context = browser.new_context(
+        viewport={"width": 1920, "height": 1080} if headless else None,
+        accept_downloads=True)
+    page = context.new_page()
+    return browser, context, page
+
+
 @pytest.fixture(scope="module")
 def sole_page(request):
     """一条模块只 launch 一次 chromium（旧套件 conftest:134-180 的权威结构）。
@@ -1138,7 +1207,10 @@ def sole_page(request):
     浏览器矩阵（T5）：launch 家族由 _atlas_fast.browser_channel/browser_family 单点判定
     （默认 chromium；chrome→系统 Chrome channel；firefox/webkit 各自 launch 对象），
     判据先行于驱动 start——坏通道值在此点名；缺浏览器可执行 → EnvBlocked 点名
-    `python -m playwright install`（真实启动故障原样传播，不套「缺浏览器」的皮）。"""
+    `python -m playwright install`（真实启动故障原样传播，不套「缺浏览器」的皮）。
+
+    ae-6 可读性：通道细节已拆进 _attach_channel()/_launch_channel()（行为不变）；
+    本函数只保留「判据裁决 + 两通道分派 + 清理链」主干。"""
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
@@ -1163,29 +1235,9 @@ def sole_page(request):
     page = None
     try:
         if attached:
-            # attach：只借用人已打开的目标页；不 new_context/new_page 造东西（那是人的浏览器）
-            # CDP 是 Chromium 家族专有——attach 通道恒走 chromium（与 browser_fam 解耦，不猜）。
-            browser = pw.chromium.connect_over_cdp(
-                env_snapshot.get("ATLAS_FAST_CDP", "").strip())
-            match_value = os.environ.get("ATLAS_FAST_ATTACH_MATCH", "").strip()
-            if not match_value:
-                raise EnvBlocked(
-                    "attach 需 ATLAS_FAST_ATTACH_MATCH 点名目标页（URL 子串；"
-                    "业务域名只来自 env，模板零默认——红线 #11）")
-            page = _attach_pick_page(browser, match_value)
-            context = page.context
+            browser, context, page = _attach_channel(pw, env_snapshot)
         else:
-            kwargs = launch_kwargs(headless, env_snapshot)
-            if browser_fam == "firefox":
-                browser = pw.firefox.launch(**kwargs)
-            elif browser_fam == "webkit":
-                browser = pw.webkit.launch(**kwargs)
-            else:
-                browser = pw.chromium.launch(**kwargs)
-            context = browser.new_context(
-                viewport={"width": 1920, "height": 1080} if headless else None,
-                accept_downloads=True)
-            page = context.new_page()
+            browser, context, page = _launch_channel(pw, browser_fam, headless, env_snapshot)
     except BaseException as exc:
         # launch 通道自己开的才关；attach 半途失败时没开过任何东西（browser 是借的，只断连）
         if not attached:
@@ -1246,7 +1298,11 @@ def browser(page):
 def plan_ctx():
     """跨批上下文（reports/plan_ctx.json）：读入 → 用例写键 → 白名单落盘。
 
-    前置缺失的用例经 require_ctx 显式 EnvBlocked（缺键名进 reason），绝不静默跳过（F5）。"""
+    前置缺失的用例经 require_ctx 显式 EnvBlocked（缺键名进 reason），绝不静默跳过（F5）。
+
+    私有键约定：以 `__` 开头的键**不落盘**（见下 `startswith("__")` 过滤）——想在本进程
+    内跨用例传临时值又不写进 plan_ctx.json 时用它；单下划线（如底座的 `_logged_in_account`）
+    不在此列、照常落盘（它是有意的「记录而非放行依据」标记）。"""
     ctx = load_plan_ctx(PLAN_CTX_PATH)
     yield ctx
     keys = [k for k in ctx if not str(k).startswith("__")]

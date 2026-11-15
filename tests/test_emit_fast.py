@@ -2131,3 +2131,51 @@ def test_save_plan_ctx_merges_concurrent_distinct_keys(tmp_path, monkeypatch, re
     support.save_plan_ctx(p, {"k_c": "v-c2"}, ["k_c"])
     assert support.load_plan_ctx(p)["k_c"] == "v-c2"
     assert not list(p.parent.glob("*.tmp"))            # 原子替换无残留
+
+
+# ---------------------------------------------------------------------------
+# ae-6 剩余可读性（产物读者面）：结构导航 / conftest 死指针修复 / sole_page 拆分
+# ---------------------------------------------------------------------------
+
+
+def test_support_module_has_reader_navigation_and_runs_example():
+    """_atlas_fast.py 顶部有「本文件结构」导航 + runs.jsonl 一行示例（产物读者面）。"""
+    head = SUPPORT_SRC.split('"""', 2)[1]          # 模块 docstring 正文
+    assert "本文件结构" in head                    # 读者导航节
+    assert "治理注记对照表" in head                # 治理与读者分离
+    assert "runs.jsonl 一行长这样" in head         # 一行示例
+    assert '"run_id"' in head and '"status"' in head
+
+
+def test_support_module_separators_unified():
+    """分隔线统一为 ASCII 三线风格：文档块内不再残留 `# ──` 双线风格。"""
+    assert "# ──" not in SUPPORT_SRC
+    # 正向对照：块分隔线仍真实存在（不是把分隔线全删了换恒真）
+    assert "# ---------------------------------------------------------------------------" in SUPPORT_SRC
+
+
+def test_conftest_no_dead_env_keys_pointer():
+    """conftest docstring 不再指向产物内不存在的 `_atlas_fast.ENV_KEYS`（死指针）。"""
+    assert "_atlas_fast.ENV_KEYS" not in CONFTEST_SRC
+    # 替代指引在位：指向本文件顶部清单 + 生成器侧自证测。
+    assert "本文件顶部列表" in CONFTEST_SRC
+    assert "emit_fast.ENV_KEYS" in CONFTEST_SRC
+
+
+def test_sole_page_split_channels_behavior_preserved():
+    """sole_page 通道细节拆进 _launch_channel/_attach_channel，主干只留分派（行为不变）。"""
+    assert "def _launch_channel(" in CONFTEST_SRC
+    assert "def _attach_channel(" in CONFTEST_SRC
+    # 锚点唯一性仍成立：真正 launch 点只在 _launch_channel 里一处（sole_page 主干不再裸 launch）
+    assert CONFTEST_SRC.count("pw.chromium.launch(") == 1
+    # 代码面恰一处（docstring 里的 `connect_over_cdp(ATLAS_FAST_CDP)` 是说明文字，不计）
+    assert len(re.findall(r"pw\.chromium\.connect_over_cdp\(", CONFTEST_SRC)) == 1
+    # 主干只调两个私有通道（不复制通道内部逻辑）
+    seg = CONFTEST_SRC.split("def sole_page(request):")[1].split("@pytest.fixture")[0]
+    assert "_attach_channel(pw, env_snapshot)" in seg and "_launch_channel(" in seg
+
+
+def test_plan_ctx_docstring_documents_private_key_filter():
+    """plan_ctx fixture docstring 写明 `__` 前缀私有键不落盘的约定（产物读者面）。"""
+    seg = CONFTEST_SRC.split("def plan_ctx():")[1].split("@pytest.fixture")[0]
+    assert "私有键" in seg or "以 `__` 开头" in seg
