@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 from .core import Channel, TaskMetadata
 from .actor import Actor
-from .config import AtlasConfig, load_legacy_dotenv
+from .config import AtlasConfig, legacy_check_skipped, load_legacy_dotenv
 from .contracts import ContractRegistry
 from .credential_gate import sanitize_url
 from .dsl import TaskRegistry
@@ -76,6 +76,44 @@ def check_demo_api(config: AtlasConfig) -> None:
             "（检查 ATLAS_DEMO_API_PROJECT / ATLAS_DEMO_API_FILE 是否指向旧项目的 scripts 目录）")
 
 
+def flow_needs_legacy(tasks) -> bool:
+    """ob-5：flow 是否真的需要旧项目目录（**compile 期判定**，判据=任务类属性）。
+
+    `legacy_step`/`legacy_case` 的 Task 类声明 `needs_legacy_project = True`；其余任务
+    （UI/API/通用 Task）不依赖旧仓目录。清单不写在本函数里——新增 legacy 族任务只改
+    任务类一处（#92），本函数只问属性、不猜任务名。
+    """
+    return any(getattr(task, "needs_legacy_project", False) for task in tasks)
+
+
+def legacy_required_for(*, no_login: bool, tasks) -> bool:
+    """ob-5 判据单点：本次 run 是否需要旧仓目录。
+
+    - 登录轨（`no_login=False`）**恒需要**——登录模块 `{legacy_web}/lib/login.py` 在旧仓；
+    - `--no-login` 时只看 flow 是否含 legacy 任务（`flow_needs_legacy`）。
+
+    单 flow 与多 flow（多 flow 传全部任务的并集）共用，CLI 不复制第二条 if（#92）。
+    """
+    return (not no_login) or flow_needs_legacy(tasks)
+
+
+def check_legacy_required(config: AtlasConfig, *, required: bool) -> None:
+    """ob-5：旧仓路径预检的**唯一消费口**（运行时与 CLI 预检共用，#92）。
+
+    `required=False`（典型：`--no-login` 且 flow 无 legacy 任务）时跳过预检——旧实现
+    无条件要求旧仓目录，无旧仓平台只能被迫假造目录。显式 `ATLAS_SKIP_LEGACY_CHECK=1`
+    时同样跳过但打一行 ASCII WARN：跳过的只是 fail-fast 预检，真实需要旧仓的调用点
+    （登录模块 `_load(login.py)` / legacy 任务执行）仍按自身语义报错，绝不静默成功。
+    """
+    if not required:
+        return
+    if legacy_check_skipped():
+        print("WARN: ATLAS_SKIP_LEGACY_CHECK=1——跳过旧项目路径预检；"
+              "真实需要旧仓的步骤仍会在使用点报错", file=sys.stderr)
+        return
+    config.check_legacy_paths()
+
+
 def resolve_account(config: AtlasConfig, account: str | None = None, *,
                     defaults: dict | None = None) -> str:
     """会话账号**解析单点**：显式 `account` 参数 > 插件 `session_defaults(env).account`
@@ -120,7 +158,12 @@ class DemoRuntime:
     """一次登录、一个 Actor、一套任务/契约/探针；不复制原项目代码。"""
     def __init__(self, config: AtlasConfig, *, login: bool = True, account: str | None = None,
                  ou: str | None = None, division_code: str | None = None,
-                 create_quota: int = 0, language: str | None = None):
+                 create_quota: int = 0, language: str | None = None,
+                 legacy_required: bool | None = None):
+        # ob-5：`legacy_required` 由调用方按「本次要跑的 flow 是否需要旧仓」传入
+        # （CLI 在 compile 期判定）。缺省 None = 旧行为（无条件预检）——examples/脚本
+        # 直接 `with DemoRuntime()` 时语义逐字节不变（#115）。
+        self.legacy_required = True if legacy_required is None else bool(legacy_required)
         # 会话默认值来自业务插件唯一数据源（knowledge/session.json + envs.json 的环境坐标，
         # 最后 ATLAS_SESSION_* 覆盖）。传 env 是为了让 `--env uat-eu` 自动带出该环境的账号/OU
         # ——旧实现不传，账号恒空串，真实跑时 `credential("")` 命中 `ISERVICE_PWD_` 空值键，
@@ -165,7 +208,9 @@ class DemoRuntime:
         # 旧实现只预检 DemoApi 路径——ATLAS_LEGACY_WEB 指错要等下面 _load(login.py)
         # 才撞裸 FileNotFoundError：真实 Chromium 已起、SIT 登录已烧、消息不点名配置键
         # （#90 归因漂移）。pytest 轨的 check_exec_dir 早就点名 ATLAS_LEGACY_*；run 轨是漏网面。
-        self.config.check_legacy_paths()
+        # ob-5：按需预检——不需要旧仓的 flow（`--no-login` 且无 legacy 任务）不再因缺目录
+        # 假红；显式 ATLAS_SKIP_LEGACY_CHECK=1 可跳过预检（判据与 WARN 在单一消费口）。
+        check_legacy_required(self.config, required=self.legacy_required)
         self.session = BrowserSession(self.config).__enter__()
         # __enter__ 抛出时 `with DemoRuntime(...)` 不会调用 __exit__——浏览器已开却中途失败
         # （登录报错、_wait_topbar/switch_to_ou 超时[README 记录 SIT 常见]、attach_demo 缺文件、
@@ -322,6 +367,9 @@ class LegacyStepTask:
     module 取旧项目的**相对路径**（相对 {legacy_web}/testcases/），例如：
         demo_sit_regression/01_sales_order_default_pt/sales_order_default_pt.py
     """
+    # ob-5：compile 期判定「这个 Task 需要旧项目目录」的唯一标记（runtime.flow_needs_legacy）。
+    needs_legacy_project = True
+
     def __init__(self, module: str, step: int, case_path: str | None = None, save_as: str = ""):
         self.step = self._validate_step(step)
         self.module, self.case_path, self.save_as = module, case_path, save_as

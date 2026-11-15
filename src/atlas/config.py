@@ -158,6 +158,15 @@ def _flag_env(key: str) -> bool:
     return False
 
 
+# ob-5：旧仓路径预检的显式跳过开关（只跳过 fail-fast 预检，不改变真实调用语义）。
+SKIP_LEGACY_CHECK_ENV = "ATLAS_SKIP_LEGACY_CHECK"
+
+
+def legacy_check_skipped() -> bool:
+    """是否显式跳过旧仓路径预检（判据单点，消费方 `runtime.check_legacy_required`）。"""
+    return _flag_env(SKIP_LEGACY_CHECK_ENV)
+
+
 def check_legacy_paths(root: Path, web: str) -> None:
     """旧项目根/web 子目录存在性预检——判据与消息的单一真相。
 

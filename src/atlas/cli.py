@@ -14,11 +14,12 @@ from .cli_render import (contracts_text, contracts_validate_text, doctor_text,
                          dump_json, dump_line, library_text, review_stats_text,
                          schedule_status_text, selectors_text, summary_text, tasks_text)
 from .composition import catalog, compose_for_goal
-from .config import ENV_URL_KEYS, AtlasConfig, load_dotenv
+from .config import ENV_URL_KEYS, AtlasConfig, load_legacy_dotenv
 from .dsl import FlowCompiler, FlowDocument, TaskRegistry
 from .legacy import LegacyAdapter
 from .plugin_api import resolve_plugin
-from .runtime import DemoRuntime, check_demo_api, require_account, resolve_account
+from .runtime import (DemoRuntime, check_demo_api, check_legacy_required,
+                      legacy_required_for, require_account, resolve_account)
 
 def core_tasks(legacy_pages_path=None):
     """任务枚举的插件缝**单一入口**（cli 的 tasks/compose/agent 经此走 resolve_plugin().tasks()）。
@@ -542,12 +543,15 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         # #103：同 run 口径——缺 URL/路径输入错误 rc 2，且在开浏览器/登录之前拒绝。
         try:
-            load_dotenv(config.legacy_project)
+            # en-5：旧仓 .env 只并入白名单键（ATLAS_* + 当前前缀凭据/URL），
+            # 不再整份 setdefault 进进程环境（跨平台残留污染；判据在 config 单点）。
+            load_legacy_dotenv(config.legacy_project)
             if not config.base_url:
                 raise ValueError(f"缺少 {config.env} 对应的 {config.env_url_key} 配置")
             config.validate_base_url(config.base_url)
             check_demo_api(config)
-            config.check_legacy_paths()   # #103 延伸：坏 legacy 路径也在浏览器/登录前 rc 2
+            # ob-5：预检唯一消费口（agent 恒登录 → 旧仓始终需要；跳过开关仍经此生效）。
+            check_legacy_required(config, required=True)
             # 空账号也在 `with` 之前投递成 rc 2（判据/消息在 runtime.require_account 单点）：
             # 旧实现只在 __enter__ 判，ValueError 穿透 main() 变 ~20 行 traceback。
             # agent 子命令无 --account（账号只来自插件/知识库坐标），故 getattr 兜底。
@@ -706,8 +710,9 @@ def main(argv: list[str] | None = None) -> int:
         api = config.api_project
         # base_url 口径必须与 DemoRuntime 一致：Atlas .env 缺失时继承旧项目 .env，
         # 否则 doctor 报 false 但 atlas run 实际能连（诊断误导）。记录来源，不复制凭据。
+        # en-5：继承只走白名单键（URL_* 在白名单内，base_url 继承语义不变）。
         own_base_url = bool(config.base_url)
-        load_dotenv(legacy)
+        load_legacy_dotenv(legacy)
         checks = {"python": sys.version.split()[0], "root": str(config.root), "env": config.env,
                   "env_prefix": config.env_url_key.rsplit("URL_", 1)[0],
                   "base_url_configured": own_base_url or bool(config.base_url),
@@ -874,21 +879,24 @@ def main(argv: list[str] | None = None) -> int:
             # 旧实现登录+开浏览器之后才在 compile/provision 里炸——真实踩点：`atlas run` 跑坏 flow
             # 会先起真实 Chromium 走真实 SIT 登录再报裸 KeyError，浪费会话还可能留半截现场。
             # registry 与运行时同源（_full_registry ≡ DemoRuntime.registry），compile 绿=run 不再结构炸。
-            FlowCompiler(_full_registry()).validate_flow(flow)
+            tasks = FlowCompiler(_full_registry()).validate_flow(flow)
         except (OSError, ValueError, KeyError, RuntimeError, yaml.YAMLError) as exc:
             return _user_error(exc)
+        # ob-5：compile 期判定本次 flow 是否需要旧仓（判据单点在 runtime.legacy_required_for）。
+        needs_legacy = legacy_required_for(no_login=args.no_login, tasks=tasks)
         # #103：入口输入错误（缺环境 URL / 坏 DemoApi 路径）与 DemoRuntime.__enter__ 同口径
         # 预检——先继承旧项目 .env 再检查（doctor 同款坑：不 load_dotenv 会用未继承的
         # ATLAS_DEMO_API_*/URL 误报缺失）。放在 with 之前：这些是输入错误（一行 stderr + rc 2），
         # 不得裸 traceback，更绝不允许走到开浏览器/真实登录（fail-fast 与 #97 同红线）。
         # 探针实锤：旧实现合法 flow + 缺 DEMO_URL_SIT 直接裸崩 ValueError traceback。
         try:
-            load_dotenv(config.legacy_project)
+            # en-5：只并入白名单键（URL_*/ATLAS_* 在白名单内，base_url 继承语义不变）。
+            load_legacy_dotenv(config.legacy_project)
             if not config.base_url:
                 raise ValueError(f"缺少 {config.env} 对应的 {config.env_url_key} 配置")
             config.validate_base_url(config.base_url)
             check_demo_api(config)
-            config.check_legacy_paths()   # #103 延伸：坏 legacy 路径也在浏览器/登录前 rc 2
+            check_legacy_required(config, required=needs_legacy)
             # 空账号也在 `with` 之前投递成 rc 2（判据/消息在 runtime.require_account 单点）：
             # 旧实现只在 __enter__ 判，ValueError 穿透 main() 变 ~20 行 traceback。
             # --no-login（不登录）时不查：没有会话就没有「拿空账号去登录」这件事。
@@ -908,7 +916,8 @@ def main(argv: list[str] | None = None) -> int:
         try:
             with DemoRuntime(config, login=not args.no_login, account=args.account, ou=args.ou,
                              division_code=args.division, language=args.language,
-                             create_quota=args.create_quota) as runtime:
+                             create_quota=args.create_quota,
+                             legacy_required=needs_legacy) as runtime:
                 # overlay 而不是 {**flow}：字典解包会丢掉 FlowDocument 的源文本形态，
                 # md5 编译缓存与 ^ 指针定位随之失效（同一份 flow 白编译第二遍、报错白丢行号）
                 FlowCompiler(runtime.registry(), runtime.provider).run(
@@ -1148,10 +1157,11 @@ def _run_multi_flows(args, config, flows: list) -> int:
     # load 是「用户传入 flow 文件」的输入边界，与单 flow 路径同口径：全部 flow 先
     # load+validate（fail fast 在登录/开浏览器之前），任一结构坏 = rc 2 点名，零半截现场。
     flows_loaded = []
+    all_tasks = []
     try:
         for flow_path in flows:
             loaded = FlowCompiler(TaskRegistry()).load(flow_path)
-            FlowCompiler(_full_registry()).validate_flow(loaded)
+            all_tasks.extend(FlowCompiler(_full_registry()).validate_flow(loaded))
             flows_loaded.append(loaded)
     except (OSError, ValueError, KeyError, RuntimeError, yaml.YAMLError) as exc:
         return _user_error(exc)
@@ -1162,13 +1172,14 @@ def _run_multi_flows(args, config, flows: list) -> int:
         return _user_error(exc)
     # 预检与单 flow 路径逐字同口径（该块的内联原件一字未动，故此处按同一序列调用同一组
     # 单点判据函数——复制的是调用序列不是判据，#92 判据本体仍各在其单一真相处）。
+    needs_legacy = legacy_required_for(no_login=args.no_login, tasks=all_tasks)
     try:
-        load_dotenv(config.legacy_project)
+        load_legacy_dotenv(config.legacy_project)
         if not config.base_url:
             raise ValueError(f"缺少 {config.env} 对应的 {config.env_url_key} 配置")
         config.validate_base_url(config.base_url)
         check_demo_api(config)
-        config.check_legacy_paths()
+        check_legacy_required(config, required=needs_legacy)
         if not args.no_login:
             require_account(config, resolve_account(config, args.account))
     except (OSError, ValueError) as exc:
@@ -1181,7 +1192,8 @@ def _run_multi_flows(args, config, flows: list) -> int:
     try:
         with DemoRuntime(config, login=not args.no_login, account=args.account, ou=args.ou,
                          division_code=args.division, language=args.language,
-                         create_quota=args.create_quota) as runtime:
+                         create_quota=args.create_quota,
+                         legacy_required=needs_legacy) as runtime:
             completed = 0
             try:
                 for flow in flows_loaded:
@@ -1465,7 +1477,7 @@ def _explore(args, config) -> int:
         return _explore_auto(args, config)
     from .explore import start
     # 空账号在开浏览器/登录前投递成 rc 2（判据单点在 runtime.require_account）；
-    # 与 __init__ 同解析状态（此刻尚未 load_dotenv(legacy)，与 DemoRuntime 构造期一致）。
+    # 与 __init__ 同解析状态（此刻尚未加载旧仓 .env，与 DemoRuntime 构造期一致）。
     try:
         require_account(config, resolve_account(config, args.account))
     except ValueError as exc:

@@ -100,6 +100,9 @@ class LegacyCaseTask(Task):
              `write`、`requires` 也不要指望透传。
     """
 
+    # ob-5：compile 期判定「这个 Task 需要旧项目目录」的唯一标记（runtime.flow_needs_legacy）。
+    needs_legacy_project = True
+
     def __init__(self, module: str, case_id: str, *, write: bool = True,
                  skip_postcondition: bool = False, skip_precondition: bool = False,
                  save_as: str = "", document_key: str = "so_no",
