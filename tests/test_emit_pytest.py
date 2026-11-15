@@ -366,23 +366,26 @@ def _sha(s: str) -> str:
 # API 腿模块哈希项（lead 裁定 1 点名）：ep_single / ep_multi / flow_api_only / flow_mixed /
 # render_spec_direct / render_empty —— 覆盖 render_test_module 与 _render_api_test 的 fast=False
 # 缺省透传路径（headers 有/无、body 有/无、note 断言、混合 flow 内 API 腿均在列）。
-# 2026-11-15 ae-6（用户排期、lead 落笔，理由=产物 README 可读性改造 §6，纯文档面）：
-# 仅 `readme_pages` / `readme_nopages` 两项哈希更新；其余 10 项**一字未动**（渲染代码零涉）。
-# 改动面=横幅去嵌套加粗 / 运行命令 pytest -q / 快慢两形态分叉 / 死链加诚实注记 /
-# 双入口名 / env 全量键渲染 / 本包文件清单——判据见同文件 ae-6 七格。
+# 2026-11-15 ae-6 剩余可读性（同用户排期，非 README 面）：**4 项哈希更新**，其余 8 项一字未动：
+# - `support`：call_api docstring 补网络层异常归因说明（纯注释，零行为）。
+# - `pages_full` / `pages_none` / `pages_bad`：形态标记（快/慢）+ models 注释加「无引擎消费方」
+#   + `__all__` 折行（_py_all_lines，取值不变）+ locator() 两分支同判据注记。
+# 其余项（ep_*/flow_*/render_*/readme_*）渲染路径零涉故逐字节不变。理由=这几项正是
+# 慢形态 pages/support 渲染面的改动对象；ep_*/render_* 是测试模块面、readme_* 是 README 面，
+# 本波未触碰。
 _FAST_OFF_BASELINE = {
-    "support": "1fed045a64cdc83e13ad88aeb38f869aff6dba139b6a99380095d3a4d0481d98",
+    "support": "a5e64ed555b479aaa8398352f9d34bc1d6d092a772ecf58f7afeba59e6c877e6",
     "ep_single": "4be2db1dca53e163704700f77393f595e6f727e93393a3272e5593c04ac6672e",
     "ep_multi": "9a1f4aa69c8ce7587070aa2cc4f9316c8a672a0f96879859ef1206d233752582",
     "flow_mixed": "94bd0d1e432ce01ede894090f85d78f49a3248ad263a7f31bec2b31e224a7675",
     "flow_api_only": "a5b0108f43213d42b39e988af52753168a1d4dc555a2b7c7b9beb6a4060f6673",
     "render_empty": "5a619e41b93539ce6816a6c7e4b7956896748d72d5f8330ea4641b1546e8440d",
     "render_spec_direct": "55d15ec1285d64b66e3aff53ff62dcbe690c2e8690cd6293965c3e1719585f31",
-    "pages_full": "a727ec05c13c95c7d535117e43d0dc5eb7b3a09d555d2dd1a3308533e42d233f",
-    "pages_none": "9849353d27ad36e4c0166fab5000116d75712d900cd8edee8c5206b38ad6e98a",
-    "pages_bad": "9849353d27ad36e4c0166fab5000116d75712d900cd8edee8c5206b38ad6e98a",
-    "readme_pages": "3ec571fea0bd0b9c97a99edd3221288d62a469adc0002e18724af910db233ab2",
-    "readme_nopages": "f4fa94eb49f78fc587455a74a6bc3bd47574d752fe66596b2373633c238cfb81",
+    "pages_full": "668c76ff06a76ef1bc7ed350991fdc8ed50220e82e74c38d0987eed30f24e128",
+    "pages_none": "ea1bbd80552150d8364c9409513f49c11aae1868c2b8c51be99813568772408a",
+    "pages_bad": "ea1bbd80552150d8364c9409513f49c11aae1868c2b8c51be99813568772408a",
+    "readme_pages": "33d8ad7d7de6fb20992af267b5727ed9490332e22bbc43eb4bac31b9b5f51ac9",
+    "readme_nopages": "871d0e105c23e21607dfecc202b51ccc00d63421f9e7945ebe9fa8dcbfecaf30",
 }
 
 
@@ -1195,3 +1198,77 @@ def test_pages_both_renderers_share_aria_branch(tmp_path, fast, monkeypatch):
     _assert_compiles(src)
     mod = _load_pages(tmp_path, comps, fast=fast)
     assert mod.C(_RecPage()).locator("save") == ("role", "button", "保存")
+
+
+# ---- ob-6：产物 README 不内嵌平台业务字面量（README 模板层）----
+# 旧 README 硬编码 `export ISC_APP_HEADER=…`——某平台的业务识别头名。非 ISC 平台拿到一份
+# 「要填一个自己根本不用的头」的说明（模板把平台知识泄漏给所有产物）。改为按步骤头实际用到的
+# `${VAR}` 渲染；一个占位符都没有就不出这行。
+
+def test_readme_run_block_has_no_hardcoded_business_header():
+    """无步骤头时，运行段不得出现任何业务头名（只留基址行）。"""
+    readme = _build_readme("fid", [StepSpec(1, "a", "i", "api_call", is_api=True)],
+                           has_pages=False)
+    run_block = readme.split("## 运行", 1)[1].split("```", 1)[1]
+    assert "ISC_APP_HEADER" not in run_block
+    assert "isc-app" not in run_block
+    assert "export ATLAS_BASE_URL=" in run_block
+
+
+def test_readme_renders_actual_header_placeholders():
+    """步骤头带 `${AUTH_TOKEN}`/`${APP_ID}` → README 按实际占位符逐行提示，且不含 ISC。"""
+    specs = [StepSpec(1, "a", "i", "api_call", is_api=True,
+                      headers={"Authorization": "${AUTH_TOKEN}", "X-App": "${APP_ID}"})]
+    readme = _build_readme("fid", specs, has_pages=False)
+    run_block = readme.split("## 运行", 1)[1].split("```", 1)[1]
+    assert "export AUTH_TOKEN='<按环境填写>'" in run_block
+    assert "export APP_ID='<按环境填写>'" in run_block
+    assert "ISC_APP_HEADER" not in readme
+
+
+# ---- ae-6 剩余可读性（pages 面）：形态标记 / models 注记 / __all__ 折行 / 同判据注记 ----
+
+def test_pages_module_shape_marker_fast_and_slow():
+    """atlas_pages.py 模块 docstring 首段带形态标记（快/慢由 fast 渲染，读者拿到即知）。"""
+    comps = {"components": {"x": {"selectors": {"a": ".a"}}}}
+    assert "形态标记：**慢模式**" in emit_pages_module(comps, fast=False)
+    assert "形态标记：**快模式**" in emit_pages_module(comps, fast=True)
+
+
+def test_pages_models_comment_notes_no_consumer():
+    """models 注释带「当前无引擎消费方，仅供接线参考」——读者不再猜谁消费 models。"""
+    comps = {"components": {"x": {"selectors": {"a": ".a"}, "models": {"vm": "dlg"}}}}
+    src = emit_pages_module(comps)
+    assert "# models:" in src
+    assert "无引擎消费方" in src
+
+
+def test_pages_all_folds_when_long():
+    """组件多到 __all__ 单行超宽时折行（取值不变、逐项一行）。"""
+    many = {"components": {f"component_{i:02d}": {"selectors": {"a": ".a"}} for i in range(8)}}
+    src = emit_pages_module(many)
+    assert "__all__ = [\n" in src                    # 折行形态
+    assert "]" in src
+    # 取值不变：__all__ 求值是同一组类名（语法合法 + 名字齐全）
+    import ast as _ast
+    tree = _ast.parse(src)
+    names = [n for n in tree.body if isinstance(n, _ast.Assign)
+             and getattr(n.targets[0], "id", "") == "__all__"]
+    assert names, "__all__ 赋值必须在位"
+    vals = [e.value for e in names[0].value.elts]
+    for i in range(8):
+        assert any(v == f"Component{i:02d}" for v in vals)
+
+
+def test_pages_all_stays_single_line_when_short():
+    """短 __all__（放得下）保持单行——折行只改可读性，不无脑全折。"""
+    src = emit_pages_module({"components": {"x": {"selectors": {"a": ".a"}}}})
+    assert "__all__ = ['X']" in src
+
+
+def test_pages_structured_locator_notes_same_judgment():
+    """含结构化描述的 locator() 分支带「两形态同判据，勿只改其一」注记。"""
+    comps = {"components": {"x": {"selectors": {
+        "save": {"role": "button", "name": "保存"}}}}}
+    src = emit_pages_module(comps)
+    assert "勿只改其一" in src

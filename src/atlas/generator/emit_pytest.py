@@ -118,6 +118,22 @@ def _py_literal(value: Any) -> str:
     return repr(value)
 
 
+def _py_all_lines(names: list[str], *, width: int = 80) -> list[str]:
+    """`__all__` 折行渲染（ae-6：单行超长 → 按行宽折，语义不变）。
+
+    一行放得下（`__all__ = [...]` ≤ width）就保持单行；放不下才逐项折行（首行 `__all__ = [`，
+    末行 `]`），中间每项缩进 4 格。折行是纯可读性改造，产物的 `__all__` 取值逐字不变。
+    """
+    single = f"__all__ = [{', '.join(_py_literal(n) for n in names)}]"
+    if len(single) <= width:
+        return [single]
+    out = ["__all__ = ["]
+    for name in names:
+        out.append(f"    {_py_literal(name)},")
+    out.append("]")
+    return out
+
+
 def _ident_slug(text: str, *, fallback: str = "step") -> str:
     """slugify 后转成合法标识符片段（非字母数字 → _）。"""
     s = slugify(text, fallback=fallback).replace("-", "_")
@@ -513,12 +529,14 @@ def _render_test_module_fast(specs: list[StepSpec], *, flow_id: str = "",
         "ATLAS_FAST_ALLOW_WRITES=1 才执行（红线 #2/#13）。",
     ]
     if has_ui:
-        lines.append(
-            "UI step 三路真渲染：page_object（已批准组件名）→ atlas_pages 页对象 .action()；"
+        lines += [
+            "UI step 三路真渲染：page_object（已批准组件名）→ atlas_pages 页对象 .action()；",
             "无声明时按组件库 actions 数据 auto-wire（task→组件动作）→ .do_<元素>()（可执行，"
-            "引擎不硬编码业务名）；legacy_pages（旧套件函数名）→ legacy_page_call 只读委托；"
+            "引擎不硬编码业务名）；",
+            "legacy_pages（旧套件函数名）→ legacy_page_call 只读委托；",
             "操作未接线时产物显式终态（NotWired→env_blocked），不假装通过也不静默跳过"
-            "（gap9b B-2 + gap9 动作语义）。")
+            "（gap9b B-2 + gap9 动作语义）。",
+        ]
     lines += [
         '"""',
         "from __future__ import annotations",
@@ -648,7 +666,12 @@ def resolve_placeholders(value, env=None):
 
 def call_api(*, method, path, base_url="", headers=None, body=None, query=None,
              timeout=30, env=None):
-    """发一次 HTTP 请求。body 分流：dict/list→JSON，str/bytes→原样（与 Atlas DSL 同口径）。"""
+    """发一次 HTTP 请求。body 分流：dict/list→JSON，str/bytes→原样（与 Atlas DSL 同口径）。
+
+    网络层异常（连接/超时/DNS 等）**不裸崩**——被收进 `StepResult(ok=False, err=…)`，
+    由产物侧的存活断言归因（err 带异常类型名，如 `URLError`/`TimeoutError`），
+    调用方据此判失败而非让整个用例崩掉。
+    """
     method = (method or "GET").upper()
     url = (base_url or "") + str(resolve_placeholders(path, env))
     if query:
@@ -922,7 +945,8 @@ def _locator_method_lines(selectors: dict) -> list[str]:
         "    def locator(self, element):",
         '        """按元素名取 locator；未知名点名（不静默 None）。\n'
         '        两形态（gap13）：CSS 字符串，或 IR 映射 '
-        '{"kind": "role", "role": .., "name": ..}——ARIA 优先由组件库人审内容决定。"""',
+        '{"kind": "role", "role": .., "name": ..}——ARIA 优先由组件库人审内容决定。\n'
+        '        判据同构：两分支的未知名 KeyError 消息逐字相同，改判据时两处一起改（勿只改其一）。"""',
         "        spec = self.SELECTORS.get(element)",
         "        if spec is None:",
         '            raise KeyError('
@@ -968,6 +992,7 @@ def _emit_pages_module_fast(comps: dict) -> str:
     lines: list[str] = [
         '"""生成候选（generator/emit_pytest）：页对象库（快模式），派生自 Atlas 组件库 components.json。',
         "",
+        "形态标记：**快模式**（未接线 UI 动作抛 NotWired→env_blocked，见下）。",
         "复用 Atlas 实测选择器（单一来源仍是 components.json；本文件是只读派生，人审后可改）。",
         f"依赖：Playwright 的 page 对象（``__init__(page)``）＋同目录底座 ``{base_mod}``。",
         "两条诚实腿（未接线一律显式终态，绝不静默放过/假装通过，红线 #9/#7）：",
@@ -1034,7 +1059,7 @@ def _emit_pages_module_fast(comps: dict) -> str:
         "",
     ]
     class_names = [_pascal(name) for name in comps]
-    lines.append(f"__all__ = {_py_literal(['login', 'legacy_page_call', *class_names])}")
+    lines.extend(_py_all_lines(['login', 'legacy_page_call', *class_names]))
     lines.append("")
     lines.append("")
     for name, spec in comps.items():
@@ -1047,7 +1072,8 @@ def _emit_pages_module_fast(comps: dict) -> str:
         if selectors:
             lines.extend(_selector_member_lines(selectors, where=f"组件 {name}"))
         if models:
-            lines.append(f"    # models: {_py_literal(models)}")
+            lines.append(f"    # models: {_py_literal(models)}"
+                         "（当前无引擎消费方，仅供接线参考）")
         lines.append("")
         lines.append("    def __init__(self, page):")
         lines.append("        self.page = page")
@@ -1082,6 +1108,7 @@ def emit_pages_module(components: dict | None, *, fast: bool = False) -> str:
     lines: list[str] = [
         '"""生成候选（generator/emit_pytest）：页对象库，派生自 Atlas 组件库 components.json。',
         "",
+        "形态标记：**慢模式**（未接线 UI 动作为 NotImplementedError 骨架，见下）。",
         "复用 Atlas 实测选择器（单一来源仍是 components.json；本文件是只读派生，人审后可改）。",
         "依赖：Playwright 的 page 对象（``__init__(page)``）。不含任何 Atlas 运行时 import。",
         "操作骨架一律 NotImplementedError —— 未接线即明确失败，绝不静默放过（红线 #9/#7）。",
@@ -1090,7 +1117,7 @@ def emit_pages_module(components: dict | None, *, fast: bool = False) -> str:
         "",
     ]
     class_names = [_pascal(name) for name in comps]
-    lines.append(f"__all__ = {_py_literal(class_names)}")
+    lines.extend(_py_all_lines(class_names))
     lines.append("")
     lines.append("")
     for name, spec in comps.items():
@@ -1103,7 +1130,8 @@ def emit_pages_module(components: dict | None, *, fast: bool = False) -> str:
         if selectors:
             lines.extend(_selector_member_lines(selectors, where=f"组件 {name}"))
         if models:
-            lines.append(f"    # models: {_py_literal(models)}")
+            lines.append(f"    # models: {_py_literal(models)}"
+                         "（当前无引擎消费方，仅供接线参考）")
         lines.append("")
         lines.append("    def __init__(self, page):")
         lines.append("        self.page = page")
@@ -1336,6 +1364,22 @@ def emit_pytest_package(*, out_dir: Path, endpoints: list[Endpoint] | None = Non
     return written
 
 
+def _readme_header_placeholders(specs: list[StepSpec]) -> list[str]:
+    """从步骤头里提取 `${VAR}` 占位符名（ob-6：README 不再内嵌业务字面量）。
+
+    旧 README 硬编码 `export ISC_APP_HEADER=…`——这是某平台的业务识别头名，非 ISC 平台
+    拿到一份「要填一个自己根本不用的头」的说明（产物模板把平台知识泄漏给所有人）。改为
+    从**实际步骤头**推导：产物里真有什么占位符，README 就提示填什么；一个都没有就不出这行。
+    保持确定性（排序去重），不猜业务语义。
+    """
+    import re
+    names: set[str] = set()
+    for spec in specs:
+        for value in (spec.headers or {}).values():
+            names.update(re.findall(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", str(value)))
+    return sorted(names)
+
+
 def _build_readme(flow_id: str, specs: list[StepSpec], has_pages: bool,
                   *, fast: bool = False, parallel: int = 0) -> str:
     """产物 README（读者第一接触面）。
@@ -1345,6 +1389,8 @@ def _build_readme(flow_id: str, specs: list[StepSpec], has_pages: bool,
     快/慢两形态各自渲染未接线语义（慢=skip 占位 / 快=NotWired→env_blocked）、
     仓库内文档链接注明「产物机上无此文件」、双入口名、env 全量键从 `emit_fast.ENV_KEYS`
     唯一清单渲染（不手抄、不写死键数）、补本包文件清单。
+    ob-6：运行段的头占位符从 `specs[*].headers` 推导（`_readme_header_placeholders`），
+    不在模板里硬编码 `ISC_APP_HEADER`——非 ISC 平台不再被塞一个不适用的头名。
     """
     n_api = sum(1 for s in specs if s.is_api)
     n_ui = len(specs) - n_api
@@ -1391,13 +1437,12 @@ def _build_readme(flow_id: str, specs: list[StepSpec], has_pages: bool,
     ]
     lines.append("# 依赖：pytest + playwright（零新增运行时依赖）" if fast
                  else "# 依赖：仅 pytest（UI step 另需 playwright，未接线时以 skip 占位）")
-    lines += [
-        "export ATLAS_BASE_URL='https://<host>'      # 或改 BASE_URL 默认值",
-        "export ISC_APP_HEADER='<业务识别头>'        # 占位符 ${ISC_APP_HEADER} 等",
-        "pytest -q",
-        "```",
-        "",
-    ]
+    lines.append("export ATLAS_BASE_URL='https://<host>'      # 或改 BASE_URL 默认值")
+    # ob-6：头占位符按产物实际用到的 `${VAR}` 渲染（无业务字面量）。
+    for placeholder in _readme_header_placeholders(specs):
+        lines.append(f"export {placeholder}='<按环境填写>'      # 步骤头占位符 ${{{placeholder}}}")
+    lines.append("pytest -q")
+    lines += ["```", ""]
     if fast:
         lines.append(
             "UI step 未接线时运行期显式终态 `NotWired` → runs.jsonl 记 env_blocked（点名组件/元素，"
@@ -1450,14 +1495,16 @@ def _build_readme(flow_id: str, specs: list[StepSpec], has_pages: bool,
             "  `atlas allure <本目录>/reports/runs.jsonl --out <本目录>/reports/allure-results`。",
             "- env 旋钮常用项：`ATLAS_BASE_URL`（API 腿基址，回落 `ATLAS_FAST_BASE_URL`）、",
             "  `ATLAS_FAST_LOGIN_INDICATOR`（必填指示器选择器，缺→env_blocked）、",
-            "  `ATLAS_FAST_ACCOUNT`/`ATLAS_FAST_PASSWORD`（回落 `DEMO_USERNAME`/`DEMO_PASSWORD`，凭据只从 env 读）、",
+            "  `ATLAS_FAST_ACCOUNT`/`ATLAS_FAST_PASSWORD`（回落 `DEMO_USERNAME`/`DEMO_PASSWORD`——",
+            "  这是 demo/旧项目兼容回落位，自有平台请直接设 `ATLAS_FAST_*` 主键；凭据只从 env 读）、",
             "  `CASE_TIMEOUT`（看门狗秒数，默认 600）、`ATLAS_FAST_ALLOW_WRITES=1`（写步骤放行，默认拦停）、",
             "  `ATLAS_FAST_CDP`+`ATLAS_FAST_INTERACTIVE=1`+`ATLAS_FAST_ATTACH_MATCH`（attach 三条件，",
             "  见 `conftest.py` 顶部）、`ATLAS_BROWSER_CHANNEL`（chromium|chrome|firefox|webkit，缺省 chromium）、",
             "  `ATLAS_RUNS_DIR`、`ATLAS_BROWSER_EXECUTABLE`（系统浏览器逃生舱）、`CDP_DEBUG=1`（强制有头）、",
             "  `ATLAS_LEGACY_WEB`（诚实腿二：旧套件只读委托位）。",
             f"- 全量键清单（{len(ENV_KEYS)} 键，生成器从 `emit_fast.ENV_KEYS` 唯一清单渲染；"
-            "产物内实际读取点在 `_atlas_fast.py`；另有外键 `ATLAS_BASE_URL`/`ISC_APP_HEADER` 见「运行」段）：",
+            "产物内实际读取点在 `_atlas_fast.py`；另有外键 `ATLAS_BASE_URL` 与步骤头占位符"
+            "（见「运行」段按本包实际用到的 `${VAR}` 列出））：",
             *env_lines,
             "- `ATLAS_FAST_TRACE`/`ATLAS_FAST_TRACE_ACCEPT_SECRETS` 双确认才开失败腿 trace"
             "（zip 含密码，勿外发/勿入库，红线 #2 显式例外）。",
