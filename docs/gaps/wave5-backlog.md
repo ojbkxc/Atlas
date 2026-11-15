@@ -113,3 +113,9 @@
 5. **成员缺陷两处由 lead 代修**（已含进提交）：en-11 测试导入错（`atlas.evidence` 不存在
    → `atlas.session.ApiEvidence`）；en-11 实现真缺陷（`Actor.api` 缺 Ability 时抛
    RuntimeError，`getattr` 接不住 → 双兜底）。
+6. **共享工作树的变异抽查会污染并行全量**：lead 的全量在一次运行里出现 10 failed——
+   唯一新增红是 `legacy_required_for` 真值表，失败形态恰等于「函数恒return True」这把
+   变异刀；并行窗口内 verify 正在同一树做变异取证。重跑即恢复 9 failed / 2949 passed。
+   纪律：变异前备份 + sha256；改完立即还原；全量期间冻结 `src/`；两次全量串行；
+   看到「恰好一条新红且形态等于某把刀」先查并行，不先改代码（本次 lead 核对后确认
+   是污染，未误改实现）。
