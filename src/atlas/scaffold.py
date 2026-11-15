@@ -212,6 +212,8 @@ def main() -> int:
     # （这是纯文案提示），自建 HTTP 一律带 --bind 127.0.0.1。
     print("分发提醒：报告只在 localhost 看。自建 HTTP 请显式绑回环："
           "python -m http.server 8765 --bind 127.0.0.1", file=sys.stderr)
+    print("截图旋钮：失败取证截图默认 PNG 保真；要降编码体积可设 "
+          "ATLAS_SHOT_QUALITY=jpeg,q=70（仅失败腿，成功不截图）", file=sys.stderr)
     if args.mode == "serve":
         return subprocess.call([args.allure, "serve", str(RESULTS)])
     return subprocess.call([args.allure, "open", str(REPORT)])

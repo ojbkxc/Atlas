@@ -1,6 +1,6 @@
 # wave4 B/C 轴收尾：审美呈现面 + 性能剩余
 
-> 2026-11-15 收口。上一收口位 2671（A 轴）→ 本波 **2796 passed / 9 failed（既有环境）/ 8 skipped**
+> 2026-11-15 收口。上一收口位 2671（A 轴）→ 本波 **2797 passed / 9 failed（既有环境）/ 8 skipped**
 > （verify 两次串行一致，失败逐名与基线一致、零新增）。
 > 队伍 `atlas-wave4-finish`（lead + 5 写手 + verify，7 成员；glm/qwen 写手各两次流超时，
 > 换 deepseek 重派后完成）。

@@ -257,6 +257,27 @@ def atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8") -> None
         raise
 
 
+def atomic_write_bytes(path: Path, data: bytes) -> None:
+    """整份原子写（bytes 形态）：tmp + fsync + `os.replace`，与 `atomic_write_text`
+    逐字同机制（text 入口 utf-8 编码后走本函数）。bytes 消费方（如 allure 附件复制）
+    直接用本函数——不留第二份实现（#92）。"""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        with tmp.open("wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass   # 清理失败不顶掉原始异常（真因优先）
+        raise
+
+
 _READ_RETRY_ATTEMPTS = 3
 _READ_RETRY_DELAY_S = 0.05
 

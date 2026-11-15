@@ -30,8 +30,7 @@ skipped_malformed_lines。计数读的是 §3.5 映射后**已落盘** result �
 文件同生命周期；无 uuid/时间戳，同输入两次 emit 逐字节相等。
 
 pf-6（wave4 C 轴附件复制小优化）：`write_attachment` 落盘改原子字节写（tmp+fsync+
-os.replace，与 atomic_io 同机制——bytes 形态在文件域约束下本地实现，见
-`_atomic_write_bytes`），多 ref 批量并行复制（`_write_attachments_batch`，条目序==
+os.replace，经 `atomic_io.atomic_write_bytes` 单点——收口收敛后不留本地副本 #92），多 ref 批量并行复制（`_write_attachments_batch`，条目序==
 输入序，单 ref 直落不启线程池）；产物字节与旧实现逐字一致，默认路径零涟漪。
 """
 from __future__ import annotations
@@ -43,7 +42,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .atomic_io import read_text_retry
+from .atomic_io import atomic_write_bytes, read_text_retry
 
 # Allure 结果集目录名（与 `atlas allure` 默认输出、devops-sync 的读取子路径同值）。
 # 单点定义：消费方 import 这里，不各自手抄字面量（#92 改一漏一）。
@@ -286,27 +285,9 @@ def write_attachment(out_dir: Path, source_path: Path, label: str,
 
 
 def _atomic_write_bytes(path: Path, data: bytes) -> None:
-    """原子字节写：tmp + fsync + `os.replace`（写中崩不留半截文件）。
-
-    与 `atomic_io.atomic_write_text` 同一机制——atomic_io 只有 text 入口，附件复制是
-    bytes 形态，文件域约束下在本地实现（机制逐字一致，不引新依赖）。replace/fsync 抛错
-    时已落盘的 `.tmp` 残档尽力 unlink（不留脏 tmp 误导「看目录判断成功」的消费方），
-    unlink 失败不顶掉原始异常。
-    """
-    path = Path(path)
-    tmp = path.with_name(path.name + ".tmp")
-    try:
-        with tmp.open("wb") as stream:
-            stream.write(data)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(tmp, path)
-    except BaseException:
-        try:
-            tmp.unlink()
-        except OSError:
-            pass
-        raise
+    """薄委托 `atomic_io.atomic_write_bytes`（pf-6 收口收敛：原子字节写单点在 atomic_io，
+    本模块不留第二份实现 #92）。"""
+    atomic_write_bytes(path, data)
 
 
 _COPY_WORKERS = 4   # pf-6 并行复制 worker 上限（小文件 I/O 复制，4 并发足够）
