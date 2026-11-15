@@ -31,7 +31,9 @@
 
 - **ae-6 的改造**：评审已记录 P0/P1/P2（产物 README 四条 P0 全在 `_build_readme` 单函数内），改造留后续波次；
 - **pf-3**（autopilot 固定 1000ms → 语义等待）：#36 口径要求真机验证失败点不移动，本机禁浏览器无法闭环，不做；
-- **C12-F 撞序缺陷（P0，既有代码、非本波引入）**：verify 终验发现 `idempotency_token` 的 `IDEM_WHERE_KEY="atlas_idem"` 与全量统计传入的 `"atlas_idem:allure_analyze"` 混用，ALLURE/SYSTEM 两 namespace 撞成同一条幂等记录（生产写操作双跑面）。交下一波修（`delivery.py` + 测试），本波记录在案。
+- **C12 幂等面终验核查 sound**（verify 实查）：`IDEM_WHERE_KEY="atlas_idem"` 是机制键名唯一出处
+  （`delivery.py:23`），`idempotency_token` 全仓只有两个调用方（`probes.py:190/245`，均不传 scope），
+  键注入单点 `probes.py:193`——无「多 namespace 撞同一条幂等记录」的面。核过即可，不构成缺陷。
 
 ## 4. 过程教训
 
