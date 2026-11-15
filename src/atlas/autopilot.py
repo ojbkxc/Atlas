@@ -486,6 +486,40 @@ def _execute(page, action: dict, ctx: ExploreContext) -> dict:
         page.goto(str(action["url"]), wait_until="domcontentloaded", timeout=60000)
         return {"action": kind, "url": sanitize_url(str(action["url"]))}
     if kind == "wait":
+        # pf-3：语义等待优先——按 action 声明的 `target` 走 waits.py 的单一判据
+        # （不再无脑睡 1000ms）；缺省无 target 时回落旧的固定 ms（LLM 未指明等什么时
+        # 保留旧行为=逐字节不变，opt-in 边界）。
+        #   target="mask_gone" → waits.wait_for_mask_gone（等 loading 遮罩消失）
+        #   target="rows"      → waits.wait_for_rows（表格 vm.data 落定；min_rows 缺省 1）
+        #   target="vue_field" → waits.wait_for_vue_field（Vue 字段就绪）
+        #   target="url_change"→ waits.wait_for_url_change（导航完成）
+        # ms 仅在回落路径生效；语义路径用 waits 各函数自身的 timeout_ms（缺省由它们定）。
+        target = action.get("target")
+        timeout_ms = int(action.get("timeout_ms") or 10000)
+        if target == "mask_gone":
+            from atlas import waits
+            waits.wait_for_mask_gone(page, timeout_ms=timeout_ms,
+                                     family=action.get("family"))
+            return {"action": kind, "target": target, "timeout_ms": timeout_ms}
+        if target == "rows":
+            from atlas import waits
+            waits.wait_for_rows(page, table_selector=str(action.get("table") or ".el-table"),
+                                min_rows=int(action.get("min_rows", 1)),
+                                timeout_ms=timeout_ms, family=action.get("family"))
+            return {"action": kind, "target": target, "timeout_ms": timeout_ms,
+                    "table": str(action.get("table") or ".el-table")}
+        if target == "vue_field":
+            from atlas import waits
+            waits.wait_for_vue_field(page, str(action["vm_path"]), timeout_ms=timeout_ms)
+            return {"action": kind, "target": target, "vm_path": str(action["vm_path"]),
+                    "timeout_ms": timeout_ms}
+        if target == "url_change":
+            from atlas import waits
+            waits.wait_for_url_change(page, timeout_ms=timeout_ms)
+            return {"action": kind, "target": target, "timeout_ms": timeout_ms}
+        if target is not None:
+            raise ActionRejected(
+                f"wait.target 只支持 mask_gone|rows|vue_field|url_change，收到 {target!r}")
         ms = int(action.get("ms") or 1000)
         page.wait_for_timeout(ms)
         return {"action": kind, "ms": ms}
