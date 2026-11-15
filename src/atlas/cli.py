@@ -175,6 +175,9 @@ def _parser() -> argparse.ArgumentParser:
                                     help="未命中项登记 pending_review 进审核塔（走 ExperienceJournal）")
     allure_analyze_cmd.add_argument("--format", default="json", choices=["json", "text"],
                                     help="输出格式：json（默认）或 text（人读版）")
+    allure_analyze_cmd.add_argument("--no-incremental", action="store_true",
+                                    help="禁用增量读（pf-9：默认按指纹跳过未变 *-result.json），"
+                                         "强制全量解析——怀疑指纹缓存时逃生用")
     knowledge = add("knowledge", help="查询知识库")
     knowledge.add_argument("query", nargs="?", default="")
     library = add_format(add("library", help="公共任务库：已审核的跨流程可复用动作序列（只读查询；"
@@ -665,7 +668,8 @@ def main(argv: list[str] | None = None) -> int:
             from .experience import ExperienceJournal
             to_tower = ExperienceJournal(config.reports_dir)
         try:
-            result = analyze_allure(args.results_dir, knowledge=knowledge, to_tower=to_tower)
+            result = analyze_allure(args.results_dir, knowledge=knowledge, to_tower=to_tower,
+                                    incremental=not getattr(args, "no_incremental", False))
         except (OSError, ValueError) as exc:
             return _user_error(exc)
         if getattr(args, "format", "json") == "text":

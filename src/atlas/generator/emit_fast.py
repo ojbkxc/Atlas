@@ -84,9 +84,10 @@ RUN_STATUS_VOCAB = ("passed", "failed", "env_blocked", "interrupted", "waiting",
 
 ARTIFACTS_DIR_NAME = "artifacts"
 
-# 语义等待轮询节奏（锁步 atlas.waits 的 timeout_ms // 100 tick）。
+# 语义等待轮询节奏（锁步 atlas.waits 的 TICK_MS tick；pf-4：25ms 对齐 legacy_fast 垫片，
+# 只降解析延迟上限、不动忙判据 #36）。
 # F-3/F-4：这是全文件唯一允许的等待步长——page.wait_for_timeout 的实参必须是裸 TICK_MS。
-TICK_MS = 100
+TICK_MS = 25
 
 # 导航瞬态判据（锁步 atlas.waits._TRANSIENT_MARKS）：只有这类抛错值得穿越 reload 继续等。
 # 完整子串口径：navigating≠navigation；"detached" 兜 frame-detached 形态。

@@ -472,12 +472,18 @@ def test_family_present_js_substring_lookalike_not_family(tmp_path, monkeypatch,
 
 
 def test_tick_ms_lockstep_with_waits_source(tmp_path, monkeypatch, request):
-    """waits.py 无 TICK 常量，锁步押在它的轮询步长字面量上（timeout_ms // 100）。"""
+    """waits.py 轮询节拍与产物 TICK_MS 等值（pf-4：上游提常量后锁步改提常量值，
+    兼容内联字面量形态；上游 tick 变了要先同步判据，再重新生成产物）。"""
     support, _ = _load_artifact(tmp_path, monkeypatch, request)
     waits_src = Path(atlas_waits.__file__).read_text(encoding="utf-8")
-    ticks = set(re.findall(r"timeout_ms // (\d+)", waits_src))
-    assert ticks == {"100"}, "上游 tick 变了要先同步判据，再重新生成产物"
-    assert support.TICK_MS == 100
+    m = re.search(r"^TICK_MS = (\d+)", waits_src, re.M)
+    if m:
+        upstream_tick = int(m.group(1))
+    else:
+        ticks = set(re.findall(r"timeout_ms // (\d+)", waits_src))
+        assert ticks, "waits.py 轮询节拍既无 TICK_MS 常量也无内联字面量"
+        upstream_tick = int(ticks.pop())
+    assert upstream_tick == support.TICK_MS, "上游 tick 变了要先同步判据，再重新生成产物"
 
 
 def test_run_status_vocab_lockstep_with_failures(tmp_path, monkeypatch, request):

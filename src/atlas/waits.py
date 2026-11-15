@@ -59,6 +59,13 @@ from .ui_family import UiFamilyMismatch, resolve_family
 # 靠 "detached" 兜住 frame-detached 形态；Target closed/语法错/业务超时均不含三者。
 _TRANSIENT_MARKS = ("execution context was destroyed", "navigation", "detached")
 
+# 轮询节拍（pf-4）：语义等待的解析延迟上限 = 一个 tick。原内联 100ms 提为模块常量，
+# 25ms 对齐 legacy_fast 有界等待垫片（gap11）——条件恰好在两拍之间满足时最多多等一个
+# tick，降 tick 只降解析延迟上限（10s 窗口内从最多 100ms 降到 25ms），**不动忙判据**
+# （#36：观测到忙才提前的闸一字不改）；代价是轮询次数 ×4（evaluate 调用密度）。
+# emit_fast 产物模板的 TICK_MS 锁步等值（锁步测钉两边运行时值相等）。
+TICK_MS = 25
+
 
 def _is_transient(exc: BaseException) -> bool:
     """只重试「可能随页面就绪自愈」的导航瞬态；其余（Target closed/SyntaxError/
@@ -246,14 +253,14 @@ def wait_for_rows(page, table_selector: str = ".el-table", min_rows: int = 1,
     fam = resolve_family(family)
     page.wait_for_selector(table_selector, state="attached", timeout=timeout_ms)
     _settle_mask(page, mask_selector, fam, timeout_ms)
-    for _ in range(max(1, timeout_ms // 100)):
+    for _ in range(max(1, timeout_ms // TICK_MS)):
         try:
             result = page.evaluate(_TABLE_ROWS_JS, table_selector)
         except Exception as exc:
             if not _is_transient(exc):
                 raise   # Target closed/语法错/业务超时：重试永远不可能成功，
                         # 烧满窗口后谎报「未达 N 行」=框架故障伪装成等待失败（#133/#102）
-            page.wait_for_timeout(100)
+            page.wait_for_timeout(TICK_MS)
             continue   # 页面正在跳转/重载：未落定，下一拍再读
         if isinstance(result, str) and result.startswith("__atlas_"):
             if result == "__atlas_no_table__":
@@ -267,7 +274,7 @@ def wait_for_rows(page, table_selector: str = ".el-table", min_rows: int = 1,
             count = result or 0
         if count >= min_rows:
             return count
-        page.wait_for_timeout(100)
+        page.wait_for_timeout(TICK_MS)
     raise TimeoutError(f"{table_selector} 在 {timeout_ms}ms 内未达 {min_rows} 行（mask 已落定）")
 
 
@@ -291,31 +298,31 @@ def wait_for_vue_field(page, vm_path: str, timeout_ms: int = 10000) -> Any:
     uf-2 分流：`#app` 存在却无 `__vue__` → 页面非 Vue2 运行时（Vue3 挂 `__vue_app__`、
     非 Vue 框架无此属性）→ 点名 `RuntimeError`，绝不回落 null 把运行时错配伪装成「无值」
     （#102/#105）；`#app` 自身缺席按「未就绪」重试（导航期 DOM 重整，旧行为）。"""
-    for _ in range(max(1, timeout_ms // 100)):
+    for _ in range(max(1, timeout_ms // TICK_MS)):
         try:
             value = page.evaluate(_VM_FIELD_JS, vm_path)
         except Exception as exc:
             if not _is_transient(exc):
                 raise   # 同 wait_for_rows：不可恢复抛错不得烧窗口谎报「无值」（#133）
-            page.wait_for_timeout(100)
+            page.wait_for_timeout(TICK_MS)
             continue
         if isinstance(value, str) and value.startswith("__atlas_"):
             if value == "__atlas_no_app__":
-                page.wait_for_timeout(100)
+                page.wait_for_timeout(TICK_MS)
                 continue   # #app 尚未挂载：未就绪，下一拍再读（导航期常态）
             raise RuntimeError(
                 f"读取 Vue 字段 {vm_path} 失败：页面非 Vue2 运行时或字段位置不同"
                 f"（#app 无 __vue__，{value}）——换运行时后取值判据不可信（uf-2）")
         if value is not None:
             return value
-        page.wait_for_timeout(100)
+        page.wait_for_timeout(TICK_MS)
     raise TimeoutError(f"Vue 字段 {vm_path} 在 {timeout_ms}ms 内无值")
 
 
 def wait_for_url_change(page, timeout_ms: int = 10000) -> str:
     """等待 URL 发生变化（hash 路由跳转完成的信号）。"""
     old_url = page.url
-    for _ in range(max(1, timeout_ms // 100)):
+    for _ in range(max(1, timeout_ms // TICK_MS)):
         try:
             current = page.url
         except Exception as exc:
@@ -325,7 +332,7 @@ def wait_for_url_change(page, timeout_ms: int = 10000) -> str:
             current = old_url   # 极端瞬态：视为未变，继续等
         if current != old_url:
             return current
-        page.wait_for_timeout(100)
+        page.wait_for_timeout(TICK_MS)
     raise TimeoutError(f"URL 在 {timeout_ms}ms 内未变化（仍为 {old_url}）")
 
 

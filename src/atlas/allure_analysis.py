@@ -7,12 +7,27 @@
 - 不新增知识写路径：产出只进 pending_review 草稿 → 既有 atlas review 塔（红线 #9/#10）。
 - 控制流异常（interrupted）一律拒自愈（#108）。
 - 读侧容错：坏字节/坏 JSON/腰斩不整份崩（#131/#112）。
+
+pf-9（wave4 C 轴增量读）：结果集只追加不改写（Allure 自产即如此），读侧按
+(mtime_ns, size) 指纹跳过未变 result——大套件（数百 run）每次全量重解析是报告侧最大
+单点（warm 3.8s/202 results）。指纹缓存落 `atlas-analyze-fingerprint.json`（atlas- 前缀，
+clean 随结果文件同生命周期）。语义约束：新落盘/指纹变更的 result 必读（负向对照钉死）；
+坏文件（解析失败）**不写指纹**——每次计数 skipped，容错纪律不绕过；fail_class 判据一字
+不动（增量只是跳过重复解析，findings 内容同源）；指纹缓存坏/缺失 → WARN 一行 + 全量解析
+（缺失是首次运行常态，坏缓存当无缓存，点名不静默）。
 """
 from __future__ import annotations
-from dataclasses import dataclass, field
+import json
+import sys
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from .atomic_io import atomic_write_text
 from .failures import FailureClass, OPERATIONAL, classify_text
+
+# 增量读指纹缓存文件名（pf-9）：atlas- 前缀 → emit_allure 的 clean 随结果文件同生命周期；
+# 刻意不落 *-result.json 形态——解析侧只认该形态，缓存不会被误当一条结果。
+_FINGERPRINT_FILENAME = "atlas-analyze-fingerprint.json"
 
 # §6.3 四大失败类型映射（可配置分组，不写死引擎——红线 #11）。
 # 默认映射基于 Atlas 现有失败类聚成 4 桶 + 兜底 unknown。
@@ -123,18 +138,84 @@ def parse_allure_result(result: dict) -> AllureFinding:
     )
 
 
-def _load(results_dir: Path) -> tuple[list[AllureFinding], int]:
-    """读结果集目录的所有 *-result.json，返回 (findings, skipped_malformed_files)。
+def _fingerprint_path(results_dir: Path) -> Path:
+    return Path(results_dir) / _FINGERPRINT_FILENAME
+
+
+def _read_fingerprint(results_dir: Path) -> dict:
+    """读增量指纹缓存 {文件名: [mtime_ns, size]}；缺失（首次运行常态）/坏 JSON/坏形态
+    → 空表 + WARN 一行（点名不静默，坏缓存当无缓存全量解析）。"""
+    fp = _fingerprint_path(results_dir)
+    if not fp.exists():
+        return {}
+    try:
+        raw = fp.read_text(encoding="utf-8")
+    except OSError:
+        print(f"警告：{fp} 读取失败，本次全量解析", file=sys.stderr)
+        return {}
+    try:
+        data = json_loads(raw)
+    except Exception:
+        print(f"警告：{fp} 坏 JSON，本次全量解析", file=sys.stderr)
+        return {}
+    if not isinstance(data, dict):
+        print(f"警告：{fp} 形态非映射，本次全量解析", file=sys.stderr)
+        return {}
+    return data
+
+
+def _file_sig(fpath: Path) -> list:
+    """文件指纹 [mtime_ns, size]——Allure 结果集只追加不改写，这两个字段足以判定「未变」。"""
+    st = fpath.stat()
+    return [st.st_mtime_ns, st.st_size]
+
+
+def _write_fingerprint(results_dir: Path, touched: dict) -> None:
+    """指纹缓存落盘（原子写，wave4 纪律；写失败不顶分析——WARN 一行，下次全量解析）。
+
+    缓存形态 {文件名: {"sig": [mtime_ns, size], "finding": <AllureFinding 的 JSON 形态>}}——
+    跳过未变文件时反序列化回填 findings（否则汇总归零，那是「跳过解析」被读成「结果消失」）。
+    """
+    try:
+        atomic_write_text(_fingerprint_path(results_dir),
+                          json.dumps(touched, sort_keys=True, ensure_ascii=False))
+    except OSError as exc:
+        print(f"警告：指纹缓存写盘失败（{exc}），下次全量解析", file=sys.stderr)
+
+
+def _load(results_dir: Path, *, incremental: bool = True) -> tuple[list[AllureFinding], int, int]:
+    """读结果集目录的所有 *-result.json，返回 (findings, skipped_malformed_files, skipped_unchanged)。
 
     #131/#112 读侧纪律：单文件坏字节 replace 回落、单文件坏 JSON/非对象跳过并计数，
     绝不因一条坏结果整份分析崩（这正是"感知器官坏了却读成无失败"的假阴性温床）。
+
+    pf-9 增量（incremental=True）：指纹未变的 result 跳过解析（skipped_unchanged 计数）；
+    新落盘/mtime 或 size 变更的必读（负向对照钉死）；坏文件（解析失败）不写指纹——每次
+    全量读并计数 skipped，容错纪律不被增量绕过；findings 内容与全量路径逐字同源
+    （parse_allure_result 单一入口），fail_class 判据一字不动（红线 #7）。
     """
     results_dir = Path(results_dir)
     if not results_dir.is_dir():
         raise FileNotFoundError(f"结果集目录不存在：{results_dir}")
     findings: list[AllureFinding] = []
     skipped = 0
+    unchanged = 0
+    fp_cache = _read_fingerprint(results_dir) if incremental else {}
+    touched: dict = {}
     for fpath in sorted(results_dir.glob("*-result.json")):
+        if incremental:
+            sig = _file_sig(fpath)
+            cached = fp_cache.get(fpath.name)
+            if isinstance(cached, dict) and cached.get("sig") == sig:
+                finding = cached.get("finding")
+                if isinstance(finding, dict):
+                    try:
+                        findings.append(AllureFinding(**finding))
+                    except TypeError:
+                        pass   # 缓存条目形态坏 → 落到下方全量解析（自愈，不点名刷屏）
+                    else:
+                        unchanged += 1
+                        continue
         # 先严格读保真；撞坏字节回落 errors="replace"——残行 JSON 解析必败自然落 skipped 计数
         try:
             raw = fpath.read_text(encoding="utf-8")
@@ -155,8 +236,13 @@ def _load(results_dir: Path) -> tuple[list[AllureFinding], int]:
         if not isinstance(result, dict):
             skipped += 1
             continue
-        findings.append(parse_allure_result(result))
-    return findings, skipped
+        finding = parse_allure_result(result)
+        findings.append(finding)
+        if incremental:
+            touched[fpath.name] = {"sig": sig, "finding": asdict(finding)}
+    if incremental:
+        _write_fingerprint(results_dir, touched)
+    return findings, skipped, unchanged
 
 
 def json_loads(raw: str):
@@ -165,15 +251,15 @@ def json_loads(raw: str):
     return json.loads(raw)
 
 
-def load_allure_results(results_dir: Path) -> list[AllureFinding]:
+def load_allure_results(results_dir: Path, *, incremental: bool = True) -> list[AllureFinding]:
     """读结果集目录的所有 *-result.json → list[AllureFinding]。
 
     坏文件跳过并计数（通过 stderr 警告），绝不因一条坏结果整份分析崩。
     目录不存在 → FileNotFoundError（CLI 接 _user_error rc 2）。
+    pf-9：incremental=True（默认）跳过指纹未变的 result（见 _load）。
     """
-    findings, skipped = _load(results_dir)
+    findings, skipped, _unchanged = _load(results_dir, incremental=incremental)
     if skipped:
-        import sys
         print(f"警告：{results_dir} 有 {skipped} 个 *-result.json 无法解析（坏字节/坏 JSON/非对象），已跳过",
               file=sys.stderr)
     return findings
@@ -194,7 +280,8 @@ def build_allure_verification(finding: AllureFinding, results_dir: Path | str) -
 
 
 def analyze_allure(results_dir: Path, *, knowledge=None, to_tower=None,
-                   buckets: dict[str, frozenset] | None = None) -> dict:
+                   buckets: dict[str, frozenset] | None = None,
+                   incremental: bool = True) -> dict:
     """汇总 Allure 结果集：总数/通过/失败/跳过 + fail_class 分布 + 四桶 + 命中坑点 + 自愈提案。
 
     - knowledge=KnowledgeBase 时对 failed/broken finding 做坑点匹配（status="approved" 准入）。
@@ -203,8 +290,10 @@ def analyze_allure(results_dir: Path, *, knowledge=None, to_tower=None,
     - 自愈提案只提案不执行；执行仍走 healer.can_auto_heal（只读 Task + status="approved" +
       非控制流 #108）。控制流异常（interrupted）一律拒自愈。
     - buckets 可覆盖 DEFAULT_BUCKETS（§6.3 可配置分组，不写死引擎——红线 #11）。
+    - pf-9：incremental=True（默认）读侧按指纹跳过未变 result（见 _load），汇总结果与
+      全量路径等价（findings 同源）；skipped_unchanged 键如实呈现本次跳过数。
     """
-    findings, skipped = _load(results_dir)
+    findings, skipped, unchanged = _load(results_dir, incremental=incremental)
     bucket_map = buckets if buckets is not None else DEFAULT_BUCKETS
 
     # Allure status 计数
@@ -278,6 +367,7 @@ def analyze_allure(results_dir: Path, *, knowledge=None, to_tower=None,
         "skipped": counts["skipped"],
         "unknown": counts["unknown"],
         "skipped_malformed_files": skipped,
+        "skipped_unchanged": unchanged,
         "fail_class_distribution": fc_dist,
         "buckets": bucket_counts,
         "hit_pitfalls": hit_pitfalls,
@@ -296,6 +386,8 @@ def format_text(result: dict) -> str:
     )
     if result["skipped_malformed_files"]:
         lines.append(f"坏文件跳过 {result['skipped_malformed_files']}")
+    if result["skipped_unchanged"]:
+        lines.append(f"增量跳过未变 result {result['skipped_unchanged']}（pf-9）")
 
     if result["fail_class_distribution"]:
         lines.append("")

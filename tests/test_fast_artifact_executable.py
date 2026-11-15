@@ -435,14 +435,15 @@ def test_no_fixed_sleep_in_artifacts(fast_pkg, flow_fast_pkg):
                 assert "wait_for_timeout" not in src, f"{p.name} 用例层固定睡眠"
                 assert "pytest.skip(" not in src, f"{p.name} 裸 pytest.skip（F5 静默跳）"
                 assert "time.sleep(" not in src, f"{p.name} sleep 通道"
-    # 前提自证（否则「无 sleep」恒真）：4 个语义等待函数真实定义、TICK_MS=100 在位、
-    # 底座确有裸 TICK_MS 节拍调用——扫描面在真内容上跑
+    # 前提自证（否则「无 sleep」恒真）：4 个语义等待函数真实定义、TICK_MS 常量在位（pf-4：
+    # 值随 waits.TICK_MS 同步，形态判据非数值判据）、底座确有裸 TICK_MS 节拍调用——扫描面在
+    # 真内容上跑
     defined = {n.name for n in ast.parse(support_src).body
                if isinstance(n, ast.FunctionDef)}
     assert {"wait_for_rows", "wait_for_mask_gone", "wait_for_vue_field",
             "wait_for_url_change"} <= defined, "语义等待缺席=本扫描恒真假象（#139 断链同族）"
     assert support_src.count("page.wait_for_timeout(TICK_MS)") >= 3
-    assert re.search(r"^TICK_MS = 100\b", support_src, re.M)
+    assert re.search(r"^TICK_MS = \d+\b", support_src, re.M)
     # 对抗样本（F-4 义务）：同一把尺必须让注入形态红，且不误伤好形态
     assert _wait_form_violations("def f(page):\n    page.wait_for_timeout(TICK_MS * 2)\n")
     assert _wait_form_violations("def f(page):\n    page.wait_for_timeout(2000)\n")
