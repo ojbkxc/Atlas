@@ -21,6 +21,13 @@ titlePath）与 Allure 结果集的可选组成部分（categories.json / enviro
 executor.json）在本模块补齐——见 `_result_labels` / `default_categories` /
 `write_environment_properties` / `write_executor`。全部为**附加**（不改/不删既有 label 与
 键），`align=False`/`metadata=False` 可退回逐字旧形态（#115 零涟漪逃生舱）。
+
+ae-5（wave4 B 轴结果集人读摘要）：`emit_allure` 在 metadata=True 时另写
+`atlas-summary.json`——total/passed/failed/broken/skipped + fail_class 分布 +
+skipped_malformed_lines。计数读的是 §3.5 映射后**已落盘** result 的状态与
+`atlas.fail_class` label（env_blocked/interrupted/waiting 落 skipped 且在分布里显形，
+不洗绿）；只新增文件，result/attachment 生成路径零改动；atlas- 前缀 → clean 随结果
+文件同生命周期；无 uuid/时间戳，同输入两次 emit 逐字节相等。
 """
 from __future__ import annotations
 import hashlib
@@ -35,6 +42,7 @@ from .atomic_io import read_text_retry
 # 单点定义：消费方 import 这里，不各自手抄字面量（#92 改一漏一）。
 ALLURE_RESULTS_DIR = "allure-results"
 _ATTACHMENT_PREFIX = "atlas-"   # Atlas 产物命名前缀；clean 只清这个
+_SUMMARY_FILENAME = "atlas-summary.json"   # ae-5 人读摘要；atlas- 前缀 → clean 随结果文件同生命周期
 
 # UI AUTO TEST（allure-pytest）产出的 label 名：severity/parentSuite/suite/subSuite/host/
 # thread/framework/language/package。Atlas 默认对齐其中**确定性可复现**的子集；host/thread
@@ -478,6 +486,20 @@ def write_executor(out_dir: Path, executor: dict) -> Path:
     return path
 
 
+def write_summary(out_dir: Path, summary: dict) -> Path:
+    """写 atlas-summary.json（ae-5 结果集人读摘要）。
+
+    文件名带 atlas- 前缀：与 result 文件同生命周期（clean 随结果文件一起清，重跑不留
+    陈旧摘要），且刻意**不落** Allure 约定名/`*-result.json` 形态——`allure_analysis`
+    与 `devops_sync` 读侧只认 `*-result.json`，摘要不会被误当一条结果解析。内容无
+    uuid/时间戳（离线确定性纪律）：同 runs.jsonl 两次 emit 逐字节相等。
+    """
+    out_dir = Path(out_dir)
+    path = out_dir / _SUMMARY_FILENAME
+    path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
+
+
 def emit_allure(runs_path: Path, out_dir: Path, *, clean: bool = True,
                 attachments_dir: Path | None = None, align: bool = True,
                 metadata: bool = True, categories: list | None = None,
@@ -494,9 +516,13 @@ def emit_allure(runs_path: Path, out_dir: Path, *, clean: bool = True,
     - metadata=True（默认）：另写 categories.json（`default_categories`，可用 `categories=`
       覆盖；`categories=[]` 写空）与 environment.properties（`environment=None` 时从各 run 的
       env 去重派生，`environment={}` 跳过）；`executor=` 非空才写 executor.json（宿主标识无
-      自然来源，不伪造）。三个文件均为 Allure 约定名，均**附加**——不写就不产出，旧目录内容
-      除 atlas-* 外零改动。
-    - 返回 {"results","steps","attachments","skipped_malformed_lines","out","metadata_files"}。
+      自然来源，不伪造）；并写 `atlas-summary.json`（ae-5 结果集人读摘要，见 `write_summary`）
+      ——计数读 §3.5 映射后**已落盘** result 的状态与 `atlas.fail_class` label，env_blocked/
+      interrupted/waiting 落 skipped 且在分布里显形（红线 #7：不洗绿）。全部为**附加**——
+      不写就不产出，旧目录内容除 atlas-* 外零改动；`metadata=False` 一并不写摘要（同一
+      逃生舱：「只产 result.json」的既有口径保持为真）。
+    - 返回 {"results","steps","attachments","skipped_malformed_lines","out","metadata_files",
+      "summary_file"}。
     - source_dimension=False（默认）：historyId 逐字旧口径 sha1(env|case)——存量趋势线零涟漪。
       True：historyId 掺 run 记录 `plugin` 来源维度（cc-6）——同 env+case 的多平台/并发 run
       不再合并成一条趋势线。**口径变更会把存量历史断线**，故显式 opt-in；CLI 侧对应对称
@@ -519,6 +545,10 @@ def emit_allure(runs_path: Path, out_dir: Path, *, clean: bool = True,
         raw = read_text_retry(runs_path, encoding="utf-8", errors="replace")
     results = steps = attachments = skipped = 0
     envs: set[str] = set()
+    # ae-5 摘要计数：不预设固定四键——按实际映射状态累计；映射若将来扩出第五态，
+    # 摘要如实追加键而非静默丢（丢键 = total 对不上 = 假阴性温床）。
+    status_counts: dict[str, int] = {}
+    fail_class_dist: dict[str, int] = {}
     # cc-6：opt-in 时解析一次当前插件域作来源回落（run 记录显式 `plugin` 键优先）。
     # 默认关时该变量恒空串——_run_to_result 走 sha1(env|case) 旧口径，逐字节不变。
     source_fallback = ""
@@ -545,12 +575,24 @@ def emit_allure(runs_path: Path, out_dir: Path, *, clean: bool = True,
                                 source_dimension=source_dimension,
                                 source_fallback=source_fallback)
         _write_result(out_dir, result)
+        # ae-5 摘要计数：读的是 §3.5 映射后**已落盘**的 result（与文件同源、同一把映射刀），
+        # 不是原始 run 状态——env_blocked/interrupted/waiting 在这里就是 skipped，分布条目
+        # 让「谁占了 skipped 位」显形（红线 #7）。passed 无 fail_class label，天然不进分布。
+        status_counts[result["status"]] = status_counts.get(result["status"], 0) + 1
+        fail_class = ""
+        for label in result["labels"]:
+            if label.get("name") == "atlas.fail_class":
+                fail_class = str(label.get("value") or "")
+                break
+        if fail_class:
+            fail_class_dist[fail_class] = fail_class_dist.get(fail_class, 0) + 1
         env = str(run.get("env", ""))
         if env:
             envs.add(env)
         steps += len(result["steps"])
         attachments += len(result["attachments"]) + sum(len(s["attachments"]) for s in result["steps"])
     metadata_files: list[str] = []
+    summary_file = None
     if metadata:
         cats = default_categories() if categories is None else categories
         if cats is not None:
@@ -565,6 +607,18 @@ def emit_allure(runs_path: Path, out_dir: Path, *, clean: bool = True,
         if executor:
             write_executor(out_dir, executor)
             metadata_files.append("executor.json")
+        # ae-5：结果集人读摘要。四既定状态恒显式（0 也写，不缺键冒充「没这回事」）；
+        # 分布与额外状态键排序 → 同内容不同行序的 runs.jsonl 产出逐字节相同的摘要。
+        summary = {"total": results}
+        for status in ("passed", "failed", "broken", "skipped"):
+            summary[status] = status_counts.get(status, 0)
+        for status in sorted(k for k in status_counts
+                             if k not in ("passed", "failed", "broken", "skipped")):
+            summary[status] = status_counts[status]
+        summary["fail_class_distribution"] = dict(sorted(fail_class_dist.items()))
+        summary["skipped_malformed_lines"] = skipped
+        write_summary(out_dir, summary)
+        summary_file = _SUMMARY_FILENAME
     return {"results": results, "steps": steps, "attachments": attachments,
             "skipped_malformed_lines": skipped, "out": str(out_dir),
-            "metadata_files": metadata_files}
+            "metadata_files": metadata_files, "summary_file": summary_file}
