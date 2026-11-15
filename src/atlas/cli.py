@@ -93,7 +93,7 @@ def _parser() -> argparse.ArgumentParser:
                             help="已存在的 flow.yaml → pytest 回归代码包（gap9b；只生成不执行，红线 #9）")
     export_pytest_cmd.add_argument("flow", type=Path, help="flow YAML 路径")
     export_pytest_cmd.add_argument("-o", "--out", type=Path, default=None,
-                                   help="产物目录（默认 exports/pytest/<flow 文件名>/）")
+                                   help="产物目录（默认 <root>/exports/pytest/<flow 文件名>/，root-anchored；显式 -o 原样使用）")
     export_pytest_cmd.add_argument("--fast", action="store_true",
                                    help="快模式包（单浏览器/语义等待/runs.jsonl；UI 步需声明位，"
                                         "形态判据与 atlas compile 同源，红线 #9 只生成不执行）")
@@ -246,7 +246,7 @@ def _parser() -> argparse.ArgumentParser:
                             choices=["auto", "openapi", "swagger", "markdown", "text"],
                             help="文档格式（默认按内容嗅探）")
     gen_parser.add_argument("-o", "--out", type=Path, default=None,
-                            help="产物目录（默认 exports/gen/<flow_id>/）")
+                            help="产物目录（默认 <root>/exports/gen/<文档名>/，root-anchored；显式 -o 原样使用）")
     gen_parser.add_argument("--flow-id", default="", help="flow id（默认由文档标题/路径派生）")
     gen_parser.add_argument("--scenario", default="auto", choices=["auto", "a", "b", "c", "d"],
                             help="场景：a单接口/b链路/c批量/d写操作前置")
@@ -837,7 +837,7 @@ def main(argv: list[str] | None = None) -> int:
                           "asserts": len(flow.get("assert") or [])}, ensure_ascii=False, indent=2))
         return 0
     if args.command == "export-pytest":
-        return _export_pytest(args)
+        return _export_pytest(args, config)
     if args.command == "run":
         # --case-timeout 是参数值校验（输入错误 rc 2 口径），排在 flow load 之前：
         # 值本身非法时没必要先读文件再报第二个错。
@@ -1540,6 +1540,18 @@ def _explore_auto(args, config) -> int:
     return 0
 
 
+def _default_exports_dir(root: Path, name: str, kind: str) -> Path:
+    """en-14：产物默认目录 root-anchored 单点——`<root>/exports/<kind>/<name>/`。
+
+    root 用调用方已解析的 AtlasConfig.root（ATLAS_ROOT/--root/.atlas-root 向上探测的
+    项目根），与 CWD 解耦：换平台/换目录执行时同名 flow 产物落同一棵 exports 树，不再
+    互相覆盖或散落（产物含真实 URL/账号名，散落到陌生目录也是噪音面）。显式 -o 原样
+    使用（用户显式选择不被改写）。兼容面：从项目根执行时 root==CWD，与旧 CWD 相对
+    路径逐字等价（既有 exports/ 习惯与 README 示例不变）；无 .atlas-root 的裸目录里
+    root==CWD，同样等价。"""
+    return root / "exports" / kind / name
+
+
 def _compat_gate(compat: str, fast: bool) -> None:
     """`--compat` 组合闸——**委托**唯一判据 `generator.emit_compat.compat_combo_problem`
     （lead c9b 裁决：CLI 与生成器面共用这一份 if，谁另写谁漂移 #92——旧版这里的内联
@@ -1553,8 +1565,11 @@ def _compat_gate(compat: str, fast: bool) -> None:
         raise ValueError(problem)
 
 
-def _export_pytest(args) -> int:
+def _export_pytest(args, config) -> int:
     """atlas export-pytest：已存在的 flow.yaml → pytest 回归代码包（gap9b B-1）。
+
+    config 用于默认产物目录的 root 锚定（en-14：`<root>/exports/pytest/<flow 名>/`，
+    与 CWD 解耦；显式 -o 原样使用）。
 
     校验与执行/编译**同一把尺**（A.5 挂载点收益）：先过 `validate_flow`（其第一步就是
     compile 静态段——含 gap9b B-2 声明位形态闸），结构坏**不产出半成品**（校验失败时
@@ -1569,7 +1584,12 @@ def _export_pytest(args) -> int:
         _compat_gate(getattr(args, "compat", "none"), args.fast)
         flow = FlowCompiler(TaskRegistry()).load(args.flow)
         FlowCompiler(_full_registry()).validate_flow(flow)
-        out_dir = args.out if args.out is not None else Path("exports/pytest") / args.flow.stem
+        # en-14：默认产物目录 root-anchored（<root>/exports/...）而非 CWD 相对——
+        # 换平台/换目录执行时同名 flow 产物不再互相覆盖或散落；显式 -o 仍按用户给的
+        # 路径原样使用（显式选择不被改写）。兼容面：root 通常=项目根（.atlas-root 所在），
+        # 从项目根执行时 root-anchored 与旧 CWD 相对路径逐字等价（既有 exports/ 习惯不变）。
+        out_dir = (args.out if args.out is not None
+                   else _default_exports_dir(config.root, args.flow.stem, "pytest"))
         # compat 透传（gap11 #18 消费面）：非默认值才带 kw——compat=none 的存量调用
         # 形态逐字不变（#115），emit_pytest_package 收 compat 参后语义等价（缺省 none）。
         compat_kw = ({"compat": args.compat}
@@ -1612,8 +1632,10 @@ def _gen(args, config) -> int:
     # 输出目录
     out_dir = args.out
     if out_dir is None and not options.check_only:
-        # 默认 exports/gen/<flow_id>/；flow_id 先由文档名派生
-        out_dir = Path("exports/gen") / Path(args.source).stem
+        # 默认 <root>/exports/gen/<文档名>/（en-14 root-anchored，与 CWD 解耦——
+        # 产物目录常含真实 URL/单号，散落到执行时 CWD 是噪音面也是泄漏面；
+        # 从项目根执行时与旧 CWD 相对路径逐字等价，显式 -o 原样使用）
+        out_dir = _default_exports_dir(config.root, Path(args.source).stem, "gen")
     # --force 覆盖控制
     if out_dir is not None and out_dir.exists() and not options.force and not options.check_only:
         if any(out_dir.iterdir()):
