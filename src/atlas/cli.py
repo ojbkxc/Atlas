@@ -96,7 +96,9 @@ def _parser() -> argparse.ArgumentParser:
                                    help="并行分片 worker 数（T3；0/1=单进程默认）。>1 须配 --fast，"
                                         "产物 README 记并行用法；运行需 pytest-xdist，"
                                         "缺依赖运行期点名报错不静默降级")
-    flow.add_argument("flow", type=Path)
+    flow.add_argument("flow", nargs="+", type=Path,
+                      help="flow YAML 路径；可传多条=一次登录串行跑完（同 env 同账号、"
+                           "失败即停、回收清单合并；单条=既有语义逐字节不变）")
     flow.add_argument("--account", default=None, help="缺省取业务插件 session 默认账号")
     flow.add_argument("--ou", default=None, help="缺省取业务插件 session 默认 OU")
     flow.add_argument("--language", default=None, help="UI 语言，缺省取业务插件默认（选择器优先英文）")
@@ -811,6 +813,14 @@ def main(argv: list[str] | None = None) -> int:
                 return 2
             print(f"BU={result['bu']} 坐标生效：{json.dumps(result['applied'], ensure_ascii=False)}"
                   f"；未接执行路径/被显式env覆盖：{result['ignored']}", file=sys.stderr)
+        # pf-5 接线：flow 位置参数从单文件变多文件（nargs="+"）。单 flow 的既有路径**一字不动**
+        # ——这里只把 argparse 的列表形态还原成单个 Path，下方 load/预检/with/收尾全部原样；
+        # 多条 flow 走独立编排 _run_multi_flows（一次 Chromium launch + 一次登录串行跑完，
+        # 语义与红线见该函数 docstring）。位置在 --bu 之后：BU 坐标是「本次调用」级注入，
+        # 单/多 flow 语义相同。
+        if len(args.flow) > 1:
+            return _run_multi_flows(args, config, args.flow)
+        args.flow = args.flow[0]
         # load 是「用户传入 flow 文件」的输入边界，与 compile 同口径：路径坏/YAML 非法/误传状态机
         # 文件都属输入错误 → 一行 stderr + rc 2，且在 DemoRuntime 构造/登录**之前**失败（fail fast，
         # 不启动浏览器不登录）。真正的执行失败（EnvBlocked/断言/网络）仍走下方 runtime.run 原样语义，
@@ -1002,6 +1012,159 @@ def _supervise_case(child_argv: list[str], config, flow: dict, timeout_seconds: 
 def _run_case_supervised(args, config, flow: dict, timeout_seconds: int) -> int:
     return _supervise_case(_case_timeout_child_argv(args, config.root), config, flow,
                            timeout_seconds)
+
+
+# ── pf-5（wave4 C 轴）：一次登录串行跑多 flow ────────────────────────────────
+# 形态：`atlas run <flow1.yaml> <flow2.yaml> ...`——整个批次共用一个 DemoRuntime
+# （一次 Chromium launch + 一次登录），逐条 flow 串行执行，浏览器与登录在全部
+# flow 结束后统一关闭。单 flow 参数路径在 main 的 run 分支**一字未动**（仅把
+# argparse 的 nargs="+" 列表还原成单个 Path），本节全部代码只服务多 flow 新面。
+
+def _flow_display_name(flow) -> str:
+    """多 flow 批次的点名形态：源文件路径 > flow id > 占位符（路径是人传参时看到的
+    名字，冲突/未执行的报错必须指向它）。"""
+    name = str(getattr(flow, "source_name", "") or "")
+    if not name and isinstance(flow, dict):
+        name = str(flow.get("id") or "")
+    return name or "<flow>"
+
+
+def _multi_flow_session_gate(config, args, flows) -> None:
+    """多 flow 会话归属硬闸（判据/消息唯一来源）：flow 顶层 `env:` / `account:` 声明
+    与本次运行实际值冲突时点名拒绝。
+
+    一次登录只对应一个环境一个账号。声明与实际不一致的 flow 若静默执行，等于拿 A
+    环境/A 账号的会话跑 B 业务（#7/#11：不静默用错账号跑真实系统）。判据：
+    - 声明位只收**非空字符串**——其他形态（数字/布尔/容器/空串）当场点名拒绝，
+      不猜不静默忽略（与 flow 级 harvest/on_env_blocked 严格值域同纪律）；
+    - 每条声明必须等于本次运行的实际值：env=config.env，account=resolve_account
+      解析结果（与 DemoRuntime 登录、CLI 空账号预检同一份解析，单一来源 #92）。
+      「flow 之间互相冲突」必然表现为某条与实际值不等，不留第二份判据；
+    - --no-login（不登录，靠既有 storage state）时 effective account 可能为空——
+      Atlas 不核既有 storage state 属于哪个账号（与 attach 通道同一约束，约束说明
+      非缺陷），此时任何 account 声明都无法核实，拒绝而非放行；
+    - 未声明 `env`/`account` 的 flow 不受约束（继承本次运行的实际值）；
+    - **单 flow 路径不经过本函数**（历史行为逐字节不变，锁步测钉住）。
+    """
+    effective_account = resolve_account(config, args.account)
+    for flow in flows:
+        name = _flow_display_name(flow)
+        for key, effective in (("env", config.env), ("account", effective_account)):
+            if key not in flow:
+                continue
+            value = flow[key]
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(
+                    f"多 flow 会话归属声明坏形态：{_flow_display_name(flow)} 的顶层 "
+                    f"{key} 必须是非空字符串，收到 {value!r}——坏声明拒绝跑，不猜")
+            if key == "account" and not effective_account:
+                raise ValueError(
+                    f"多 flow 会话归属无法核实：{name} 声明 account={value!r}，但本次运行"
+                    f"没有可核实的账号（--no-login 的会话来自既有 storage state，Atlas 不核"
+                    f"其归属）。拒绝带未核实的账号声明跑多 flow")
+            if value != effective:
+                raise ValueError(
+                    f"多 flow 会话归属冲突：{name} 声明 {key}={value!r}，本次运行实际 "
+                    f"{key}={effective!r}。一次登录串行跑完要求全部 flow 同 env 同账号"
+                    f"（--env / --account / 插件会话默认），拒绝静默用错环境/账号跑真实"
+                    f"系统；请统一声明或拆成多次 atlas run")
+
+
+def _run_multi_flows(args, config, flows: list) -> int:
+    """pf-5：`atlas run <flow1.yaml> <flow2.yaml> ...` 多条 flow 一次登录串行跑完。
+
+    语义钉死（每条都只在新面上生效，单 flow 路径零涟漪）：
+    - **一次 Chromium launch + 一次登录**：整批共用一个 DemoRuntime（会话/账号/配额
+      是一份），登录判定沿用既有 should_login 口径（--no-login 同样不登录）；浏览器与
+      登录在**全部 flow 结束后**统一关闭（单个 `with` 包住整个循环）；
+    - **每 flow 独立 runs.jsonl 记录**：dsl.run 每 flow 一个 RunRecorder（case=flow id），
+      行形态与单 flow 逐字节一致（锁步测钉住）；
+    - **回收清单合并落盘**：provider.quota 跨 flow 累计，__exit__ 一次性写
+      reports/recycle_list.jsonl；--create-quota 是**本次调用**的总配额（跨 flow 共享）；
+    - **同 env 同账号硬闸**：flow 可用顶层 `env:`/`account:` 键声明会话归属（判据与
+      消息在 _multi_flow_session_gate 单点）；冲突 rc 2 点名，不开浏览器不登录；
+    - **失败即停**：任一 flow 执行失败（断言/EnvBlocked/异常）立即停止，剩余 flow 点名
+      在 stderr，原异常原样传播（与单 flow 同一 rc/traceback 口径）——失败 flow 留下的
+      会话状态不可信（半截写单/残留表单），继续跑=拿脏会话跑真实系统；AwaitingHuman
+      同样停止并走既有 rc 3（WAITING-HUMAN）通道；
+    - **跨 flow 不共享变量产出**：每条 flow 开始前 runtime.start_flow() 清空 actor.ctx
+      ——上一条 flow 的 {{doc_no}} 流进下一条的插值=静默用错数据（#7 同红线）；
+      数据传递请合成单条 flow（atlas compose）或走任务库；provider 的探针/配额状态
+      是会话级资产，跨 flow 连续（不随 ctx 重置）；
+    - **--case-timeout 不支持多 flow**（rc 2 点名）：per-case 看护按「每条 flow 一个
+      子进程」实现，多 flow 塞一个子进程会把整批一起强杀而非单条——诚实拒绝，不静默
+      降级成批次级超时；
+    - **无 attach、无常驻进程**：本函数只做串行调度，会话生命周期完全由 `with` 掌管
+      （gap9b F-12/F-13 无人值守口径不变）。
+    """
+    if getattr(args, "case_timeout", None) is not None:
+        return _user_error(ValueError(
+            "--case-timeout 不支持多 flow：per-case 看护按「每条 flow 一个子进程」实现，"
+            "多 flow 共用一个子进程会把整个批次一起强杀而非单条。请逐条 atlas run 各带 "
+            "--case-timeout，或去掉该参数整批共享一次登录"))
+    # load 是「用户传入 flow 文件」的输入边界，与单 flow 路径同口径：全部 flow 先
+    # load+validate（fail fast 在登录/开浏览器之前），任一结构坏 = rc 2 点名，零半截现场。
+    flows_loaded = []
+    try:
+        for flow_path in flows:
+            loaded = FlowCompiler(TaskRegistry()).load(flow_path)
+            FlowCompiler(_full_registry()).validate_flow(loaded)
+            flows_loaded.append(loaded)
+    except (OSError, ValueError, KeyError, RuntimeError, yaml.YAMLError) as exc:
+        return _user_error(exc)
+    # 会话归属硬闸：声明冲突在开浏览器之前点名拒绝（rc 2）。
+    try:
+        _multi_flow_session_gate(config, args, flows_loaded)
+    except ValueError as exc:
+        return _user_error(exc)
+    # 预检与单 flow 路径逐字同口径（该块的内联原件一字未动，故此处按同一序列调用同一组
+    # 单点判据函数——复制的是调用序列不是判据，#92 判据本体仍各在其单一真相处）。
+    try:
+        load_dotenv(config.legacy_project)
+        if not config.base_url:
+            raise ValueError(f"缺少 {config.env} 对应的 {config.env_url_key} 配置")
+        config.validate_base_url(config.base_url)
+        check_demo_api(config)
+        config.check_legacy_paths()
+        if not args.no_login:
+            require_account(config, resolve_account(config, args.account))
+    except (OSError, ValueError) as exc:
+        return _user_error(exc)
+    from .failures import AwaitingHuman, exception_brief
+    # 落库线：--harvest 逐 flow 注入（与单 flow 同一 overlay 口径，保 FlowDocument 形态）。
+    if getattr(args, "harvest", False):
+        flows_loaded = [flow.overlay(harvest=True) if isinstance(flow, FlowDocument)
+                        else {"harvest": True, **flow} for flow in flows_loaded]
+    try:
+        with DemoRuntime(config, login=not args.no_login, account=args.account, ou=args.ou,
+                         division_code=args.division, language=args.language,
+                         create_quota=args.create_quota) as runtime:
+            completed = 0
+            try:
+                for flow in flows_loaded:
+                    runtime.start_flow()   # 跨 flow 不共享变量产出（见 runtime.start_flow）
+                    print(f"flow {completed + 1}/{len(flows_loaded)}: "
+                          f"{_flow_display_name(flow)}", file=sys.stderr)
+                    # overlay 而不是 {**flow}：与单 flow 路径同一理由（保 md5 缓存与 ^ 定位）
+                    FlowCompiler(runtime.registry(), runtime.provider).run(
+                        flow.overlay(engine=config) if isinstance(flow, FlowDocument)
+                        else {"engine": config, **flow}, runtime.actor)
+                    completed += 1
+            except BaseException:
+                # 失败即停：剩余 flow 点名（不静默少跑），原异常原样传播——rc/终态口径
+                # 与单 flow 完全一致（AwaitingHuman 由外层转 rc 3，其余原样向上）。
+                pending = flows_loaded[completed + 1:]
+                if pending:
+                    names = ", ".join(_flow_display_name(f) for f in pending)
+                    print(f"多 flow 批次在失败处停止；以下 flow 未执行：{names}",
+                          file=sys.stderr)
+                raise
+    except AwaitingHuman as exc:
+        # 与单 flow 路径同一收尾语义：__exit__ 已跑完（浏览器关闭、回收清单合并落盘），
+        # stderr 前缀 ASCII（X4），brief 走净化刀截 200。
+        print(f"WAITING-HUMAN: {exception_brief(exc)[:200]}", file=sys.stderr)
+        return 3
+    return 0
 
 
 def _recycle(args, config) -> int:

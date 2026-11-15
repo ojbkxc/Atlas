@@ -200,6 +200,22 @@ class DemoRuntime:
         contracts/core.json 时，运行时校验与 `atlas contracts` 输出必然同源同档。"""
         return resolve_plugin().contracts()
 
+    def start_flow(self) -> None:
+        """pf-5 多 flow 串行（`atlas run f1.yaml f2.yaml ...`）：每条 flow 开始前重置
+        会话级变量产出（actor.ctx）。
+
+        会话复用只共享「一次登录的浏览器/账号/Cookie/配额」；**变量产出不跨 flow 泄漏**
+        ——上一条 flow 的 {{doc_no}} 若流进下一条 flow 的插值/断言，等于静默拿错数据跑
+        真实系统（#7 同红线）。需要把产出传给后续步骤，请写进同一条 flow（compose 合成
+        或任务库复用）；跨 flow 的数据传递是显式编排的职责，不由会话层兜底。
+
+        ctx 里同时有引擎簿记键（_steps_skipped/_dispatch_routes/_auto_degraded_to_ui/
+        _env_blocked/_flow_skipped/_data_actions/_data_skipped），同为 flow 级事实，
+        与产出键一起随 flow 重置；provider 的探针/配额状态是会话级资产，跨 flow 连续。
+        单 flow 路径不调用本方法（历史行为零涟漪）。"""
+        if self.actor is not None:
+            self.actor.ctx.clear()
+
     def _wait_topbar(self, login_module) -> None:
         """顶栏可见性兜底（demo-014 变体）：switch_to_ou/switch_to_english 强依赖顶栏，
         但 SIT 偶发顶栏 >30s 才渲染。do_login 内部有 60s+reload 兜底，这里补齐
