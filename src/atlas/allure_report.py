@@ -28,11 +28,18 @@ skipped_malformed_lines。计数读的是 §3.5 映射后**已落盘** result �
 `atlas.fail_class` label（env_blocked/interrupted/waiting 落 skipped 且在分布里显形，
 不洗绿）；只新增文件，result/attachment 生成路径零改动；atlas- 前缀 → clean 随结果
 文件同生命周期；无 uuid/时间戳，同输入两次 emit 逐字节相等。
+
+pf-6（wave4 C 轴附件复制小优化）：`write_attachment` 落盘改原子字节写（tmp+fsync+
+os.replace，与 atomic_io 同机制——bytes 形态在文件域约束下本地实现，见
+`_atomic_write_bytes`），多 ref 批量并行复制（`_write_attachments_batch`，条目序==
+输入序，单 ref 直落不启线程池）；产物字节与旧实现逐字一致，默认路径零涟漪。
 """
 from __future__ import annotations
 import hashlib
 import json
+import os
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -203,15 +210,11 @@ def _step_to_allure(step: dict, run_start_ms: int, offset_ms: float, out_dir: Pa
     start_ms = run_start_ms + int(offset_ms)
     stop_ms = start_ms + int(dur)
     status, details, labels = _step_status(ok, fail_class, name)
-    step_attachments = []
-    for ref in _iter_attachment_refs(step.get("attachment")):
-        entry = _write_attachment_safe(out_dir, ref, attachments_dir, runs_path)
-        if entry:
-            step_attachments.append(entry)
-    for ref in _iter_attachment_refs(step.get("attachments")):
-        entry = _write_attachment_safe(out_dir, ref, attachments_dir, runs_path)
-        if entry:
-            step_attachments.append(entry)
+    # pf-6：step 级附件引用（attachment 单键 + attachments 复数键）合并成一个批次并行复制，
+    # 条目序仍 = attachment 引用在前、attachments 引用在后（与旧逐字循环一致）。
+    refs = list(_iter_attachment_refs(step.get("attachment")))
+    refs.extend(_iter_attachment_refs(step.get("attachments")))
+    step_attachments = _write_attachments_batch(out_dir, refs, attachments_dir, runs_path)
     return {
         "name": name, "status": status, "stage": "finished",
         "start": start_ms, "stop": stop_ms,
@@ -254,6 +257,9 @@ def write_attachment(out_dir: Path, source_path: Path, label: str,
 
     #126/#64 纪律：源文件读失败/坏字节不得顶掉整份报告——附件缺失时降级为一条
     text/plain 说明附件，绝不裸崩（报告可以有噪音，不能丢整份）。
+
+    pf-6：落盘走 `_atomic_write_bytes`（tmp+fsync+os.replace）——并发复制写中崩不留
+    半截文件；产物字节与旧 write_bytes 逐字一致（默认路径零涟漪）。
     """
     source_path = Path(source_path)
     suffix = source_path.suffix.lower()
@@ -269,14 +275,66 @@ def write_attachment(out_dir: Path, source_path: Path, label: str,
         # 文本类附件校验 UTF-8：坏字节（非法编码）视为坏附件走占位，不把乱码当证据
         if media_type.startswith("text/") or media_type in ("application/json", "application/xml"):
             data.decode("utf-8")
-        target.write_bytes(data)
+        _atomic_write_bytes(target, data)
     except (OSError, UnicodeDecodeError, ValueError):
         placeholder = out_dir / f"{_ATTACHMENT_PREFIX}{uuid.uuid4().hex}-attachment.txt"
-        placeholder.write_text(
-            f"[atlas] 附件 {label} 无法读取（源文件缺失或含坏字节）：{source_path}\n",
-            encoding="utf-8")
+        _atomic_write_bytes(placeholder, (
+            f"[atlas] 附件 {label} 无法读取（源文件缺失或含坏字节）：{source_path}\n"
+        ).encode("utf-8"))
         return {"name": label, "source": placeholder.name, "type": "text/plain"}
     return {"name": label, "source": target.name, "type": media_type}
+
+
+def _atomic_write_bytes(path: Path, data: bytes) -> None:
+    """原子字节写：tmp + fsync + `os.replace`（写中崩不留半截文件）。
+
+    与 `atomic_io.atomic_write_text` 同一机制——atomic_io 只有 text 入口，附件复制是
+    bytes 形态，文件域约束下在本地实现（机制逐字一致，不引新依赖）。replace/fsync 抛错
+    时已落盘的 `.tmp` 残档尽力 unlink（不留脏 tmp 误导「看目录判断成功」的消费方），
+    unlink 失败不顶掉原始异常。
+    """
+    path = Path(path)
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        with tmp.open("wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+
+
+_COPY_WORKERS = 4   # pf-6 并行复制 worker 上限（小文件 I/O 复制，4 并发足够）
+
+
+def _write_attachments_batch(out_dir: Path, refs, attachments_dir: Path | None,
+                             runs_path: Path) -> list[dict]:
+    """批量附件复制（pf-6 小优化）：多 ref 并行、单 ref 直落；条目序 == 输入序。
+
+    线程池只做 I/O 型小文件复制（读+校验+原子写），无共享可变状态；target 名带独立
+    uuid，并发落盘无碰撞。futures 按提交序收集 → 产物里 attachments 数组顺序与旧
+    逐字循环逐字一致（#115 锁步口径）。逐条占位降级独立：一条坏附件不顶掉整批。
+    """
+    refs = list(refs)
+    if not refs:
+        return []
+    if len(refs) == 1:
+        entry = _write_attachment_safe(out_dir, refs[0], attachments_dir, runs_path)
+        return [entry] if entry else []
+    with ThreadPoolExecutor(max_workers=min(len(refs), _COPY_WORKERS)) as pool:
+        futures = [pool.submit(_write_attachment_safe, out_dir, ref,
+                               attachments_dir, runs_path) for ref in refs]
+        entries = []
+        for future in futures:
+            entry = future.result()      # 提交序收集 → 条目序 == 输入序
+            if entry:
+                entries.append(entry)
+    return entries
 
 
 def _version_parameters(run: dict, env: str) -> list[dict]:
@@ -386,11 +444,10 @@ def _run_to_result(run: dict, out_dir: Path, attachments_dir: Path | None,
             converted, offset = _step_to_allure(step, run_start, offset, out_dir,
                                                attachments_dir, runs_path)
             steps_allure.append(converted)
-    result_attachments = []
-    for ref in _iter_attachment_refs(run.get("attachments")):
-        entry = _write_attachment_safe(out_dir, ref, attachments_dir, runs_path)
-        if entry:
-            result_attachments.append(entry)
+    # pf-6：run 级附件引用批量并行复制（条目序 == 输入序，与旧逐字循环一致）。
+    result_attachments = _write_attachments_batch(
+        out_dir, list(_iter_attachment_refs(run.get("attachments"))),
+        attachments_dir, runs_path)
     label_list = _result_labels(env, status, labels, align=align)
     result = {
         "uuid": uid,

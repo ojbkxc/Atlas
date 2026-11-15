@@ -1,4 +1,18 @@
-"""浏览器按运行模块复用；只有失败/debug/heal 才生成现场快照。"""
+"""浏览器按运行模块复用；只有失败/debug/heal 才生成现场快照。
+
+pf-6 取证截图降质旋钮（ATLAS_SHOT_QUALITY，opt-in）：
+- 未设/空串：PNG 保真——screenshot 实参与历史逐字一致（`path` + `full_page=False`），
+  文件名 `.png` 后缀不变（默认路径逐字节不变的锁步口径）。
+- `jpeg`：type="jpeg"（Playwright 默认质量），文件名后缀 .png → .jpg——后缀必须随内容
+  变（附件媒体类型按后缀派生，.png 名装 JPEG 字节 = 假内容，#115 教训）。
+- `jpeg,q=N`：附加 quality=N（0–100 整数）。
+- 坏形态（未知格式/未知选项/quality 越界/非整数）→ ValueError 当场点名：旋钮是人显式
+  opt-in 的，配置错了**必须**让运行失败而不是静默回落 PNG——「没降质」被当成配置生效
+  是假配置（红线：坏形态点名不静默回落）。解析在 snapshot 的 try **之外**：取证的
+  尽力而为 except 不得把旋钮配置错误吞成 None（吞掉=取证静默消失，比截图大更坏）。
+- 失败腿截图不可省（取证红线 #8 的对偶面）：本旋钮只降编码保真度，绝不提供「不截图」
+  通道——降质是「取证保真 vs 体积」的显式权衡，缺的是质量不是证据。
+"""
 from __future__ import annotations
 import json
 import os
@@ -9,6 +23,44 @@ from .actor import Actor
 from .abilities import BrowseTheWeb, CallApi
 from .atomic_io import atomic_write_text
 from .config import AtlasConfig
+
+# pf-6 降质旋钮 env 键名唯一出处（消费方只读这里，不留第二份字面量 #92）。
+SHOT_QUALITY_ENV = "ATLAS_SHOT_QUALITY"
+
+
+def _shot_quality() -> tuple[str, dict]:
+    """ATLAS_SHOT_QUALITY 解析 → (文件名后缀, screenshot 实参)；未设/空串 → ("png", {})。
+
+    只认 `jpeg` / `jpeg,q=N`（N 0–100 整数）——其余一律 ValueError 点名（坏形态不静默
+    回落，见模块 docstring）。每次调用现解析：env 是进程级配置，一次字符串切分的代价
+    远低于模块级缓存造成的「改了 env 不生效」陷阱。
+    """
+    raw = os.environ.get(SHOT_QUALITY_ENV, "").strip()
+    if not raw:
+        return "png", {}
+    format_name, sep, rest = raw.partition(",")
+    if format_name.strip().lower() != "jpeg":
+        raise ValueError(
+            f"{SHOT_QUALITY_ENV}={raw!r}：只认 `jpeg` / `jpeg,q=N`（N 0–100 整数）；"
+            f"PNG 保真是缺省，要降质请显式指定 jpeg")
+    kwargs = {"type": "jpeg"}
+    if sep:   # 有逗号就必须带合法选项（"jpeg," 尾逗号是坏形态，不是「裸 jpeg"）
+        for option in rest.split(","):
+            key, sep, value = option.partition("=")
+            if not sep or key.strip() != "q":
+                raise ValueError(
+                    f"{SHOT_QUALITY_ENV}={raw!r}：jpeg 的已知选项只有 `q=N`（质量 0–100），"
+                    f"未知选项 {option!r}")
+            try:
+                quality = int(value.strip())
+            except ValueError:
+                raise ValueError(
+                    f"{SHOT_QUALITY_ENV}={raw!r}：quality 必须是整数 0–100，实得 {value!r}")
+            if not 0 <= quality <= 100:
+                raise ValueError(
+                    f"{SHOT_QUALITY_ENV}={raw!r}：quality 必须在 0–100，实得 {quality}")
+            kwargs["quality"] = quality
+    return "jpg", kwargs
 
 class BrowserSession:
     def __init__(self, config: AtlasConfig):
@@ -73,6 +125,9 @@ class BrowserSession:
     def snapshot(self, name: str, state: dict | None = None) -> Path | None:
         if not self.page or self.page.is_closed():
             return None
+        # pf-6：旋钮解析在 try **之外**——坏配置当场点名（ValueError），绝不被取证的
+        # 尽力而为 except 吞成 None（吞掉=取证静默消失，比截图大更坏）。
+        suffix, shot_kwargs = _shot_quality()
         safe_name = re.sub(r"[^A-Za-z0-9_.-]", "_", name)
         path = None
         try:
@@ -80,8 +135,9 @@ class BrowserSession:
             folder.mkdir(parents=True, exist_ok=True)
             # 毫秒时间戳防覆盖：同一 case 多轮重跑时保留每轮失败取证
             stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
-            path = folder / f"{safe_name}_{stamp}.png"
-            self.page.screenshot(path=str(path), full_page=False)
+            path = folder / f"{safe_name}_{stamp}.{suffix}"
+            # 未设旋钮时实参与历史逐字一致：screenshot(path=…, full_page=False)
+            self.page.screenshot(path=str(path), full_page=False, **shot_kwargs)
         except Exception:
             # 取证（截图/建目录）失败绝不改变用例判定：步骤成败由 perform 独立决定。
             # engine 把 capture 放在 try 内，若这里抛出会把已通过的步骤误判成失败并 raise。
