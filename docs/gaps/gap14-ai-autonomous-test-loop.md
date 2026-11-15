@@ -111,9 +111,9 @@ Save/Submit/Confirm 类停）、生产闸早于开浏览器、出境 URL 过 `sa
 | en-8 | runs.jsonl 单文件：多平台混写一份，summary 聚合互相污染（`ATLAS_RUNS_DIR` 只隔一半） | 升级 `ATLAS_RUNS_DIR` 语义=落盘位置变更，需新键名或版本警示 | wave3+2 |
 | ob-5 | 无旧仓平台被迫假造 legacy/API 目录：doctor 显示 legacy_pages=true 的假绿 | 预检按需化（compile 期判定）+ 跳过开关，属引擎装配链变更 | wave3+1 |
 | ob-3 | `gen --plugin X` 的 step.domain 写死 demo：平台专有坑点对自动生成 flow 永不匹配（假绿） | 生成器 domain 接线 + 断言，小改动但需独立回归 | wave3+1 |
-| uf-1 | waits 默认选择器（`.el-table`/`.el-loading-mask`/`.el-dialog`）换框架族后 mask 静默秒回（hidden 恒满足→假绿/假红） | 族机制已撤销，修复形态（数据驱动族 profile）待 lead 重议后再上 | wave4 |
-| uf-2 | waits 的 `__vue__` 是 Vue2 运行时假设：换 Vue3 假红 + 归因漂移 | 同 uf-1，族第二轴，随族机制一起重议 | wave4 |
-| uf-3 | `components.json` 的 `login.submit_generic`「button, .el-button」换族后命中任意按钮（静默点错，全库唯一） | 组件库条目形态治理，随族标签（ob-4）一起做 | wave4 |
+| uf-1 | waits 默认选择器（`.el-table`/`.el-loading-mask`/`.el-dialog`）换框架族后 mask 静默秒回（hidden 恒满足→假绿/假红） | **已完成（wave4 A 轴）**——见 `docs/gaps/wave4-ui-family.md`：遮罩缺席时先由族**前缀 DOM 存在性**判据确认页面属本族，缺席点名 `UiFamilyMismatch` | — |
+| uf-2 | waits 的 `__vue__` 是 Vue2 运行时假设：换 Vue3 假红 + 归因漂移 | **已完成（wave4 A 轴）**——见同上：哨兵字符串分流，无 `__vue__`/`data` 非数组点名 `RuntimeError`，合法空表不变 | — |
+| uf-3 | `components.json` 的 `login.submit_generic`「button, .el-button」换族后命中任意按钮（静默点错，全库唯一） | **已完成（wave4 A 轴）**——见同上：去裸 `button` 兜底 + 顶层 `family` 声明 + `save_component_selector` 保留非 components 顶层键 + doctor/生成期闸 | — |
 
 ### P1 实用（方法论资产化：人读文档 → atlas 可消费机制）
 

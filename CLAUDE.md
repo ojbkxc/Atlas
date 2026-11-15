@@ -201,7 +201,7 @@ A: `python scripts/import_jmeter.py 巡检.jmx -o flow.yaml --flow-id ics-patrol
 **字面敏感头闸（C4①）**：HeaderManager 里的字面凭据值（Authorization/Cookie/`isc-axios-sessionid`+UUID 等）在写 YAML 前统一换成 `${ATLAS_HDR_<n>}`，映射清单只报键名——凭据值不进 YAML/stdout/stderr；`${VAR}`/`${__P()}` 已外部化的值不重复告警。未解析占位符清单的值段也先净化（`${__P(name,字面默认值)}` 的 DEFAULT 段旧实现被 `val[:80]` 原样打回 stderr）。**无 `-o` 且闸命中时拒打全文**，只出摘要与接线指引；零命中时 stdout 行为逐字不变。告警标记 ASCII 化（`WARN:`）——旧 `⚠` 在 GBK 控制台直接崩掉迁移。
 
 ### Q: 测试已经覆盖真实 SIT 吗？
-A: 离线验证 **2535 passed**（2446 上一收口位 + 89：本波「通用知识包组合层」+14（`base_roots`/`load_composed`/`generic` 可见性，tests/test_evidence_and_knowledge.py +12 + 插件与 config_add 骨架三层接线 tests/test_config_add.py +2）+ 2446 收口后存量补测 +75（缺陷修复波「测试盲区」，此前未落数）；2428 上一收口位 + 18：`envs.json` 账号/OU 环境坐标接进会话默认链
+A: 离线验证 **2671 passed**（2535 上一收口位 + 136：wave3 AI 自主测试闭环 +58、wave4 原子 IO +25、wave4 P1 批次 +15、wave4 A 轴族可移植面 +38；更早的 2446 收口位 + 89：本波「通用知识包组合层」+14（`base_roots`/`load_composed`/`generic` 可见性，tests/test_evidence_and_knowledge.py +12 + 插件与 config_add 骨架三层接线 tests/test_config_add.py +2）+ 2446 收口后存量补测 +75（缺陷修复波「测试盲区」，此前未落数）；2428 上一收口位 + 18：`envs.json` 账号/OU 环境坐标接进会话默认链
 6 条 + 空账号闸门经 CLI 三入口（run / agent --execute / explore）预检投递 rc 2（判据单点
 `runtime.require_account`）+ `--env` choices 收敛到 `config.ENV_URL_KEYS` 单一真相 + `atlas init`
 默认钉 Atlas 源码根（骨架开箱可装）/ README「拿到先跑这三步」/ 随仓样例 `examples/api_sample.md`

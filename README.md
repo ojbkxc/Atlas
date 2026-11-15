@@ -3,7 +3,7 @@
 <p align="center">
   <a href="https://github.com/ojbkxc/Atlas"><img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License"></a>
-  <a href="#当前验证边界"><img src="https://img.shields.io/badge/tests-2535%20passed-brightgreen" alt="2535 passed"></a>
+  <a href="#当前验证边界"><img src="https://img.shields.io/badge/tests-2671%20passed-brightgreen" alt="2671 passed"></a>
   <img src="https://img.shields.io/badge/engine-Playwright-45edaa" alt="Playwright">
   <img src="https://img.shields.io/badge/self--healing-human--reviewed-orange" alt="Human-reviewed healing">
 </p>
@@ -109,6 +109,16 @@ python -m playwright install chromium && pytest -q
   计算唯一入口 `src/atlas/versioning.py`，纯读不新增写路径；`atlas doctor` 增 `version_triple`
   （含 `tz_data` 体检：Windows 缺 tzdb 时点名 `pip install tzdata`，不静默回落 UTC），
   `atlas summary` 增 `versions.drifted`——「上周能跑今天炸」从玄学变成可 diff 的事实。
+- **UI 族判据显式化（uf-1/uf-2/uf-3，换平台静默失效）**：`wait_for_mask_gone`/`wait_for_rows`
+  在遮罩缺席时不再无条件信「无遮罩=未加载」——先用族**前缀特征**（DOM 层 class token 以族前缀
+  开头）确认页面确属本族，特征缺席点名 `UiFamilyMismatch`。旧实现 `wait_for_selector(state="hidden")`
+  对不存在的选择器恒满足、静默秒回「已落定」→ 后续读 stale 数据假绿/假红。族 = 知识数据
+  （`plugins/_common/knowledge/ui_family.json`：`prefixes`=运行时判据、`signature`=诊断展示），
+  加一个新族 = 加一条数据、不改引擎（AGENTS §0）；`wait_for_rows`/`wait_for_vue_field` 遇
+  「表格在却无 `__vue__` / `vm.data` 非数组」点名 `RuntimeError`（uf-2），合法空表 `data:[]` 不变；
+  `save_component_selector` 保留写目标文件的非 `components` 顶层键（旧实现第一次批准就静默丢弃
+  `family`）；`atlas doctor` 增 `ui_family` 展示项（不并入 rc），`emit_pytest` 生成期闸拒
+  「声明族与选择器前缀不符」。
 - **私有知识目录**：`ATLAS_KNOWLEDGE_DIR` 指到仓库外——读逐文件回退包内虚构默认，人审批准（组件/坑点/坐标）只写私有目录，真实业务知识零入库。
 - **BU 坐标双轨（离线管线）**：`atlas overlay` 对两组业务坐标做逐键 diff，差异生成 `bu_overlay` 草稿进审核塔；批准才落私有 overlay 库。租户=坐标不是分支；真实 BU-B 双跑仍待会话值。
 - **项目初始化向导**：`atlas init` 一键生成含 `.atlas-root/.env/pyproject.toml/flows/smoke.yaml/tests/test_smoke.py/scripts/run_allure.py` 的新项目骨架；`.env` 值全空无凭据、pyproject 不含 allure-pytest（报告走 `atlas allure` 纯 stdlib 直出 Allure 2.39.0）。
@@ -595,9 +605,14 @@ PYTHONPATH=src python scripts/boundary_classify.py --diff incoming.diff --to-tow
 
 ## 当前验证边界
 
-- 离线测试：**2535 passed / 9 failed（既有环境失败）**（Python 3.11；`PYTHONPATH=src py -3.11 -m pytest -q`，
-  2026-11-14 实测——8 skipped、`--collect-only` 同为 2535；
-  较上一收口位 2446（2026-11-13 实测，Python 3.13 环境、当时 0 failed / 0 skipped）净 +89：
+- 离线测试：**2671 passed / 9 failed（既有环境失败）**（Python 3.11；`PYTHONPATH=src py -3.11 -m pytest -q`，
+  2026-11-15 实测——8 skipped、`--collect-only` 2688（= 2671+9+8）；
+  较上一收口位 2535（2026-11-14 实测）净 +136，四波：
+  **2593 wave3 AI 自主功能测试闭环波 +58**：`explore --auto` 判据动作实做（visible/text/api/compare 四类 assert）+ 证据落 runs.jsonl + 坑点未命中自动提炼进塔 + ob-1 骨架 `session_defaults` 接 env 契约；
+  **2618 wave4 原子 IO 波 +25**：`atomic_io` 统一原子写（tmp+`os.replace`）+ 唯一安全追加器，12 文件接线；
+  **2633 wave4 P1 批次 +15**：审核塔事务锁 + 读侧 `read_text_retry` + `import requests` 懒加载 + `save_plan_ctx` 锁内合并 + `historyId` 来源维度 opt-in + explore trace 断行守卫；
+  **2671 wave4 A 轴族可移植面 +38**：`ui_family` 族表 + uf-1 族前缀 DOM 存在性判据 + uf-2 运行时点名 + uf-3 族声明与 `save_component_selector` 顶层键保留；
+  更早的 2446（2026-11-13 实测，Python 3.13 环境、当时 0 failed / 0 skipped）→ 2535 净 +89：
   本波「通用知识包组合层」+14（`KnowledgeBase.base_roots` / `load_composed` 并入通用包、
   pitfalls 可见性判据 `domain in scope or "generic" in scope`，tests/test_evidence_and_knowledge.py +12；
   插件与 config_add 骨架三层接线（私有 > 平台 > 通用），tests/test_config_add.py +2）
