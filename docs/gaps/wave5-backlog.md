@@ -13,7 +13,7 @@
 | en-2 | 知识条目平台维度：组件/pitfall 可选 `plugin` 标签；读侧 `_entry_visible`/`_entry_plugin`/`GENERIC_PLUGIN` 单点——plugin 缺失=可见（兼容存量）、generic 任意可见、跨平台不可见；`shadowed_components()` 点名被遮蔽项；批准写当前插件名且 generic 不被覆盖 | `4cc1dcb` |
 | en-3 | 草稿 identity 首段掺 `resolve_plugin().name`（`task\|exc\|class\|pitfall` → `plugin\|…`），跨平台同任务+同异常不再合并、证据不互相顶掉；行新增 `plugin` 字段；解析失败回落空段（不阻断登记）；**存量草稿 id 会变**——写进模块 docstring 的有意行为变更 | `b99898a` |
 | en-4 | `ATLAS_ENTRYPOINT` 选名从 `envs.json` `environments.<env>.entrypoints.<name>` 取 base_url（`entrypoint_urls`/`environment_config` 属性）；找不到点名拒绝、不静默回落；坏形态降级空表 | `0220b24` |
-| en-5 + ob-5 | `_read_dotenv_pairs` 判据单点 + `load_legacy_dotenv` 白名单（`ATLAS_*` + 当前前缀 `USERNAME/PASSWORD/PWD_*/URL_*`），白名单外只计数 + WARN **不回显值**；runtime/legacy 改调它——旧仓 .env 不再整份 `setdefault` 进 `os.environ`（跨平台残留污染封口） | `0220b24` |
+| en-5 + ob-5 | **en-5 白名单**：`_read_dotenv_pairs` 判据单点 + `load_legacy_dotenv`（`ATLAS_*` + 当前前缀 `USERNAME/PASSWORD/PWD_*/URL_*`），白名单外只计数 + WARN **不回显值**；runtime/legacy **与 CLI 四处预检**（agent/doctor/run/多 flow）全改调它——旧仓 .env 不再整份 `setdefault` 进 `os.environ`。**ob-5 预检按需化**：`runtime.legacy_required_for`（登录轨恒需要旧仓 ∨ flow 含 `needs_legacy_project` 任务）在 compile 期判定，`check_legacy_required` 是预检唯一消费口；`ATLAS_SKIP_LEGACY_CHECK=1`（只认精确 `1`）显式跳过并 WARN——只跳 fail-fast 预检，真实需要旧仓的调用点仍报错。**边界**：`attach_demo` 仍无条件装配（「假造 API 目录」那半需插件 API seam，见 §4） | `0220b24` + `66b9339` |
 | en-6 | **已在更早波次交付（cc-6，commit 7189250）**：`atlas allure --source-dimension` opt-in 时 historyId 掺平台维度；本波未再改 | — |
 | en-7 | `config.browser_proxy` opt-in（http/https/socks5）；未设置 return None=launch kwargs 逐字节同旧；坏形态启动前 ValueError；`session.py` launch 前追加 `proxy` | `0220b24` |
 | en-8 | runs.jsonl 分流 opt-in `ATLAS_RUNS_SPLIT=plugin`（写侧 `recorder._split_runs_path` 精确匹配；读侧 `reporting.runs_inputs`/`_read_inputs_text` 聚合分片、缺分片回落单文件、补断行）；**allure 读侧由 lead 接线**（`6c6886b`，域外裁决见 §3） | `7e23ceb` + `6c6886b` |
@@ -40,7 +40,8 @@
 
 ## 2. 判据规模
 
-- 起点 2805 passed → 收口 2940 passed（**+135 测**），collect-only 2957；
+- 起点 2805 passed → 收口 2949 passed（**+144 测**），collect-only 2966；
+  其中收口二笔（`66b9339`）补 en-5 CLI 封口 + ob-5 按需预检/跳过开关，+9 测；
 - 全量判据 = `9 failed 逐名一致（既有环境基线）+ 零新增`，见 §5；
 - 新增测分布：`test_plugin_api_en1.py`(9) / `test_experience_plugin_dim.py`(3) /
   产物与知识面（en-2/ob-4/ob-6/ae-6/uf-5/6）**+** 环境面 17 / 引擎面（en-10/11/12/15）/
@@ -68,16 +69,26 @@
    （放行时 ASCII 警告 + runs.jsonl 记 `prod_write_allowed` 可审计）；
    `--i-accept-writes` 只作用于调度登记（承认台账里挂写 flow），调度派发的子进程照样
    受 engine 写闸管。示例刻意不绕闸。
+5. **ob-5 的「预检按需」补交是迟到整改**：收口初稿把 en-5 的白名单当成 ob-5 交付，
+   是 lead 的归并错误；writer-env 交接时如实上报「预检按需化子项未做 + cli.py 四处
+   未过滤 load_dotenv 因越权未改」，核对后由 lead 在 `66b9339` 补齐（CLI 四处改
+   白名单加载、`legacy_required_for` 三态判据、`ATLAS_SKIP_LEGACY_CHECK` 开关、+9 测）。
+   教训：**成员交接里的「如实标注缺口」比漂亮的完成率更有价值**——这条缺口只靠
+   收口文档自检发现不了。
 
 ## 4. 未做项（如实留白）
 
 - **uf-4 的四个混合选择器**：不在本波拆（理由见 §3.1），不是漏做。
+- **ob-5 的 API 半面**：「无旧仓平台被迫假造 **API** 目录」未解决——`attach_demo`
+  是无条件装配（`runtime.__enter__` 恒调 `Actor.api.attach_demo`），无 API 适配器的
+  平台仍需该目录存在。正确落点是插件 API seam（引擎按插件声明决定是否装配
+  DemoApi/如何提供 API 能力），属引擎装配链变更，不在本波做；legacy 半面已按需化。
 - 其余 gap14 表内条目（en-1 ~ en-15 / ob-2 ~ ob-8 / uf-1 ~ uf-8 / complex-flow）**已全部有处置**；
   en-6 / ob-2 / uf-1/2/3 是更早波次已交付，本波只核对未再改。
 
 ## 5. 验证边界（如实）
 
-- 离线全量：`9 failed / 2940 passed / 8 skipped`（collect-only 2957），9 条逐名与既有基线一致
+- 离线全量：`9 failed / 2949 passed / 8 skipped`（collect-only 2966），9 条逐名与既有基线一致
   （`test_emit_compat×3` / `test_gen::test_with_pytest_no_allure_rc2` /
   `test_init_scaffold::test_allure_e2e_offline` / `test_legacy_compat_xcheck×2` /
   `test_migration_sentinels×2`——环境性既有失败，本波未修）。

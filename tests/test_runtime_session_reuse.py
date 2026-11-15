@@ -72,11 +72,11 @@ class _FakeRuntime:
     instances: list = []
 
     def __init__(self, config, *, login=True, account=None, ou=None, division_code=None,
-                 create_quota=0, language=None):
+                 create_quota=0, language=None, legacy_required=None):
         self.config = config
         self.kwargs = {"login": login, "account": account, "ou": ou,
                        "division_code": division_code, "create_quota": create_quota,
-                       "language": language}
+                       "language": language, "legacy_required": legacy_required}
         self.enter_count = 0
         self.exit_count = 0
         self._actor = Actor("fake")
@@ -155,7 +155,9 @@ def test_single_flow_lockstep_shape_and_lifecycle(run_env):
     assert len(_FakeRuntime.instances) == 1
     runtime = _FakeRuntime.instances[0]
     assert runtime.kwargs == {"login": True, "account": None, "ou": None,
-                              "division_code": None, "create_quota": 0, "language": None}
+                              "division_code": None, "create_quota": 0, "language": None,
+                              # ob-5：登录轨恒需要旧仓 → CLI 在 compile 期判定后显式传 True
+                              "legacy_required": True}
     assert runtime.enter_count == 1 and runtime.exit_count == 1
     records = _runs(run_env)
     assert len(records) == 1
