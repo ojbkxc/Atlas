@@ -3,7 +3,7 @@
 <p align="center">
   <a href="https://github.com/ojbkxc/Atlas"><img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License"></a>
-  <a href="#当前验证边界"><img src="https://img.shields.io/badge/tests-2671%20passed-brightgreen" alt="2671 passed"></a>
+  <a href="#当前验证边界"><img src="https://img.shields.io/badge/tests-2796%20passed-brightgreen" alt="2796 passed"></a>
   <img src="https://img.shields.io/badge/engine-Playwright-45edaa" alt="Playwright">
   <img src="https://img.shields.io/badge/self--healing-human--reviewed-orange" alt="Human-reviewed healing">
 </p>
@@ -607,9 +607,16 @@ PYTHONPATH=src python scripts/boundary_classify.py --diff incoming.diff --to-tow
 
 ## 当前验证边界
 
-- 离线测试：**2671 passed / 9 failed（既有环境失败）**（Python 3.11；`PYTHONPATH=src py -3.11 -m pytest -q`，
-  2026-11-15 实测——8 skipped、`--collect-only` 2688（= 2671+9+8）；
-  较上一收口位 2535（2026-11-14 实测）净 +136，四波：
+- 离线测试：**2796 passed / 9 failed（既有环境失败）**（Python 3.11；`PYTHONPATH=src py -3.11 -m pytest -q`，
+  2026-11-15 实测——8 skipped、`--collect-only` 2813（= 2796+9+8）；
+  较上一收口位 2671（2026-11-15 A 轴收口实测）净 +125，本波 wave4 B/C 轴收尾：
+  **ae-1~ae-4 CLI 统一渲染层**（`cli_render.py` 人读视图/机读唯一出口/doctor verdict 行/汇总行/rc2 文案核对）+
+  **ae-5 allure 结果集人读摘要**（`atlas-summary.json`）+ **ae-6 产物可读性评审**（文档）+
+  **ae-7 读者导航**（文档）+ **pf-4 waits 轮询节拍常量化**（`TICK_MS=25`，对齐 legacy_fast）+
+  **pf-5 多 flow 一次登录**（`atlas run a.yaml b.yaml`）+ **pf-6 取证截图降质 opt-in** +
+  **pf-9 allure-analyze 增量读**（指纹缓存跳过未变 result）+ **pf-11 catch-up 槽位计数公式化** +
+  **ob-2 骨架 envs.json 补 account/ou 占位键**；
+  更早的 2535（2026-11-14 实测）→ 2671 净 +136，四波：
   **2593 wave3 AI 自主功能测试闭环波 +58**：`explore --auto` 判据动作实做（visible/text/api/compare 四类 assert）+ 证据落 runs.jsonl + 坑点未命中自动提炼进塔 + ob-1 骨架 `session_defaults` 接 env 契约；
   **2618 wave4 原子 IO 波 +25**：`atomic_io` 统一原子写（tmp+`os.replace`）+ 唯一安全追加器，12 文件接线；
   **2633 wave4 P1 批次 +15**：审核塔事务锁 + 读侧 `read_text_retry` + `import requests` 懒加载 + `save_plan_ctx` 锁内合并 + `historyId` 来源维度 opt-in + explore trace 断行守卫；
