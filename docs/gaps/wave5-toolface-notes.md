@@ -63,8 +63,23 @@ CWD 侧零散落；变异取证：回退 CWD 相对实现时 `test_export_pytest
 
 ## complex-flow：复杂业务流脚手架
 
-`examples/complex_dispatch_flow.yaml`（dispatch 路由 + 写腿示范，写腿默认被生产写闸
-拦下 env_blocked，文档说明 ATLAS_ALLOW_PROD_WRITE=1 人工放行）+ `atlas compile` 判据测。
+`examples/complex_flow_demo.yaml`（提交 0b82cf6）：同一 flow 演示三种机制组合——dispatch
+路由（`on: order_resp.data.total`，0 条走造单腿、否则走核对腿）、UI 写腿
+（`click_new`/`click_save`，元数据 `read_only=False`）、flow 级 `requires` find_only
+数据供给（找不到不造数）。写腿的两级拦截面在示例头分别写明、互不替代：
+
+- **运行轨**（engine 生产写闸）：`env=prod` 时写步骤被拦记 env_blocked；人工放行 =
+  显式 `ATLAS_ALLOW_PROD_WRITE=1`（只认精确 `"1"`，放行时 ASCII 警告 + runs.jsonl 记
+  `prod_write_allowed` 可审计）；
+- **登记面**（`atlas schedule add` 只读档）：离线扫描 `read_only=False` 步骤，缺
+  `--i-accept-writes` 拒入库；调度派发的子进程照样受 engine 写闸管。
+
+`atlas compile examples/complex_flow_demo.yaml` rc 0（实测）。判据测
+`tests/test_gen.py::test_complex_flow_demo_compiles_offline`（`dispatch:route` 节点在位）
+与 `::test_complex_flow_demo_write_leg_gated_by_default`（写腿集合恰
+`{click_new, click_save}` + 两个放行键的说明在位——改文案必须同步示例头注释，两处是
+同一份口径）。多状态单据的状态机语义仍由 `examples/so_change_states.yaml` +
+`atlas machine` 承接（`atlas compile` 对状态机文件点名「请用 atlas machine 执行」）。
 
 ## uf-7 / uf-8
 
