@@ -19,9 +19,51 @@ def _save_as_name(index: int, ep: Endpoint, template: str = "resp_{n}_{slug}") -
     return template.format(n=index, slug=slug)
 
 
+def _resolve_plugin_domain(plugin: str) -> str:
+    """ob-3：step.domain 的唯一取值口——`--plugin X` 生成期把 X 的**插件注册 domain** 接进
+    step（平台专有坑点对自动生成 flow 才能 match：domain 是 pitfalls 的 scope 维度，
+    写死 demo = 换平台后平台专有坑点永不命中，假绿）。
+
+    判据：显式参数按 `plugin_api.register_plugin` 的注册表解析（demo 默认恒可用）；
+    未注册名允许**动态加载面**接住（`plugin_api._load_external_plugin` 同款路径——
+    ATLAS_PLUGIN 已支持模块/文件形态的外部插件），全部失败点名已注册清单（#90 口径），
+    绝不静默回落 demo（回落=把 A 平台的坑点知识标成 demo 的，比报错更隐蔽）。
+    生成期解析成功后回读 `resolve_plugin().name` 断言与显式参数一致——插件类名/内部
+    name 与注册 domain 不一致时点名（生成产物进真实执行链前把身份对齐）。
+    """
+    import os as _os
+    from ..plugin_api import resolve_plugin
+    if not isinstance(plugin, str) or not plugin.strip():
+        raise FlowEmitError(
+            f"--plugin 必须是非空插件名，收到 {plugin!r}（已注册面见 atlas plugin_api）")
+    plugin = plugin.strip()
+    previous = _os.environ.get("ATLAS_PLUGIN")
+    try:
+        _os.environ["ATLAS_PLUGIN"] = plugin
+        instance = resolve_plugin()
+    except ValueError as exc:
+        raise FlowEmitError(str(exc)) from exc
+    finally:
+        if previous is None:
+            _os.environ.pop("ATLAS_PLUGIN", None)
+        else:
+            _os.environ["ATLAS_PLUGIN"] = previous
+    name = getattr(instance, "name", "")
+    if name != plugin:
+        raise FlowEmitError(
+            f"插件 {plugin!r} 的注册名与实例 name 不一致（实例 name={name!r}）——"
+            f"step.domain 会进坑点匹配 scope，身份必须逐字对齐")
+    return name
+
+
 def _build_step(index: int, ep: Endpoint, global_headers: dict,
-                template: str, read_only_default: bool) -> tuple[dict, list[str]]:
-    """构造单个 api_call step + manual_assertions（列表下标断言限制）。"""
+                template: str, read_only_default: bool,
+                domain: str = "demo") -> tuple[dict, list[str]]:
+    """构造单个 api_call step + manual_assertions（列表下标断言限制）。
+
+    domain 缺省 demo 与旧实现逐字等价（#115：直接调用方零涟漪）；emit_flow 入口
+    经 `_resolve_plugin_domain` 解析后传入（ob-3）。
+    """
     manual: list[str] = []
     save_as = ep.save_as_override or _save_as_name(index, ep, template)
     # path + query 拼进 path（api_call 无 query 旋钮）；body 参数合并进 body 对象
@@ -32,7 +74,7 @@ def _build_step(index: int, ep: Endpoint, global_headers: dict,
         "path": path,
         "method": ep.method,
         "save_as": save_as,
-        "domain": "demo",
+        "domain": domain,
         "intent": ep.summary or f"调用 {ep.method} {ep.path}",
     }
     # 全局鉴权头并入每个 step（BUG-920 防线，isc-app 业务识别头）
@@ -147,6 +189,9 @@ def emit_flow(endpoints: list[Endpoint], *, scenario: str = "auto",
     场景 C 批量：调用方按 endpoint 拆成多个 flow（本函数只处理传入的 endpoints）。
     """
     global_headers = global_headers or {}
+    # ob-3：domain 与插件身份对齐（解析一次给全部 step 用；坏插件名在生成期点名，
+    # 不让产物带着假 domain 进真实执行链）。默认 plugin="demo" 路径逐字节不变。
+    domain = _resolve_plugin_domain(plugin)
     # 场景判定
     if scenario == "auto":
         scenario = _detect_scenario(endpoints)
@@ -166,7 +211,7 @@ def emit_flow(endpoints: list[Endpoint], *, scenario: str = "auto",
                 f"compose_for_goal 同键多生产者会硬报错，必须全局唯一")
         seen_save_as.add(save_as)
         step, manual = _build_step(index, ep, global_headers, naming,
-                                   read_only_default=True)
+                                   read_only_default=True, domain=domain)
         steps.append(step)
         all_manual.extend(manual)
         all_low.extend(ep.low_confidence())

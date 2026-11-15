@@ -609,3 +609,62 @@ def test_emit_pytest_package_fast_kwarg_signature():
     params = inspect.signature(emit_pytest_package).parameters
     assert "fast" in params, "C.2 契约参 fast 缺失——fast_kw 透传形态失效"
     assert params["fast"].default is False
+
+
+# ---- ob-3：gen --plugin X 的 step.domain 接线（wave5 工具面，2026-11-15） ----
+
+def test_ob3_default_plugin_domain_demo_zero_drift(tmp_path):
+    # 默认 --plugin demo：step.domain 必须仍是 "demo"（存量产物零涟漪，#115）
+    p = tmp_path / "src.md"
+    p.write_text("## GET /api/x\n\n```json\n{}```\n", encoding="utf-8")
+    r = generate(p, None, GenOptions(check_only=True))
+    assert r.flows, "默认生成必须产出 flow"
+    for flow in r.flows:
+        for step in flow["steps"]:
+            if "domain" in step:
+                assert step["domain"] == "demo"
+
+
+def test_ob3_plugin_iservice_writes_domain(tmp_path, monkeypatch):
+    # --plugin iservice（已注册插件）：每个 step.domain 与 flow.plugin 逐字 = "iservice"
+    p = tmp_path / "src.md"
+    p.write_text("## GET /api/x\n\n```json\n{}```\n", encoding="utf-8")
+    r = generate(p, None, GenOptions(plugin="iservice", check_only=True))
+    assert r.flows
+    assert r.flows[0]["plugin"] == "iservice"
+    domains = {s["domain"] for flow in r.flows for s in flow["steps"]
+               if "domain" in s}
+    assert domains == {"iservice"}
+
+
+def test_ob3_unknown_plugin_named_not_silent_demo_fallback(tmp_path):
+    # 坏插件名：生成期点名（FlowEmitError），绝不静默回落 demo——
+    # 回落会把 iservice 的坑点知识标成 demo 的，比报错更隐蔽（ob-3 立项动机）
+    p = tmp_path / "src.md"
+    p.write_text("## GET /api/x\n\n```json\n{}```\n", encoding="utf-8")
+    with pytest.raises(FlowEmitError) as ei:
+        generate(p, None, GenOptions(plugin="no-such-platform", check_only=True))
+    assert "no-such-platform" in str(ei.value)
+
+
+def test_ob3_domain_drives_pitfall_scope_via_registry(tmp_path, monkeypatch):
+    # 变异取证：domain 不是装饰字段——它进 plugin_api.resolve_plugin() 的插件身份链。
+    # 把 resolve_plugin 换成会炸的哨兵，--plugin iservice 时若 emit_flow 没走插件解析
+    # （比如有人把 domain 改回写死），这条就红；走了解析则 resolve_plugin 被真调。
+    calls = []
+    import atlas.generator.emit_flow as ef
+    from atlas.plugin_api import register_plugin
+    real_resolve = ef.__dict__.get("resolve_plugin")
+    # emit_flow 里是函数内 import：哨兵要打在 plugin_api 上
+    import atlas.plugin_api as papi
+    real = papi.resolve_plugin
+
+    def spy():
+        calls.append(1)
+        return real()
+
+    monkeypatch.setattr(papi, "resolve_plugin", spy)
+    p = tmp_path / "src.md"
+    p.write_text("## GET /api/x\n\n```json\n{}```\n", encoding="utf-8")
+    generate(p, None, GenOptions(plugin="iservice", check_only=True))
+    assert calls, "emit_flow 未经 plugin_api.resolve_plugin 解析插件——ob-3 接线被绕过"
