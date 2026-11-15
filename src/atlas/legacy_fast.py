@@ -111,9 +111,18 @@ _JS_VISIBLE_FN = (
     " && s.display !== 'none' && e.style.display !== 'none'; };"
 )
 
+# uf-6：忙碌遮罩探针的选择器。**点名文档化**（不族化）：本值是 Element-UI 的
+# `loading-mask` 遮罩类——一个**平台/UI 库特定**的业务字面量。本模块按 `--compat`
+# 原字节 vendor 进旧仓产物，旧仓的 UI 框架就是 Element-UI，改这个值=改旧仓实测行为，
+# 故**不做族化**（族化会把「等遮罩」判据换成别的语义，破坏既有真机 A/B 基线）。
+# 非 Element-UI 平台不从这条路径拿垫片——`--compat legacy-suite` 的产物面向的就是那个
+# 旧仓，探针选择器是它的平台事实，不在通用产物侧配。真正的族化入口是「通用产物」侧的
+# `waits.py` 语义等待（不受本常量约束）；本常量只做「把业务字面量收成一处 + 点名」。
+MASK_PROBE_SELECTOR = ".el-loading-mask"
+
 # 遮罩在场=忙碌信号（本档唯一的「真在等」证据形态）；缺席不是忙碌，也不是放行理由。
 _JS_MASK_BUSY_CLAUSE = (
-    " if (Array.from(document.querySelectorAll('.el-loading-mask')).some(vis))"
+    f" if (Array.from(document.querySelectorAll('{MASK_PROBE_SELECTOR}')).some(vis))"
     " return " + _js_lit(_CODE_BUSY_MASK) + ";"
 )
 
@@ -537,12 +546,12 @@ def _install_hook(page, hook: str, present_check: str):
 _RULE_KINDS = ("js", "url", "mask_gone", "mask_cycle", "never")
 
 _RULE_MASK_VISIBLE_JS = (
-    "() => Array.from(document.querySelectorAll('.el-loading-mask')).some(function (el) {"
+    f"() => Array.from(document.querySelectorAll('{MASK_PROBE_SELECTOR}')).some(function (el) {{"
     " var r = el.getBoundingClientRect();"
     " return r.width > 0 && r.height > 0; })"
 )
 _RULE_MASK_GONE_JS = (
-    "() => !Array.from(document.querySelectorAll('.el-loading-mask')).some(function (el) {"
+    f"() => !Array.from(document.querySelectorAll('{MASK_PROBE_SELECTOR}')).some(function (el) {{"
     " var r = el.getBoundingClientRect();"
     " return r.width > 0 && r.height > 0; })"
 )

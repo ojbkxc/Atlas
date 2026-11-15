@@ -1843,3 +1843,28 @@ def test_site_rules_env_is_read_by_install(monkeypatch, tmp_path):
     page.wait_for_timeout(2000)
     assert stats.calls[0]["probe"] == "rule:js"
     assert stats.calls[0]["fallback"] == ""
+
+
+# ---------------------------------------------------------------------------
+# uf-6：遮罩探针选择器收成单点常量 + 点名文档化（不族化，破坏旧仓实测基线）
+# ---------------------------------------------------------------------------
+
+
+def test_uf6_mask_probe_selector_single_source():
+    """MASK_PROBE_SELECTOR 是唯一出处：busy-clause 与两条 rule-JS 都由它派生（不留第二份字面量）。"""
+    sel = legacy_fast.MASK_PROBE_SELECTOR
+    assert sel == ".el-loading-mask"          # 值固定=Element-UI 平台事实（不改不族化）
+    # 派生物证：busy clause 与 rule JS 尾部都带同一个选择器值
+    assert f"querySelectorAll('{sel}')" in legacy_fast._JS_MASK_BUSY_CLAUSE
+    assert f"querySelectorAll('{sel}')" in legacy_fast._RULE_MASK_VISIBLE_JS
+    assert f"querySelectorAll('{sel}')" in legacy_fast._RULE_MASK_GONE_JS
+
+
+def test_uf6_mask_selector_documented_as_platform_literal():
+    """常量旁注明「平台/UI 库特定字面量，点名文档化不族化」——防后人误当通用探针扩散。"""
+    import inspect
+    mod_src = inspect.getsource(legacy_fast)
+    head = mod_src.split("MASK_PROBE_SELECTOR = ")[0]      # 常量之前的紧邻注释段
+    assert "uf-6" in head                                 # 决策号点名
+    assert "点名文档化" in head                           # 处置：点名而非族化
+    assert "Element-UI" in head or "业务字面量" in head    # 业务字面量归属
