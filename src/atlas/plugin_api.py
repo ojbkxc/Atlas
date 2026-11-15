@@ -10,6 +10,11 @@ Gap2 增强：未在 registry 注册的 domain 尝试动态加载——ATLAS_PLU
 以 .py 结尾 → 按文件加载取模块级 PLUGIN；否则 → import atlas.plugins.<name> → import
 <name>（外部项目把 PYTHONPATH 指到项目根后 `plugins.<domain>` 可被发现）。
 加载成功返回实例；全部失败点名已注册清单与尝试过的路径（#90/#103 归因口径）。
+
+en-1（wave5）：回落 demo **不再沉默**——未设 ATLAS_PLUGIN 时在 stderr 打一行 ASCII
+前缀 WARN（同一进程只打一次）；显式 opt-in `ATLAS_REQUIRE_PLUGIN=1`（只认精确 "1"，
+与 config._flag_env 同一判据）时无 ATLAS_PLUGIN 直接 ValueError 点名（CLI 已有
+ValueError→rc2 口径）。开关坏值按关处理并点名原值 repr（_flag_env 单点，#79/#80）。
 """
 from __future__ import annotations
 import importlib
@@ -17,9 +22,37 @@ import importlib.util
 import os
 import sys
 from pathlib import Path
+from .config import _flag_env
 from .plugins.demo import DemoPlugin
 
 _REGISTRY: dict[str, type] = {}
+
+# en-1 开关键名单点（值语义委托 config._flag_env，只认精确 "1"、坏值按关处理并点名 repr）。
+REQUIRE_PLUGIN_ENV_KEY = "ATLAS_REQUIRE_PLUGIN"
+
+# 回落 WARN「同一进程只打一次」的进程级旗标（测试经 monkeypatch 重置，见 test_plugin_api）。
+_FALLBACK_WARN_PRINTED = False
+
+
+def _reset_fallback_warn() -> None:
+    """测试钩子：重置「同一进程只打一次」的 WARN 旗标（不属生产路径）。"""
+    global _FALLBACK_WARN_PRINTED
+    _FALLBACK_WARN_PRINTED = False
+
+
+def _warn_fallback_once() -> None:
+    """en-1：回落 demo 时打一行 ASCII WARN，**同一进程只打一次**。
+
+    resolve_plugin 在知识读侧身份解析（en-2 plugin_name / en-3 草稿 identity）中被
+    反复调用，逐次打印会把 stderr 变成瀑布；「静默回落」要揭示的是进程级事实
+    （这个进程在拿虚构 demo 知识跑），打一次即达成目的。
+    """
+    global _FALLBACK_WARN_PRINTED
+    if _FALLBACK_WARN_PRINTED:
+        return
+    _FALLBACK_WARN_PRINTED = True
+    print("WARN: plugin=demo (fallback; set ATLAS_PLUGIN=<domain>)", file=sys.stderr)
+
 
 # 通用知识包目录（业务中立、跨插件共享）的路径**单一来源**：平台插件把三级知识根按
 # 「私有目录 > 平台包内知识 > 通用知识包」传给 KnowledgeBase 时，最后一层从这里取，
@@ -75,8 +108,25 @@ def resolve_plugin():
 
     ATLAS_PLUGIN 指到未注册 domain 时先尝试动态加载（Gap2 外部插件）；
     仍找不到抛 ValueError——CLI 入口接 _user_error（rc 2）。
+
+    en-1（wave5）：回落 demo 不再沉默——
+    - 未设 ATLAS_PLUGIN → stderr 一行 ASCII WARN（`WARN: plugin=demo (fallback; …)`），
+      同一进程只打一次（resolve_plugin 会被 en-2/en-3 身份解析反复调用）。
+    - `ATLAS_REQUIRE_PLUGIN=1`（显式 opt-in，值判据委托 `config._flag_env` 单点）→
+      无 ATLAS_PLUGIN 直接 ValueError 点名（CLI 已有 ValueError→rc2 口径）。
+    设了 ATLAS_PLUGIN 的路径零涟漪：不 WARN、不拒。
     """
-    domain = os.environ.get("ATLAS_PLUGIN", "").strip() or "demo"
+    raw_domain = os.environ.get("ATLAS_PLUGIN", "")
+    domain = raw_domain.strip() or "demo"
+    if domain == "demo":
+        # en-1：显式 demo 与「回落」是两个语义——只有「ATLAS_PLUGIN 未设/空」才提示
+        # （显式 ATLAS_PLUGIN=demo 是人的决定，再 WARN 就是噪音）。
+        if not raw_domain:
+            if _flag_env(REQUIRE_PLUGIN_ENV_KEY):
+                raise ValueError(
+                    "ATLAS_REQUIRE_PLUGIN=1 且未设置 ATLAS_PLUGIN：拒绝静默回落 demo 插件"
+                    "（虚构知识/契约可能被拿去跑真实系统；显式设置 ATLAS_PLUGIN=<domain>）")
+            _warn_fallback_once()
     cls = _REGISTRY.get(domain)
     if cls is not None:
         return cls()

@@ -1,4 +1,11 @@
-"""执行经验先草稿、后人审；第二次同坑从正式库直接命中。"""
+"""执行经验先草稿、后人审；第二次同坑从正式库直接命中。
+
+en-3（wave5）：草稿 identity 掺**平台维度**（`resolve_plugin().name`）。旧 identity
+`task|exception_type|failure_class|pitfall_id` 无平台段——两个平台出现同任务名+同异常
+时 id 相同，`append_draft` 的同 id 合并会把两边证据互相顶掉（后到者覆盖先到者，
+人审只看到一方现场）。**存量草稿 id 会变**（含空段的旧 id 不再生成）：旧行仍可列出/
+审批，新草稿不再与旧 id 合并——这是本修复的有意行为变更。
+"""
 from __future__ import annotations
 import hashlib
 import json
@@ -7,6 +14,19 @@ import time
 from pathlib import Path
 from .atomic_io import atomic_write_text, read_text_retry, update_text_locked
 from .failures import classify_failure, exception_text
+
+
+def _plugin_segment() -> str:
+    """en-3：草稿 identity 的平台段（`resolve_plugin().name` 单点，不猜）。
+
+    解析失败（插件模块坏）回落空段：仅退化到旧 identity，不阻断登记——草稿登记在
+    engine 失败路径的 except 块里，抛错会把原用例异常顶掉（#100/#89 同红线）。
+    """
+    try:
+        from .plugin_api import resolve_plugin
+        return str(getattr(resolve_plugin(), "name", "") or "")
+    except Exception:
+        return ""
 
 
 class ExperienceJournal:
@@ -21,9 +41,12 @@ class ExperienceJournal:
         只造 pending_review——不新增知识写路径（红线 #9/#10）。text 存进 evidence
         供人审核阅（Allure 结果的 message/trace 没有异常对象，人审需要看原文）。
         同 id 合并 seen（#118 证据刷新保留）：append_draft 对同 id 行增 seen 并刷新 evidence。
+        en-3：identity 首段掺插件名（跨平台同任务+同异常不再合并、证据不互相顶掉）。
         """
-        identity = f"{task}|{exception_type}|{failure_class}|{pitfall_id}"
+        plugin = _plugin_segment()
+        identity = f"{plugin}|{task}|{exception_type}|{failure_class}|{pitfall_id}"
         row = {"id": hashlib.sha1(identity.encode()).hexdigest()[:12],
+               "plugin": plugin,
                "task": task, "exception_type": exception_type,
                "failure_class": failure_class, "pitfall_id": pitfall_id,
                "kind": kind, "status": "pending_review",
