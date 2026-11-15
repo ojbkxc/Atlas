@@ -17,6 +17,19 @@ from .failures import classify_failure
 # `\n` 保持 recorder 既有 LF 约定）。import 别名保持本模块调用点不变。
 from .atomic_io import append_line_locked as _append_line_locked
 
+
+def _split_runs_path(path: Path, plugin_name: str) -> Path:
+    """en-8 写侧：把 `runs.jsonl` 改名为同级 `runs.<plugin>.jsonl`（单文件多平台混写分流）。
+
+    只在 ``ATLAS_RUNS_SPLIT`` 精确等于 ``"plugin"`` 时经调用方触达；插件名做文件系统
+    安全校验（拒路径分隔符等），坏名当场点名 ValueError（显式 opt-in 后才可能发生，
+    不让一个奇怪插件名悄悄写出 `../` 越界路径）。
+    """
+    if not plugin_name or any(ch in plugin_name for ch in ("/", "\\", " ")):
+        raise ValueError(f"ATLAS_RUNS_SPLIT=plugin 需要合法的插件名（收到 {plugin_name!r}）")
+    return path.with_name(f"{path.stem}.{plugin_name}{path.suffix}")
+
+
 class RunRecorder:
     def __init__(self, case: str, env: str, path: Path, mode: str = "run",
                  version: dict | None = None):
@@ -35,6 +48,14 @@ class RunRecorder:
             directory = path.parent / directory
         self.case, self.env, self.mode = case, env, mode
         self.path = (directory / path.name) if directory is not None else path
+        # en-8：单文件多平台混写 → 按平台分流到 `runs.<plugin>.jsonl`（opt-in）。
+        # 只认精确值 "plugin"（对齐 ATLAS_ALLOW_PROD_WRITE 只认精确 "1" 的既有纪律：
+        # 默认关的开关不因近似拼写启用）；未设置/其余值一律不改变 path（逐字节旧行为）。
+        # 插件名来自 resolve_plugin().name 单点，不在引擎里散写业务字面量（红线 #11）；
+        # 惰性 import 保住「默认路径零新增依赖」——只有真正 opt-in 才去装配插件。
+        if os.environ.get("ATLAS_RUNS_SPLIT") == "plugin":
+            from .plugin_api import resolve_plugin
+            self.path = _split_runs_path(self.path, getattr(resolve_plugin(), "name", ""))
         self.version = version
         self.run_id = uuid.uuid4().hex
         self.started_at = datetime.now(timezone.utc).isoformat()

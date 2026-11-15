@@ -443,3 +443,96 @@ def test_export_runlog_retries_transient_lock_permission_error(tmp_path, monkeyp
     export_runlog(runs, out)
     assert calls["n"] == 3, "PermissionError 应被重试 3 次（前两次瞬态、第三次成功）"
     assert '"run_id": "r1"' in out.read_text(encoding="utf-8")
+
+
+# ===================== en-8：runs.jsonl 按平台分流（opt-in）=====================
+# 写侧落 runs.<plugin>.jsonl（recorder._split_runs_path，插件名 resolve_plugin().name
+# 单点）；读侧 reporting 把同目录分片当一个逻辑输入聚合。判据与写侧同一把尺：只认精确
+# 值 "plugin"（默认关的开关不因近似拼写启用）——未设置时路径与字节逐字不变。
+
+def _one_run(case: str) -> dict:
+    return {"run_id": case, "case": case, "env": "sit", "status": "passed",
+            "steps": [{"step": "s1", "op": "action", "ok": True, "dur_ms": 1}]}
+
+
+def test_en8_recorder_splits_path_when_opt_in(tmp_path, monkeypatch):
+    """opt-in：ATLAS_RUNS_SPLIT=plugin 时写 runs.<plugin>.jsonl，默认 runs.jsonl 不落。"""
+    monkeypatch.setenv("ATLAS_RUNS_SPLIT", "plugin")
+    monkeypatch.delenv("ATLAS_PLUGIN", raising=False)      # 缺省 demo
+    recorder = RunRecorder("c1", "sit", tmp_path / "runs.jsonl")
+    assert recorder.path.name == "runs.demo.jsonl"          # 插件名单一来源 resolve_plugin
+    recorder.close()
+    assert (tmp_path / "runs.demo.jsonl").exists()
+    assert not (tmp_path / "runs.jsonl").exists()
+
+
+def test_en8_recorder_path_unchanged_without_opt_in(tmp_path, monkeypatch):
+    """负向对照：未设置（或设置成非精确值）时路径逐字不变，仍写默认 runs.jsonl。"""
+    for value in (None, "", "PLUGIN", "yes", "1", " plugin "):
+        if value is None:
+            monkeypatch.delenv("ATLAS_RUNS_SPLIT", raising=False)
+        else:
+            monkeypatch.setenv("ATLAS_RUNS_SPLIT", value)
+        target = tmp_path / f"runs_{value!r}.jsonl".replace("'", "")
+        recorder = RunRecorder("c1", "sit", target)
+        assert recorder.path == target, f"值 {value!r} 不得启用分流"
+        assert recorder.path.name == target.name
+        assert recorder.path.name != "runs.demo.jsonl"
+
+
+def test_en8_summary_aggregates_split_shards(tmp_path, monkeypatch):
+    """读侧：opt-in 时 summary 把各平台分片当一个逻辑输入聚合，不只看 runs.jsonl。"""
+    import json
+    monkeypatch.setenv("ATLAS_RUNS_SPLIT", "plugin")
+    (tmp_path / "runs.demo.jsonl").write_text(json.dumps(_one_run("demo-case")) + "\n",
+                                              encoding="utf-8")
+    (tmp_path / "runs.ics.jsonl").write_text(json.dumps(_one_run("ics-case")) + "\n",
+                                             encoding="utf-8")
+    s = summarize(tmp_path / "runs.jsonl")               # 默认名本身不存在，分片才存在
+    assert s["runs"] == 2 and s["cases"] == 2
+    assert s["status"] == {"passed": 2}
+
+
+def test_en8_export_aggregates_split_shards(tmp_path, monkeypatch):
+    """读侧：export_runlog 同样把分片当一个逻辑输入导出（不漏平台）。"""
+    import json
+    monkeypatch.setenv("ATLAS_RUNS_SPLIT", "plugin")
+    (tmp_path / "runs.demo.jsonl").write_text(json.dumps(_one_run("demo-case")) + "\n",
+                                              encoding="utf-8")
+    (tmp_path / "runs.ics.jsonl").write_text(json.dumps(_one_run("ics-case")) + "\n",
+                                             encoding="utf-8")
+    out = export_runlog(tmp_path / "runs.jsonl", tmp_path / "out.jsonl")
+    rows = [json.loads(line) for line in out.read_text(encoding="utf-8").strip().splitlines()]
+    assert {r["case"] for r in rows} == {"demo-case", "ics-case"}
+
+
+def test_en8_summary_untouched_without_opt_in(tmp_path, monkeypatch):
+    """负向对照：未 opt-in 时只读 path 本身——分片存在但不被聚合（默认路径零涟漪）。"""
+    import json
+    monkeypatch.delenv("ATLAS_RUNS_SPLIT", raising=False)
+    (tmp_path / "runs.jsonl").write_text(json.dumps(_one_run("default-case")) + "\n",
+                                         encoding="utf-8")
+    (tmp_path / "runs.demo.jsonl").write_text(json.dumps(_one_run("shard-case")) + "\n",
+                                              encoding="utf-8")
+    s = summarize(tmp_path / "runs.jsonl")
+    assert s["runs"] == 1 and s["cases"] == 1             # 只读默认文件，分片不计
+
+
+def test_en8_summary_falls_back_to_single_file(tmp_path, monkeypatch):
+    """opt-in 但目录里没有分片（历史单文件场景）→ 诚实回落 path，不伪造无记录。"""
+    import json
+    monkeypatch.setenv("ATLAS_RUNS_SPLIT", "plugin")
+    (tmp_path / "runs.jsonl").write_text(json.dumps(_one_run("legacy")) + "\n", encoding="utf-8")
+    s = summarize(tmp_path / "runs.jsonl")
+    assert s["runs"] == 1 and s["cases"] == 1
+
+
+def test_en8_read_joins_shards_without_trailing_newline(tmp_path, monkeypatch):
+    """分片末行无尾换行时两块不得黏成一行（残行错判）——拼接必须补断行。"""
+    import json
+    monkeypatch.setenv("ATLAS_RUNS_SPLIT", "plugin")
+    # 刻意不写尾换行：模拟中断腰斩残行前的最后一条合法行缺尾换行
+    (tmp_path / "runs.a.jsonl").write_text(json.dumps(_one_run("a")), encoding="utf-8")
+    (tmp_path / "runs.b.jsonl").write_text(json.dumps(_one_run("b")) + "\n", encoding="utf-8")
+    s = summarize(tmp_path / "runs.jsonl")
+    assert s["runs"] == 2 and s["cases"] == 2 and s["skipped_malformed_lines"] == 0

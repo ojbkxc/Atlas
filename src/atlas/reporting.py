@@ -1,11 +1,68 @@
 """把 Atlas 运行记录转换为外部 runlog 报告格式；不依赖其安装。"""
 from __future__ import annotations
 import json
+import os
 from collections import Counter
 from pathlib import Path
 
 from .atomic_io import read_text_retry
 from .failures import FLOW_STATUS_TIMEOUT, FailureClass, is_operational
+
+
+# en-8 读侧：写侧 `ATLAS_RUNS_SPLIT=plugin` 把记录分流到 `runs.<plugin>.jsonl`
+# （recorder._split_runs_path，插件名单一来源 resolve_plugin().name）。读侧必须能把这组
+# 分片当一个逻辑输入聚合，否则 summary/allure 只看到默认 `runs.jsonl`（可能根本不存在）
+# 或只看到最后写入的那个平台——正是 en-8 要消除的「多平台混写互相污染」反向面。
+# 判据与写侧**同一把尺**：只认精确值 "plugin"（默认关的开关不因近似拼写启用）。
+RUNS_SPLIT_ENV = "ATLAS_RUNS_SPLIT"
+
+
+def runs_inputs(path: Path) -> list[Path]:
+    """把「一个逻辑 runs 输入」解析为实际要读的文件清单（en-8 读侧单点）。
+
+    - 未设置 ``ATLAS_RUNS_SPLIT=plugin``（含设置成别的值/空）：返回 ``[path]``，
+      逐字节旧行为（默认路径零涟漪）。
+    - 设置时：返回同目录下全部 ``<stem>.*<suffix>`` 分片（排序保证确定性，与输入行序无关）。
+      目录里若一个分片都没有（老的单文件场景），**诚实回落** ``[path]``——不伪造「无记录」，
+      也不因 opt-in 了分流就读不到历史单文件。
+    """
+    if os.environ.get(RUNS_SPLIT_ENV) != "plugin":
+        return [path]
+    shards = sorted(
+        candidate for candidate in path.parent.glob(f"{path.stem}.*{path.suffix}")
+        if candidate != path
+    )
+    return shards or [path]
+
+
+def _read_runs_text(path: Path) -> str:
+    """读一份 runs 文件的原文；#131 读侧纪律：坏字节（腰斩多字节字符）回落 replace。
+
+    cc-2 配套：``read_text_retry`` 只重试瞬态 PermissionError（写锁区间=文件头 1 字节），
+    UnicodeDecodeError 不重试直接回落 replace（坏字节是确定事实），其余异常原样传播。
+    """
+    try:
+        return read_text_retry(path, encoding="utf-8")
+    except UnicodeDecodeError:
+        return read_text_retry(path, encoding="utf-8", errors="replace")
+
+
+def _read_inputs_text(inputs: list[Path]) -> str:
+    """读取一组 runs 输入并按行拼接（en-8 读侧聚合）。
+
+    单文件（默认路径）行为与旧的「一次 read_text」逐字等价：直接返回该文件原文。
+    多分片时逐份读取、各尾部补一个换行再拼——分片最后一行没有尾换行（中断腰斩残行正是
+    这种形态）时，两块直接相接会把两条 JSON 黏成一行，既有残行计数与合法行都会错判。
+    """
+    existing = [p for p in inputs if p.exists()]
+    if not existing:
+        # 与旧 `read_text_retry(path)` 的缺文件口径一致（FileNotFoundError），不静默写空导出。
+        raise FileNotFoundError(f"运行记录不存在：{inputs[0]}")
+    if len(existing) == 1:
+        return _read_runs_text(existing[0])
+    return "".join((_read_runs_text(p) + "\n") for p in existing)
+
+
 
 
 def _version_shapes(run: dict) -> tuple[str, str, str] | None:
@@ -36,8 +93,13 @@ def summarize(path: Path) -> dict:
     """按用例聚合：状态计数、失败类分布、最慢步骤。
 
     只读 JSONL，缺失文件明确报错，不静默返回空报告冒充“全部通过”。
+    en-8：输入经 ``runs_inputs`` 解析——opt-in 分流时把同目录各平台分片当一个逻辑输入
+    聚合（`summarize(runs.jsonl)` 在 split 模式下会覆盖 `runs.demo.jsonl` 等分片）。
     """
-    if not path.exists():
+    inputs = runs_inputs(path)
+    if not any(p.exists() for p in inputs):
+        # 单文件传统路径的报错口径原样保留（第一分片即 path 本身）；分流时若一个分片都
+        # 不存在也落这里——「没有任何记录」与「文件被删」都是需要人看见的事实，不静默。
         raise FileNotFoundError(f"运行记录不存在：{path}")
     status, fail_classes, slowest = Counter(), Counter(), []
     cases, runs, skipped = set(), 0, 0
@@ -57,10 +119,7 @@ def summarize(path: Path) -> dict:
     # atomic_io 同一把尺，#92）：**只重试 PermissionError**（瞬态锁冲突）；UnicodeDecodeError
     # 不重试、直接回落 replace 读入（坏字节是确定事实，重试无用）；其余异常原样传播（点名
     # 失败，不吞）——不是「加大重试次数」凑过，是「什么可重试、什么必须点名」的判据。
-    try:
-        raw = read_text_retry(path, encoding="utf-8")
-    except UnicodeDecodeError:
-        raw = read_text_retry(path, encoding="utf-8", errors="replace")
+    raw = _read_inputs_text(inputs)
     for line in raw.splitlines():
         if not line.strip():
             continue
@@ -157,10 +216,8 @@ def export_runlog(input_path: Path, output_path: Path) -> Path:
     # #131：同 summarize——一条腰斩坏字节曾让整份导出裸 UnicodeDecodeError，
     # CLI 的 rc2 友好口径（只捕 OSError/ValueError）失效变 traceback；
     # replace 读入后残行 JSON 解析必败，自然落进既有「跳过残行」分支。
-    try:
-        raw = read_text_retry(input_path, encoding="utf-8")
-    except UnicodeDecodeError:
-        raw = read_text_retry(input_path, encoding="utf-8", errors="replace")
+    # en-8：输入经 runs_inputs 解析——opt-in 分流时把同目录各平台分片当一个逻辑输入导出。
+    raw = _read_inputs_text(runs_inputs(input_path))
     with output_path.open("w", encoding="utf-8") as target:
         for line in raw.splitlines():
             if not line.strip():
