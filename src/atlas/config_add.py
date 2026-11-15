@@ -281,7 +281,10 @@ def _build_envs_json(prefix: str) -> str:
     return json.dumps({"environments": envs}, ensure_ascii=False)
 
 # ---- knowledge/domains.json ----
-_DOMAINS_JSON = '{"domains":{}}'
+# ob-4：域清单与组件库同步携带族字段（默认空=未声明）。空串由读侧判「未声明」回落
+# 族表 default——不猜平台族；写默认值（"element-ui"）会在新平台接入时把判据钉死，
+# 与「不预置知识」红线同构。
+_DOMAINS_JSON = '{"domains":{},"stack":"","family":""}'
 
 # ---- knowledge/project_map.json ----
 _PROJECT_MAP_JSON = json.dumps({
@@ -293,7 +296,8 @@ _PROJECT_MAP_JSON = json.dumps({
 _PITFALLS_JSON = '{"pitfalls":[]}'
 
 # ---- knowledge/components.json ----
-_COMPONENTS_JSON = '{"components":{},"selectors":{}}'
+# ob-4：组件库骨架同步携带族字段（默认空=未声明，理由同 domains.json）。
+_COMPONENTS_JSON = '{"components":{},"selectors":{},"stack":"","family":""}'
 
 # ---- knowledge/contracts/core.json ----
 _CONTRACTS_JSON = json.dumps({

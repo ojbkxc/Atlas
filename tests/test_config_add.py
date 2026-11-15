@@ -52,10 +52,16 @@ def test_knowledge_json_empty(tmp_path, capsys):
 
     domains = json.loads((plugins / "knowledge/domains.json").read_text(encoding="utf-8"))
     assert domains["domains"] == {}
+    # ob-4：骨架同步写族字段，但默认空串=**未声明**（不预置平台族知识，红线 #12；
+    # 生成一个 acme 插件不替它宣称任何族）。
+    assert domains["family"] == ""
+    assert domains["stack"] == ""
 
     components = json.loads((plugins / "knowledge/components.json").read_text(encoding="utf-8"))
     assert components["components"] == {}
     assert components["selectors"] == {}
+    assert components["family"] == ""
+    assert components["stack"] == ""
 
     session = json.loads((plugins / "knowledge/session.json").read_text(encoding="utf-8"))
     assert session["account"] == ""

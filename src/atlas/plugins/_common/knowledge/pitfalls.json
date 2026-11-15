@@ -13,7 +13,9 @@
       ],
       "severity": "high",
       "source": "2026-11 admin 高级搜索/导出多起隐藏按钮误报（原 snl-001/snl-004 同族）",
-      "status": "pending_review"
+      "status": "pending_review",
+      "stack": "element-ui-vue2",
+      "family": "element-ui"
     },
     {
       "id": "gen-002",
@@ -28,7 +30,9 @@
       ],
       "severity": "high",
       "source": "2026-11 admin 导出探针多条草案全部撤回",
-      "status": "pending_review"
+      "status": "pending_review",
+      "stack": "element-ui-vue2",
+      "family": "element-ui"
     },
     {
       "id": "gen-003",
@@ -42,7 +46,9 @@
       ],
       "severity": "high",
       "source": "2026-11 seller 83 页探针 dialog=false 与「空提交校验=0」全部由此产生",
-      "status": "pending_review"
+      "status": "pending_review",
+      "stack": "element-ui-vue2",
+      "family": "element-ui"
     },
     {
       "id": "gen-004",
@@ -56,7 +62,9 @@
       ],
       "severity": "medium",
       "source": "2026-11 实测（弹窗按钮 enumerate 出来是 '确 定'）",
-      "status": "pending_review"
+      "status": "pending_review",
+      "stack": "element-ui-vue2",
+      "family": "element-ui"
     },
     {
       "id": "gen-005",
@@ -70,7 +78,9 @@
       ],
       "severity": "medium",
       "source": "2026-11 实测",
-      "status": "pending_review"
+      "status": "pending_review",
+      "stack": "element-ui-vue2",
+      "family": "element-ui"
     },
     {
       "id": "gen-006",
@@ -84,7 +94,9 @@
       ],
       "severity": "medium",
       "source": "2026-11 实测",
-      "status": "pending_review"
+      "status": "pending_review",
+      "stack": "element-ui-vue2",
+      "family": "element-ui"
     },
     {
       "id": "gen-007",
@@ -98,7 +110,9 @@
       ],
       "severity": "medium",
       "source": "2026-11 实测教训（playbook §2.9）",
-      "status": "pending_review"
+      "status": "pending_review",
+      "stack": "element-ui-vue2",
+      "family": "element-ui"
     },
     {
       "id": "gen-008",
@@ -112,7 +126,9 @@
       ],
       "severity": "medium",
       "source": "2026-11 实测（曾误报「取消=保存」）",
-      "status": "pending_review"
+      "status": "pending_review",
+      "stack": "element-ui-vue2",
+      "family": "element-ui"
     },
     {
       "id": "gen-009",
@@ -126,7 +142,9 @@
       ],
       "severity": "medium",
       "source": "2026-11 实测（商品列表 20→30 行，两名成员独立复现）",
-      "status": "pending_review"
+      "status": "pending_review",
+      "stack": "element-ui-vue2",
+      "family": "element-ui"
     },
     {
       "id": "gen-010",
@@ -140,7 +158,9 @@
       ],
       "severity": "medium",
       "source": "2026-11 实测（多条「导出无反应」误报的一半原因）",
-      "status": "pending_review"
+      "status": "pending_review",
+      "stack": "element-ui-vue2",
+      "family": "element-ui"
     },
     {
       "id": "gen-011",
@@ -155,7 +175,9 @@
       ],
       "severity": "high",
       "source": "2026-11 实测（曾一次性造出多条严重误报）",
-      "status": "pending_review"
+      "status": "pending_review",
+      "stack": "element-ui-vue2",
+      "family": "element-ui"
     },
     {
       "id": "gen-012",
@@ -197,7 +219,9 @@
       ],
       "severity": "low",
       "source": "2026-11 维度排除（bundle 检索证实）",
-      "status": "pending_review"
+      "status": "pending_review",
+      "stack": "element-ui-vue2",
+      "family": "element-ui"
     },
     {
       "id": "gen-015",
@@ -212,7 +236,9 @@
       ],
       "severity": "high",
       "source": "2026-11 实测（多条误报由此而来）",
-      "status": "pending_review"
+      "status": "pending_review",
+      "stack": "element-ui-vue2",
+      "family": "element-ui"
     },
     {
       "id": "gen-016",
@@ -227,7 +253,9 @@
       ],
       "severity": "high",
       "source": "2026-11 实测（「商品选择器搜索失效」经复核为脚本问题撤回）",
-      "status": "pending_review"
+      "status": "pending_review",
+      "stack": "element-ui-vue2",
+      "family": "element-ui"
     },
     {
       "id": "gen-017",
@@ -549,7 +577,9 @@
       ],
       "severity": "high",
       "source": "2026-11 实测（多页面同族）",
-      "status": "pending_review"
+      "status": "pending_review",
+      "stack": "element-ui-vue2",
+      "family": "element-ui"
     },
     {
       "id": "gen-039",
@@ -564,7 +594,9 @@
       ],
       "severity": "medium",
       "source": "2026-11 实测",
-      "status": "pending_review"
+      "status": "pending_review",
+      "stack": "element-ui-vue2",
+      "family": "element-ui"
     },
     {
       "id": "gen-040",
@@ -578,7 +610,9 @@
       ],
       "severity": "medium",
       "source": "2026-11 实测（原报「清空未生效」经复核为描述不准）",
-      "status": "pending_review"
+      "status": "pending_review",
+      "stack": "element-ui-vue2",
+      "family": "element-ui"
     },
     {
       "id": "gen-041",
@@ -665,7 +699,9 @@
       ],
       "severity": "medium",
       "source": "2026-11 实测（多名成员踩到，误报已剔除）",
-      "status": "pending_review"
+      "status": "pending_review",
+      "stack": "element-ui-vue2",
+      "family": "element-ui"
     },
     {
       "id": "gen-047",
@@ -679,7 +715,9 @@
       ],
       "severity": "medium",
       "source": "2026-11 实测 + 独立复核",
-      "status": "pending_review"
+      "status": "pending_review",
+      "stack": "element-ui-vue2",
+      "family": "element-ui"
     },
     {
       "id": "gen-048",
