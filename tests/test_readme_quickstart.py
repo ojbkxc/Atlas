@@ -51,3 +51,36 @@ def test_readme_quickstart_gen_sample_runs(tmp_path):
     assert rc == 0, "README 第 2 步命令失败"
     pkg = out / "pytest"
     assert any(p.name.startswith("test_") for p in pkg.glob("*.py")), "生成包无用例=空转"
+
+
+# ── ob-8：骨架 → 第一个 bug 最短路径的离线段（docs/first-bug.md 漂移守卫）────
+
+def test_first_bug_doc_exists_and_linked():
+    """文档在位且 README 读者导航链接它（链接悬空=照文档跑第一步就找不到文件）。"""
+    assert (ROOT / "docs" / "first-bug.md").is_file()
+    assert "docs/first-bug.md" in README
+
+
+def test_first_bug_offline_steps_smoke(tmp_path, monkeypatch):
+    """docs/first-bug.md 离线段（步骤 0/2/3）端到端跑一遍，预期 rc 逐条钉死：
+    init 0 → tasks 0 → compile 0 → doctor 1（新骨架无旧仓资产属预期）→ review 0 →
+    gen --check-only 0。不联网、不用凭据（文档承诺「离线段不联网」的可执行证据）。"""
+    monkeypatch.chdir(tmp_path)
+    doc = (ROOT / "docs" / "first-bug.md").read_text(encoding="utf-8")
+    # 文档与测试的漂移守卫：改步骤命令/预期 rc 必须同步这里
+    for cmd in ("atlas init", "atlas compile flows/smoke.yaml", "atlas review",
+                "atlas gen", "atlas doctor", "atlas summary"):
+        assert cmd in doc, f"docs/first-bug.md 缺命令：{cmd}"
+    # 步骤 0：init
+    assert main(["init", "myproj", "--system", "ics", "--module", "so"]) == 0
+    proj = tmp_path / "myproj"
+    assert (proj / ".atlas-root").is_file() and (proj / "flows" / "smoke.yaml").is_file()
+    monkeypatch.chdir(proj)
+    # 步骤 3：离线最小闭环
+    assert main(["tasks"]) == 0
+    assert main(["compile", "flows/smoke.yaml"]) == 0
+    assert main(["review"]) == 0
+    # 步骤 2：体检——新骨架 rc 1 属预期（文档明说；不是 0 也不是崩溃）
+    assert main(["doctor"]) == 1
+    # 步骤 4 采样：gen --check-only 吃随仓样例
+    assert main(["gen", str(ROOT / "examples" / "api_sample.md"), "--check-only"]) == 0

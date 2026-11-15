@@ -13,7 +13,7 @@
 > Atlas 的首选交付物是**可移植 pytest 脚本包**：把业务流探索/编排固化成零 `import atlas`、可直接进 CI 与旧仓的测试代码。
 > Atlas 平台自身是**可选的**——它只负责「生成包」与「读产物/运行记录做验证」（报告 + 人审塔），不参与产物的运行。
 
-**读者导航**：第一次接触 Atlas？先看 [docs/reader-guide.md](docs/reader-guide.md)——按读者（上手 / 运维 / 贡献 / 判据）分流的文档索引。
+**读者导航**：第一次接触 Atlas？先看 [docs/reader-guide.md](docs/reader-guide.md)——按读者（上手 / 运维 / 贡献 / 判据）分流的文档索引。要从骨架一路跑到**第一个 bug**（每步命令与预期 rc），按 [docs/first-bug.md](docs/first-bug.md) 走。
 
 **为什么是 Atlas：**
 
