@@ -153,6 +153,29 @@ Element UI 是本类后台的高频技术栈，其**组件渲染方式**是误�
 - Element UI 分页当前页是 `.el-pager li.active`。用 `.is-active` 会**永远取不到** ⇒ 误报「翻页无高亮」。
 - **处置**：断言前先 dump 一次 className（形如 `['1:number active', '2:number']`）再写选择器。
 
+### 2.10 机器可读族标签：§2 的适用范围由 `family` 字段声明（uf-8）
+
+**本节（§2）全部探测坑都是 Element UI 族的经验**——换组件库（Ant Design / Naive UI /
+自研框架）后这些判据**原样套用即是误报来源**（如弹层挂 body 的根因在别的族不成立，
+分页当前页 class 更是族内实现细节）。为避免「人读文档忘了这层前提」，族边界已
+**机器可读**，与 §2 正文同步维护：
+
+- **族表**：`plugins/_common/knowledge/ui_family.json`——每族一个键（如 `element-ui`），
+  字段：`signature`（族特征选择器串，页面存在性体检用）、`prefixes`（类选择器前缀，
+  一致性闸用）、`has_mask`（有无 loading mask 语义，等待判据用）。
+  加一个新族 = 在表里添一个条目（**改表不改引擎**——判据代码不认族名字面量）。
+- **平台声明**：平台 `components.json` 的**顶层 `family` 键**声明本平台属于哪个族；
+  缺省 `element-ui`（存量平台零改动）。声明与选择器前缀不一致时
+  `family_prefix_problems()` 会在 doctor（`ui_family.prefix_problems`）与生成期闸点名
+  ——**不是报错就算了**：这往往说明平台真实选择器族与声明不符，等待/读取判据不可信。
+- **取值口**：`atlas.ui_family.resolve_family()` 是等待/生成/体检判据的唯一取值口
+  （#92，不留第二份族表）；`waits.py` 的遮罩探针、页面属族体检（`UiFamilyMismatch`）
+  都从这里拿 `prefixes`/`has_mask`。
+- **本节坑的迁移规则**：换族时 §2 的坑**不自动带走**——先补族表条目，再由该平台的
+  探测实践逐条重新沉淀（通用包按 `family` 维度可见性过滤，别族的经验不会误配）。
+  review_code 的 MAINT-002 选择器样例已族中立（`_SELECTOR_PATTERN` 按类选择器形态
+  匹配，不认 `.el-*` 字面量）。
+
 ---
 
 ## 3. 接口层测试（这是最出产能的一层）

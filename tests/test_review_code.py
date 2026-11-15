@@ -444,3 +444,26 @@ def test_uf7_non_class_literals_untouched(tmp_path):
     """)
     findings = scan_pytest_file(f, _default_config(), registry=_FakeRegistry({}))
     assert not any(f["rule_id"] == "MAINT-002" for f in findings)
+
+
+# ── uf-8：playbook §2 机器可读族标签说明 ↔ ui_family 代码面对齐 ─────────────
+
+def test_uf8_playbook_section2_family_tags_aligned():
+    # 文档↔代码漂移守卫：§2 的族标签说明必须与 ui_family 机器面同词——
+    # 族表文件名、声明键、缺省族、取值口四件事任一改名，这条就红（提醒同步文档）
+    import re
+    from pathlib import Path
+    import atlas.ui_family as uf
+    playbook = (Path(__file__).resolve().parent.parent
+                / "docs" / "functional-testing-playbook.md").read_text(encoding="utf-8")
+    # 只取 §2 段（从「## 2.」到「## 3.」）
+    m = re.search(r"## 2\..*?(?=\n## 3\.)", playbook, re.S)
+    assert m, "playbook §2 段定位失败"
+    sec2 = m.group(0)
+    assert "### 2.10" in sec2, "§2.10 族标签小节缺失"
+    assert "ui_family.json" in sec2, "§2.10 必须点名族表文件"
+    assert "family" in sec2, "§2.10 必须点名顶层 family 声明键"
+    assert uf.DEFAULT_FAMILY in sec2, "缺省族名漂移未同步进 §2.10"
+    assert "resolve_family" in sec2, "§2.10 必须点名唯一取值口 resolve_family"
+    # 族表真实键与文档提及的族名对齐
+    assert "element-ui" in sec2
