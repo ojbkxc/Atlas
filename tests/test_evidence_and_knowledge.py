@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import pytest
 
@@ -744,3 +745,271 @@ def test_save_component_selector_first_write_no_extra_keys(tmp_path):
     kb.save_component_selector("c", "e", ".el-btn", approved=True, source="test")
     saved = json.loads((tmp_path / "components.json").read_text(encoding="utf-8"))
     assert list(saved) == ["components"]
+
+
+# ── en-2 知识平台维度：条目可带可选 `plugin` 标签，读侧按当前平台过滤 ──────────
+
+_PLATFORM_COMPONENTS = {"components": {
+    "alpha_comp": {"plugin": "alpha", "selectors": {"a": ".alpha"}},
+    "beta_comp": {"plugin": "beta", "selectors": {"b": ".beta"}},
+    "shared_comp": {"selectors": {"s": ".shared"}},           # 无 plugin 字段=兼容可见
+    "generic_comp": {"plugin": "generic", "selectors": {"g": ".generic"}},
+}}
+
+
+def test_selector_registry_platform_filter_two_fake_plugins_mutually_hidden():
+    """两假插件互不可见（en-2 判据 1）：各自平台只见自己的条目。"""
+    reg_a = SelectorRegistry(_PLATFORM_COMPONENTS, plugin="alpha")
+    reg_b = SelectorRegistry(_PLATFORM_COMPONENTS, plugin="beta")
+    assert reg_a.names() == ["alpha_comp", "generic_comp", "shared_comp"]
+    assert reg_b.names() == ["beta_comp", "generic_comp", "shared_comp"]
+    assert reg_a.get("alpha_comp", "a") == ".alpha"
+    assert reg_b.get("beta_comp", "b") == ".beta"
+    with pytest.raises(KeyError):
+        reg_a.get("beta_comp", "b")
+    with pytest.raises(KeyError):
+        reg_b.get("alpha_comp", "a")
+
+
+def test_selector_registry_no_plugin_field_still_visible():
+    """无 plugin 字段的存量条目（en-2 判据 2）：任何平台可见，默认路径逐字节不变。"""
+    reg = SelectorRegistry(_PLATFORM_COMPONENTS, plugin="alpha")
+    assert reg.get("shared_comp", "s") == ".shared"
+    reg_b = SelectorRegistry(_PLATFORM_COMPONENTS, plugin="beta")
+    assert reg_b.get("shared_comp", "s") == ".shared"
+
+
+def test_selector_registry_generic_visible_for_any_platform():
+    """plugin=generic（en-2 判据 3）：通用条目对任意平台可见。"""
+    reg_a = SelectorRegistry(_PLATFORM_COMPONENTS, plugin="alpha")
+    reg_b = SelectorRegistry(_PLATFORM_COMPONENTS, plugin="beta")
+    assert reg_a.get("generic_comp", "g") == ".generic"
+    assert reg_b.get("generic_comp", "g") == ".generic"
+
+
+def test_selector_registry_shadowed_component_named_in_error():
+    """被别的平台遮蔽的同名条目（en-2）：点名该平台的 plugin 标签，不静默丢。"""
+    reg = SelectorRegistry(_PLATFORM_COMPONENTS, plugin="alpha")
+    assert reg.shadowed_components() == {"beta_comp": "beta"}
+    with pytest.raises(KeyError, match="beta"):
+        reg.find("beta_comp")
+    with pytest.raises(KeyError, match="beta"):
+        reg.get("beta_comp", "b")
+    # 未标注但坏形态（spec 非映射）仍按「未注册」归因，不冒平台遮蔽假诊断
+    reg2 = SelectorRegistry({"components": {"坏": "字符串"}}, plugin="alpha")
+    assert reg2.shadowed_components() == {}
+
+
+def test_selector_registry_unknown_platform_does_not_filter():
+    """当前平台不可判定（en-2 兼容面）：不过滤，回落旧行为（不猜）。
+
+    平台名的「取不到」表现为空串/None——`_entry_visible` 在 current 为空时恒放行；
+    显式 `plugin=""` 即该形态（`KnowledgeBase(plugin="").plugin_name()` → None）。
+    解析成功时（缺省=resolve_plugin，demo）才按平台过滤。"""
+    assert KnowledgeBase(None, plugin="").plugin_name() is None
+    reg = SelectorRegistry(_PLATFORM_COMPONENTS, plugin="")
+    assert reg.names() == ["alpha_comp", "beta_comp", "generic_comp", "shared_comp"]
+    # 对照：能解析出平台名时过滤生效（demo 只见 generic/未标注条目）
+    from atlas.knowledge import current_plugin_name
+    if current_plugin_name() == "demo":
+        reg_demo = SelectorRegistry(_PLATFORM_COMPONENTS)
+        assert reg_demo.names() == ["generic_comp", "shared_comp"]
+
+
+def test_knowledge_base_plugin_filters_pitfall_rows(tmp_path):
+    """pitfall 行的可选 plugin 标签（en-2）：判据与组件库同一把尺（_entry_visible）。"""
+    (tmp_path / "pitfalls.json").write_text(json.dumps({"pitfalls": [
+        {"id": "p1", "trigger": "x1", "scope": ["demo"], "plugin": "alpha"},
+        {"id": "p2", "trigger": "x2", "scope": ["demo"], "plugin": "beta"},
+        {"id": "p3", "trigger": "x3", "scope": ["demo"]},
+        {"id": "p4", "trigger": "x4", "scope": ["demo"], "plugin": "generic"},
+    ]}), encoding="utf-8")
+    ka = KnowledgeBase(tmp_path, plugin="alpha")
+    kb = KnowledgeBase(tmp_path, plugin="beta")
+    assert [r["id"] for r in ka.pitfalls("demo")] == ["p1", "p3", "p4"]
+    assert [r["id"] for r in kb.pitfalls("demo")] == ["p2", "p3", "p4"]
+
+
+def test_save_component_selector_writes_current_plugin_tag(tmp_path):
+    """批准选择器时写入当前插件名（en-2）：换平台后读侧不再静默生效。"""
+    kb = KnowledgeBase(tmp_path, plugin="alpha")
+    out = kb.save_component_selector("comp", "e", ".btn", approved=True, source="test")
+    assert out["plugin"] == "alpha"
+    saved = json.loads((tmp_path / "components.json").read_text(encoding="utf-8"))
+    assert saved["components"]["comp"]["plugin"] == "alpha"
+    # 读侧按平台过滤：alpha 可见、beta 遮蔽
+    reg_a = SelectorRegistry(saved, plugin="alpha")
+    reg_b = SelectorRegistry(saved, plugin="beta")
+    assert reg_a.get("comp", "e") == ".btn"
+    with pytest.raises(KeyError, match="alpha"):
+        reg_b.get("comp", "e")
+    # 默认（无显式 plugin）时沿用 resolve_plugin().name（demo），兼容存量调用面
+    kb2 = KnowledgeBase(tmp_path)
+    kb2.save_component_selector("comp2", "e", ".btn", approved=True, source="test")
+    saved2 = json.loads((tmp_path / "components.json").read_text(encoding="utf-8"))
+    assert saved2["components"]["comp2"].get("plugin") == "demo"
+
+
+def test_save_component_selector_does_not_clobber_generic_tag(tmp_path):
+    """generic 条目不覆盖（en-2）：平台中立知识不被最近一次批准窄化成平台专用。"""
+    kb = KnowledgeBase(tmp_path, plugin="alpha")
+    kb.save_component_selector("g", "e", ".btn", approved=True, source="test")
+    (tmp_path / "components.json").write_text(json.dumps({"components": {
+        "g": {"plugin": "generic", "selectors": {"e": ".btn"}}}}), encoding="utf-8")
+    kb.save_component_selector("g", "e2", ".x", approved=True, source="test")
+    saved = json.loads((tmp_path / "components.json").read_text(encoding="utf-8"))
+    assert saved["components"]["g"]["plugin"] == "generic"
+    assert saved["components"]["g"]["selectors"] == {"e": ".btn", "e2": ".x"}
+    # generic 标签下任一平台都可见（不因 alpha 批准新元素而窄化成 alpha 专用）
+    assert SelectorRegistry(saved, plugin="beta").get("g", "e") == ".btn"
+
+
+# ── ob-4 族标签：通用包 components/pitfalls 的 stack/family/plugin 形态 ───────
+
+from atlas.plugin_api import common_knowledge_root  # noqa: E402
+
+_COMMON = Path(common_knowledge_root())
+
+
+def test_common_components_family_tags_wellformed():
+    """ob-4 判据 1：15 条组件条目的族字段形态合法（family=族表名、stack 非空串、plugin=generic）。"""
+    data = json.loads((_COMMON / "components.json").read_text(encoding="utf-8"))
+    comps = data["components"]
+    assert len(comps) == 15
+    from atlas import ui_family
+    table_families = set(ui_family.load_family_table().get("families", {}))
+    for name, spec in comps.items():
+        assert spec["plugin"] == "generic", name
+        assert isinstance(spec["stack"], str) and spec["stack"], name
+        assert spec["stack"].startswith("element-ui"), name
+        assert spec["family"] in table_families, f"{name}: family {spec['family']} 不在族表"
+        assert spec["family"] == data["family"], f"{name}: 条目族与顶层声明不一致"
+
+
+def test_common_pitfalls_element_ui_rows_family_tagged():
+    """ob-4 判据 2：相关 pitfall 行（scope 含 element-ui）带 stack/family 标签。"""
+    data = json.loads((_COMMON / "pitfalls.json").read_text(encoding="utf-8"))
+    tagged = [r for r in data["pitfalls"] if "element-ui" in (r.get("scope") or [])]
+    assert tagged, "族相关 pitfall 应非空"
+    for row in tagged:
+        assert row["stack"] == "element-ui-vue2", row["id"]
+        assert row["family"] == "element-ui", row["id"]
+    # 未带 element-ui 的行不加族标签（数据面只打相关条目）
+    for row in data["pitfalls"]:
+        if "element-ui" not in (row.get("scope") or []):
+            assert "family" not in row, row["id"]
+
+
+def test_common_family_tags_do_not_break_loader():
+    """ob-4 判据 3：新键不崩任何消费方——load/pitfalls/SelectorRegistry/ui_family 全部照常。"""
+    kb = KnowledgeBase(None, fallback_root=_COMMON)
+    assert len(kb.pitfalls("demo")) > 0
+    reg = SelectorRegistry(kb.load("components"))
+    assert "login" in reg.names() and "table" in reg.names()
+    assert reg.get("login", "submit_generic") == ".el-button"
+    from atlas import ui_family
+    assert ui_family.family_prefix_problems(kb.load("components")) == []
+    assert ui_family.resolve_family().get("name") == "element-ui"
+
+
+def test_common_component_visibility_matches_generic_tests():
+    """ob-4 判据 4：可见性判定与既有 generic 测一致——plugin=generic 任意平台可见、
+    无 plugin 字段也可见（存量兼容），与 `_entry_visible` 单点同口径。"""
+    data = json.loads((_COMMON / "components.json").read_text(encoding="utf-8"))
+    reg_demo = SelectorRegistry(data, plugin="demo")
+    reg_snalai = SelectorRegistry(data, plugin="snalai")
+    assert reg_demo.names() == reg_snalai.names()          # 全部 generic → 两侧同
+    assert len(reg_demo.names()) == 15
+    assert reg_demo.get("login", "inputs") == "input.el-input__inner"
+
+
+# ── uf-4 族机制内表达体检：waits/components 的 `.el-*` 字面量 ───────────────
+
+def test_uf4_waits_el_literals_are_family_gated():
+    """uf-4 判据：waits.py 里的 `.el-*` 字面量全部落在「默认参数 + 族闸」的形态上——
+    即选择器是 per-family 数据（调用方可传），缺省按当前族解析；真用 `family=` 切族时
+    走 `UiFamilyMismatch` 点名（前缀不存在=不猜、不静默等）。读源文件做体检，不复制第二份判据。"""
+    import re
+    src = (Path(__file__).resolve().parents[1] / "src/atlas/waits.py").read_text(encoding="utf-8")
+    literals = sorted(set(re.findall(r"['\"](\.el-[a-zA-Z0-9_-]+(?:__[a-z]+)*)['\"]", src)))
+    assert literals, "waits 里应存在 element-ui 默认选择器（体检对象非空）"
+    # 这些字面量只应作为默认参数值出现（形如 `name: str = ".el-..."` 或 docstring），
+    # 且 wait_for_rows/wait_for_mask_gone 都带 `family=` 走族解析——前缀闸判据在 ui_family。
+    for literal in literals:
+        match = re.search(re.escape(literal) + r"['\"]", src)
+        assert match, literal
+    # 族闸接线：waits 消费 resolve_family 且缺省参数保持 element-ui 形态（默认路径逐字节不变）
+    assert "from .ui_family import UiFamilyMismatch, resolve_family" in src
+    assert 'table_selector: str = ".el-table"' in src
+    assert 'mask_selector: str = ".el-loading-mask"' in src
+    assert "family: str | None = None" in src
+
+
+_UF4_EL_INVENTORY_COMPONENTS = {
+    # 通用包 components.json 里所有 `.el-*` class token（去重排序）——族化体检的钉死清单。
+    # 全部以 `.el-` 开头 = 与条目声明的 family=element-ui 一致（族前缀机制内可表达）。
+    # 新增 `.el-*` 选择器时本清单必须同步（忘了更新=红，防「悄悄多一个未过族判据的定位」）。
+    ".el-button", ".el-checkbox__inner", ".el-checkbox__original",
+    ".el-dialog", ".el-dialog__footer", ".el-dialog__wrapper", ".el-drawer__wrapper",
+    ".el-dropdown-menu", ".el-dropdown-menu__item", ".el-dropdown-selfdefine",
+    ".el-form-item__label", ".el-message-box__btns", ".el-message-box__wrapper",
+    ".el-menu-item", ".el-pagination", ".el-picker-panel", ".el-popover",
+    ".el-popper", ".el-select", ".el-select-dropdown", ".el-select-dropdown__item",
+    ".el-submenu__title", ".el-table", ".el-table__body", ".el-table__fixed-right",
+    ".el-table__row", ".el-input__inner",
+}
+
+_UF4_EL_INVENTORY_WAITS = {".el-table", ".el-loading-mask", ".el-dialog__wrapper"}
+
+
+def test_uf4_el_literal_inventory_in_components():
+    """uf-4 体检：components.json 的 `.el-*` class token 全量清单钉死（族机制内可表达=前缀
+    `.el-` 与声明族一致）。清单外新增 `.el-*` 即红——新增选择器必须同时过族判据 review。"""
+    import re
+    data = json.loads((_COMMON / "components.json").read_text(encoding="utf-8"))
+    found = set()
+    for spec in data["components"].values():
+        for selector in (spec.get("selectors") or {}).values():
+            found.update(re.findall(r"\.el-[a-zA-Z0-9_-]+", str(selector)))
+    assert found == _UF4_EL_INVENTORY_COMPONENTS, f"新增/删除未过族审的 .el-* token：{found ^ _UF4_EL_INVENTORY_COMPONENTS}"
+
+
+def test_uf4_el_literal_inventory_in_waits():
+    """uf-4 体检：waits.py 的 `.el-*` 默认选择器清单钉死（表/遮罩/弹窗三处，均带
+    `family=` 族闸；族切换时缺省选择器不走族表派生——见报告「交给 lead 裁」清单）。"""
+    import re
+    src = (Path(__file__).resolve().parents[1] / "src/atlas/waits.py").read_text(encoding="utf-8")
+    found = set(re.findall(r"(['\"])(\.el-[a-zA-Z0-9_-]+)\1", src))
+    tokens = {tok for _, tok in found}
+    assert tokens == _UF4_EL_INVENTORY_WAITS, f"waits 的 .el-* 清单漂移：{tokens ^ _UF4_EL_INVENTORY_WAITS}"
+    assert "family: str | None = None" in src          # 族闸接线在位
+    assert "resolve_family" in src
+
+
+def test_uf4_non_el_framework_tokens_not_family_expressible():
+    """uf-4 清单（交 lead 裁）：以下非 `.el-` 框架 token 不能经 ui_family 前缀机制表达——
+    它们属于**另一个**组件体系（.edui- 是 UEditor 富文本；button.btn-next 是分页原生 button 类）。
+    本测只是把既存事实钉住，不改行为；换族后这些定位会「找不到」且归因漂移，处置需人裁。"""
+    import re
+    data = json.loads((_COMMON / "components.json").read_text(encoding="utf-8"))
+    non_el = set()
+    for name, spec in data["components"].items():
+        for selector in (spec.get("selectors") or {}).values():
+            for token in re.findall(r"(\.[a-zA-Z][\w]*-)", str(selector)):
+                if not token.startswith(".el-"):
+                    non_el.add((name, token))
+    assert non_el == {("pagination", ".btn-"), ("rich_text", ".edui-")}, non_el
+    from atlas import ui_family
+    # 族判据只说明「.el- 前缀与声明族一致」；非族 token 不在其判据范围（不假阳性也不假阴性）
+    assert ui_family.family_prefix_problems(data) == []
+
+
+def test_knowledge_base_selectors_read_side_filters_by_plugin(tmp_path):
+    """读侧入口 `KnowledgeBase.selectors()`（en-2）：与 `SelectorRegistry(plugin=)` 同尺，
+    平台名缺省走 `plugin_name()` 单点（显式传参仅供离线判据）。"""
+    (tmp_path / "components.json").write_text(json.dumps(_PLATFORM_COMPONENTS), encoding="utf-8")
+    reg = KnowledgeBase(tmp_path, plugin="alpha").selectors()
+    assert reg.names() == ["alpha_comp", "generic_comp", "shared_comp"]
+    assert reg.resolve.__self__ is reg          # 同一 registry 实例，无第二把尺
+    reg_beta = KnowledgeBase(tmp_path, plugin="beta").selectors(plugin="beta")
+    assert reg_beta.names() == ["beta_comp", "generic_comp", "shared_comp"]

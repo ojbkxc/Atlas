@@ -8,6 +8,49 @@ from .failures import FailureClass, classify_failure, exception_text
 from . import locators
 from .atomic_io import atomic_write_text
 
+# 平台维度（en-2）：知识条目可带可选 `plugin` 字段（组件条目/draft 行），把「哪个平台批准的
+# 选择器」变成数据。缺失=兼容可见（存量数据默认行为逐字节不变）；"generic"=对所有平台可见。
+# 判据只此一处（#92）：SelectorRegistry 读侧过滤与 KnowledgeBase.pitfalls 共用。
+GENERIC_PLUGIN = "generic"
+
+
+def _entry_plugin(entry) -> str | None:
+    """条目上的平台标签（非空字符串才认；缺失/空白/坏形态=未标注 → None）。"""
+    tag = entry.get("plugin") if isinstance(entry, dict) else None
+    return tag.strip() if isinstance(tag, str) and tag.strip() else None
+
+
+def _entry_visible(entry, current: str | None) -> bool:
+    """条目对当前平台是否可见——平台维度的**唯一判据**。
+
+    - 未标注 `plugin` → 可见（存量数据兼容；默认路径逐字节不变）。
+    - `plugin == "generic"` → 对所有平台可见（通用包条目的显式形态）。
+    - 当前平台不可判定（插件解析失败/未指定）→ 不过滤（回落旧行为，不猜）。
+    - 其余 → 仅当与当前平台同名时可见（换平台后上一平台的批准不再静默生效）。
+    """
+    tag = _entry_plugin(entry)
+    if tag is None or tag == GENERIC_PLUGIN:
+        return True
+    if not current:
+        return True
+    return tag == current
+
+
+def current_plugin_name() -> str | None:
+    """当前业务插件名（平台维度的**唯一取值点**：`resolve_plugin().name`）。
+
+    惰性 import `plugin_api`（反过来 import plugins.demo → knowledge，模块级 import 会成环）。
+    解析失败回落 None = 不过滤（读路径不先于被读对象死；ATLAS_PLUGIN 写坏时 CLI 早已 rc 2，
+    doctor/离线读不该因此崩）。
+    """
+    try:
+        from .plugin_api import resolve_plugin
+        name = getattr(resolve_plugin(), "name", None)
+    except Exception:
+        return None
+    return name.strip() if isinstance(name, str) and name.strip() else None
+
+
 def _scope_list(row: dict) -> list:
     """坑点 scope 的单一判据（#127 面2）：键存在值为 null 时 `row.get("scope", [])`
     返回 None 而非默认值（#77 同红线——默认值只在键缺失时生效），`domain in None`
@@ -76,10 +119,62 @@ def _merge_composed(primary: dict, overlay: dict) -> dict:
             merged[key] = value
     return merged
 
+
+# ob-7：playbook §9 八项与 _common/domains.json checklist 的对应关系（单一真相，doctor 与
+# 文档都消费这一份映射，不留第二份清单 #92）。顺序即 playbook §9 原文顺序：
+#   网络→登录→技术栈/入口/权限→接口面→数据卫生→能力边界→可复原性
+# domains.json 的七类键 ↔ §9 的八个复选框（stack_entry_and_accounts 一类对应
+# 技术栈+入口+权限三项——原论文就是一组开工前确认，拆开反而丢「先备账号再开工」的次序）。
+PLAYBOOK_CHECKLIST_MAP: tuple[tuple[str, str], ...] = (
+    ("网络（代理方向逐入口实测）", "network_and_proxy"),
+    ("登录（判据/验证码/认证头）", "login_and_captcha"),
+    ("技术栈与组件库族", "stack_entry_and_accounts"),
+    ("入口拓扑（几个入口/共用 API 域）", "stack_entry_and_accounts"),
+    ("接口面（状态类端点/参数传递）", "api_surface_and_params"),
+    ("数据卫生（DELETE/冲销纪律）", "data_hygiene"),
+    ("能力边界（不存在功能/外部依赖）", "capability_boundaries"),
+    ("权限（越权测试账号）", "stack_entry_and_accounts"),
+    ("可复原性（回不去的操作清单）", "restorability"),
+)
+
+
+def platform_checklist(kb: "KnowledgeBase") -> dict:
+    """ob-7：新平台接入检查清单（playbook §9）→ doctor 子项的**唯一加载/校验实现**。
+
+    读 `_common/knowledge/domains.json` 的 `checklist`（经 KnowledgeBase.load_composed
+    组合层——平台插件可用自己的 domains.json 覆盖/补全通用包条目）。纯只读、零网络；
+    缺文件/坏形态如实 `present:false`（与 boundary_ledger 缺失同口径：缺清单 ≠ 漂移），
+    绝不抛——doctor 的职责是汇报状态，判据函数不得先于被诊断对象死（#89 家族）。
+
+    返回形态（doctor 展示面）：
+        {"present": True, "categories": <类数>, "items": <总条数>,
+         "playbook_sections": [[标签, 类名], ...], "policy_len": <policy 字符数>}
+    缺失/坏形态：{"present": False}
+    """
+    data = kb.load_composed("domains") if kb is not None else None
+    checklist = data.get("checklist") if isinstance(data, dict) else None
+    if not isinstance(checklist, dict) or not checklist:
+        return {"present": False}
+    items = 0
+    for spec in checklist.values():
+        if isinstance(spec, dict) and isinstance(spec.get("items"), list):
+            items += len(spec["items"])
+    return {
+        "present": True,
+        "categories": len(checklist),
+        "items": items,
+        # playbook §9 八项 → checklist 类键的映射原文（doctor --format text 展示用；
+        # JSON 消费方拿这份映射就能把「§9 还差哪项没确认」算出来）
+        "playbook_sections": [list(pair) for pair in PLAYBOOK_CHECKLIST_MAP],
+        "policy_len": len(data.get("policy", "")) if isinstance(data.get("policy"), str) else 0,
+    }
+
+
 class KnowledgeBase:
     def __init__(self, root: Path | None,
                  fallback_root: Path | list[Path] | tuple[Path, ...] | None = None,
-                 base_roots: Path | list[Path] | tuple[Path, ...] | None = None):
+                 base_roots: Path | list[Path] | tuple[Path, ...] | None = None,
+                 plugin: str | None = None):
         # #135（AGENTS 红线 #11「批准永不写包内文件」的代码化）：root 是**写目标**、
         # fallback_root 只供读取——两者在类型上分离，包内资产目录只能作 fallback。
         # 旧 plugin 在 ATLAS_KNOWLEDGE_DIR 缺失时构造 `KnowledgeBase(包内根)`：包内目录
@@ -103,6 +198,16 @@ class KnowledgeBase:
         # 文件的平台插件仍能读到通用条目（影子遮蔽会整份挡住通用包）。单 Path 或有序列表；
         # 默认 None = 零行为变化（load_composed 退化为 load，见下）。
         self.base_roots = base_roots
+        # en-2 平台维度：知识条目可带 `plugin` 标签。这里存**当前平台名**（None=读时按
+        # resolve_plugin().name 惰性解析；显式传入用于测试/离线场景）。读写两侧都取
+        # `plugin_name()` 这一个口，不各抄一份平台名（#92）。
+        self.plugin = plugin
+
+    def plugin_name(self) -> str | None:
+        """当前平台名（en-2 唯一取值口）：显式 `plugin=` 优先，否则 `resolve_plugin().name`。"""
+        if self.plugin is not None:
+            return self.plugin or None
+        return current_plugin_name()
 
     @staticmethod
     def _expand(value) -> tuple[Path | None, ...]:
@@ -177,10 +282,14 @@ class KnowledgeBase:
         # 可见性（task #2 复核修正 / docs §5.1）：`domain in scope or "generic" in scope`
         # ——通用包每行 scope 带 `generic` 标记（数据层负责），故对任意平台域可见；
         # 平台专有行 scope 只有平台名+机制标签，不带 generic，对别的域不可见（不误配）。
+        # en-2/ob-4：行可另带可选 `plugin` 标签——判据复用 `_entry_visible`（与组件库同一把
+        # 尺，不新开第二份）；缺失=兼容可见（存量行逐字节行为不变），generic=任意平台可见。
+        current = self.plugin_name()
         return [row for row in rows
                 if isinstance(row, dict) and (not domain
                                               or domain in _scope_list(row)
-                                              or "generic" in _scope_list(row))]
+                                              or "generic" in _scope_list(row))
+                and _entry_visible(row, current)]
 
     def match_pitfall_from_text(self, text: str, domain: str = "",
                                 status: str | None = None) -> dict | None:
@@ -277,6 +386,17 @@ class KnowledgeBase:
         selectors[element] = stored
         if note and not spec.get("notes"):
             spec["notes"] = note
+        # en-2：批准时把**当前平台名**写进组件条目（`resolve_plugin().name` 单点，
+        # 见 `plugin_name()`）——换平台后上一平台批准的选择器读侧不可见，撞名不再静默点错。
+        # 标签跟「最近一次批准」走：selector 值本身已是 element 级 last-writer-wins，标签
+        # 不引入额外丢失；两平台共用一个私有根本就该各配一份（ATLAS_KNOWLEDGE_DIR 按项目）。
+        # **generic 条目不覆盖**：`generic`=平台中立知识，B 批准同组件新元素时若盖成 B 的标签，
+        # 会把通用选择器静默窄化成 B 专用（「通用包变私有」），故 generic 标签原样保留。
+        current = self.plugin_name()
+        if current:
+            existing_tag = spec.get("plugin")
+            if not (isinstance(existing_tag, str) and existing_tag.strip() == GENERIC_PLUGIN):
+                spec["plugin"] = current
         path = self._writable_root() / "components.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         # 保留写目标文件里 `components` 之外的顶层键（如平台声明的 `family` 族标识）——
@@ -291,7 +411,8 @@ class KnowledgeBase:
         payload["components"] = components
         atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2))
         return {"component": component, "element": element, "selector": stored,
-                "status": "approved", "source": source, "overwritten": overwritten}
+                "status": "approved", "source": source, "overwritten": overwritten,
+                "plugin": spec.get("plugin")}
 
     def save_overlay(self, bu: str, key: str, value, *, approved: bool = False,
                     source: str = "review") -> dict:
@@ -367,18 +488,45 @@ class KnowledgeBase:
         return {"id": record["id"], "name": name, "steps": len(steps),
                 "status": "approved", "source": source, "overwritten": overwritten}
 
+    def selectors(self, plugin: str | None = None) -> SelectorRegistry:
+        """组件注册表读取口（en-2）：按当前平台过滤条目——平台维度判据唯一在
+        `_entry_visible`/`SelectorRegistry`，读侧不再各抄一份（#92）。
+
+        显式 `plugin=` 仅用于离线判据/测试；缺省用 `plugin_name()`（`resolve_plugin().name`
+        单点）。当前插件名解析不出时 `SelectorRegistry` 按「不过滤」回落（旧行为，不猜）。
+        """
+        return SelectorRegistry(self.load_composed("components"),
+                                plugin=plugin if plugin is not None else self.plugin_name())
+
     def load_overlays(self) -> dict:
         overlays = self.load("bu_overlays").get("overlays")
         return overlays if isinstance(overlays, dict) else {}
 
 class SelectorRegistry:
-    def __init__(self, components: dict):
+    def __init__(self, components: dict, plugin: str | None = None):
         raw = components.get("components", components) if isinstance(components, dict) else components
         # #127 面4 读侧：坏条目（spec 非映射，如手滑 {"按钮": ".css"} 忘了包一层）整条当未注册
         # ——get/find/names/missing 统一按「不存在」拒绝（#63 延伸：存在≠可用），消费点不逐处
         # 类型防御、归因不散落。selectors 键值 null 不在这里裁，留给 get 按缺失点名（missing 语义）。
-        self.components = {name: spec for name, spec in (raw or {}).items()
-                           if isinstance(spec, dict)} if isinstance(raw, dict) else {}
+        entries = {name: spec for name, spec in (raw or {}).items()
+                   if isinstance(spec, dict)} if isinstance(raw, dict) else {}
+        # en-2 平台维度：组件条目可带可选 `plugin` 标签（批准时写入当前插件名）。读侧按当前
+        # 平台过滤——判据复用 `_entry_visible` 单点（与 pitfalls 同一把尺，#92）。`plugin`
+        # 缺省=兼容可见（存量数据默认行为不变），`generic`=任意平台可见，别的平台条目不可见
+        # 且**同名遮蔽要点名**（进 `shadowed`，供 add/doctor 诊断，不静默）。
+        self.plugin = plugin
+        self.shadowed: dict[str, str] = {}
+        current = plugin if plugin is not None else current_plugin_name()
+        self.components = {}
+        for name, spec in entries.items():
+            if _entry_visible(spec, current):
+                self.components[name] = spec
+            else:
+                self.shadowed[name] = _entry_plugin(spec) or ""
+
+    def shadowed_components(self) -> dict[str, str]:
+        """被别的平台标签遮蔽的组件名 → 它的 plugin 标签（诊断用；不静默丢）。"""
+        return dict(self.shadowed)
 
     def get(self, component: str, element: str):
         """返回登记的**原值**（字符串=CSS，或结构化描述 dict）——老调用方零影响。"""
@@ -387,7 +535,19 @@ class SelectorRegistry:
         # selectors 键值 null/非映射按「未注册」归因，不再 None[element] 裸 TypeError
         if isinstance(selectors, dict) and element in selectors:
             return selectors[element]
-        raise KeyError(f"选择器未注册：{component}.{element}")
+        raise KeyError(self._missing_message(component, element))
+
+    def _missing_message(self, component: str, element: str = "") -> str:
+        """未注册归因文本（存量两种口径逐字保留：组件级「组件未注册」/元素级「选择器未注册」）；
+        被**别的平台标签**遮蔽时追加点名该标签（en-2：不静默丢）。"""
+        where = f"{component}.{element}" if element else component
+        head = f"选择器未注册：{where}" if element else f"组件未注册：{where}"
+        owner = self.shadowed.get(component)
+        if owner is not None:
+            return (f"{head}｜同名组件由平台 {owner!r} 批准，当前平台 "
+                    f"{self.plugin or current_plugin_name() or '?'!s} 不可见"
+                    f"（换平台后上一平台的批准不生效；确需复用请用 `generic` 标签或改 ATLAS_KNOWLEDGE_DIR）")
+        return head
 
     def resolve(self, page, component: str, element: str):
         """登记的定位描述 → Playwright locator（两形态通吃；判据在 `locators.resolve` 一处）。"""
@@ -400,7 +560,7 @@ class SelectorRegistry:
     def find(self, component: str) -> dict:
         """返回组件的全部选择器与说明，供 agent 探查后再动手。"""
         if component not in self.components:
-            raise KeyError(f"组件未注册：{component}")
+            raise KeyError(self._missing_message(component))
         return self.components[component]
 
     def names(self) -> list[str]:
