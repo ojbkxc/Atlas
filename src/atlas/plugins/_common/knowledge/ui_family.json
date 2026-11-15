@@ -1,0 +1,20 @@
+{
+  "default": "element-ui",
+  "families": {
+    "element-ui": {
+      "signature": ".el-button, .el-table, .el-menu, .el-dialog__wrapper, .el-input__inner",
+      "prefixes": [".el-"],
+      "has_mask": true,
+      "note": "Element UI（Vue2）。**分工**：`prefixes` = 运行时「页面属本族」的**判据**——DOM 存在 class token 以 `.el-` 开头的元素即算本族（纯展示/详情页只有 `.el-card`/`.el-row` 等也算，不被误报；按 token 边界判、不用子串，`model-x` 含 'el-' 子串不算）。`signature` = **诊断/展示**用的结构选择器（doctor 与 `UiFamilyMismatch` 文案点名用），不作运行时判据。`has_mask=true` 表示本族有加载遮罩概念（`.el-loading-mask` 按需注入——有加载才 append，故 true 不等于遮罩恒在）；判「无遮罩=未加载」前必须先由 `prefixes` 特征命中确认页面确属本族。加新族 = 加一条数据，不改引擎（AGENTS §0）。"
+    }
+  },
+  "foreign_prefixes": {
+    ".el-": "element-ui",
+    ".ant-": "ant-design",
+    ".ivu-": "iview",
+    ".vxe-": "vxe-table",
+    ".arco-": "arco-design",
+    ".van-": "vant",
+    ".layui-": "layui"
+  }
+}

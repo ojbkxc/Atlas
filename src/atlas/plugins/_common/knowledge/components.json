@@ -1,10 +1,11 @@
 {
+  "family": "element-ui",
   "policy": "通用 Element UI 组件探测铁律（业务中立）。来源：2026-11 对某国内 SaaS 商城后台两端（admin 管理后台 + seller 商家后台）的功能测试，把组件层的实测教训与平台坐标解耦后沉淀于此，供任何使用 Element UI（+ Vue 2）后台的新项目直接复用。selector 值只保留 Element UI 通用 CSS（.el-* 与标准 input/button），**不含任何平台路由、自定义 class 或业务文案**——平台特有的选择器（自定义命名行 class、业务化按钮文案等）留在各自插件的知识库里。核心铁律：Element UI 弹层普遍 append 到 body 且预渲染多份隐藏副本，定位一律 `:visible` 过滤或按 `getBoundingClientRect()` 过滤（AGENTS 红线 #12：不写「看起来对」的猜测选择器，猜出来的选择器会让脚本静默点错元素）。",
   "components": {
     "login": {
       "selectors": {
         "inputs": "input.el-input__inner",
-        "submit_generic": "button, .el-button"
+        "submit_generic": ".el-button"
       },
       "models": {
         "success_criterion": "登录成功的判据**不是** URL 变化 / 出现头像 / 无报错，而是登录后调一个**业务只读接口**拿到 200 + 预期数据结构。URL 变化是弱判据：登录页渲染慢或前端路由异常时会假成功。",

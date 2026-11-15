@@ -279,7 +279,17 @@ class KnowledgeBase:
             spec["notes"] = note
         path = self._writable_root() / "components.json"
         path.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write_text(path, json.dumps({"components": components}, ensure_ascii=False, indent=2))
+        # 保留写目标文件里 `components` 之外的顶层键（如平台声明的 `family` 族标识）——
+        # 旧实现无条件重写 `{"components": ...}`，第一次批准选择器就把这些键静默丢弃、
+        # 平台族判据无声失效（#102/#105 假绿同族）。读**写目标文件本身**（非 load()）：
+        # load 在私有文件缺失时回退包内默认，把包内顶层键抄进私有会改变首批准行为
+        # （#115）；目标文件缺失 → 无键可留，落盘仍为 `{"components": ...}`，与旧行为逐字节一致。
+        existing = _read_mapping(path)
+        payload: dict = {}
+        if isinstance(existing, dict):
+            payload = {k: v for k, v in existing.items() if k != "components"}
+        payload["components"] = components
+        atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2))
         return {"component": component, "element": element, "selector": stored,
                 "status": "approved", "source": source, "overwritten": overwritten}
 

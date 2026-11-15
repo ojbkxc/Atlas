@@ -1,7 +1,9 @@
 """语义等待工具的离线测试：用 fake page 验证轮询逻辑，不依赖真实浏览器。"""
 import pytest
 from atlas.waits import (wait_for_rows, wait_for_mask_gone, wait_for_vue_field,
-                         wait_for_url_change, wait_for_dialog, wait_for_dialog_gone)
+                         wait_for_url_change, wait_for_dialog, wait_for_dialog_gone,
+                         _FAMILY_PRESENT_JS)
+from atlas.ui_family import UiFamilyMismatch
 
 
 class FakePage:
@@ -17,6 +19,13 @@ class FakePage:
 
     def wait_for_selector(self, selector, state=None, timeout=None):
         self.calls.append(("selector", selector, state))
+
+    def query_selector(self, selector):
+        """默认「元素都在」（遮罩存在 + 族签名命中）——保持既有断言（mask hidden 调用序列）。
+
+        uf-1 的「遮罩缺席 / 族签名缺席」分支由 `FakeFamilyPage` 专门覆盖，不靠默认面。"""
+        self.calls.append(("query", selector))
+        return object()
 
     def wait_for_timeout(self, ms):
         self.calls.append(("tick", ms))
@@ -173,3 +182,133 @@ def test_wait_for_url_change_closed_page_propagates():
             raise Exception("Page.url: Target page, context or browser has been closed")
     with pytest.raises(Exception, match="has been closed"):
         wait_for_url_change(ClosedUrlPage(), timeout_ms=200)
+
+
+class FakeFamilyPage(FakePage):
+    """遮罩存在性用 query_selector 控，**族前缀特征**用 evaluate 控（uf-1 分支受控覆盖）。
+
+    evaluate 按脚本分派：族特征脚本（`_FAMILY_PRESENT_JS`）返回 `family_present`；其余（读行数）
+    走 FakePage 的 evaluations 序列。"""
+
+    def __init__(self, *, mask_present, family_present, **kw):
+        super().__init__(**kw)
+        self._mask_present = mask_present
+        self._family_present = family_present
+
+    def query_selector(self, selector):
+        self.calls.append(("query", selector))
+        return object() if self._mask_present else None
+
+    def evaluate(self, script, *args):
+        if script is _FAMILY_PRESENT_JS:
+            self.calls.append(("evaluate_family",))
+            return self._family_present
+        return super().evaluate(script, *args)
+
+
+def test_wait_for_mask_gone_no_mask_family_present_is_ok():
+    """uf-1 正向：遮罩缺席但页面确属本族（前缀特征命中）=「未加载」，合法放行——不报错也不等 mask。"""
+    page = FakeFamilyPage(mask_present=False, family_present=True)
+    wait_for_mask_gone(page)                 # 不抛即通过
+    assert not any(c[0] == "selector" for c in page.calls)   # 无遮罩→不等 mask
+
+
+def test_wait_for_mask_gone_no_mask_family_absent_raises():
+    """uf-1 负向（换平台静默失效）：遮罩缺席且族前缀特征也缺席=这页根本不是本族——旧实现静默秒回
+    「已落定」，现点名 UiFamilyMismatch，绝不静默返回（#102/#105 假绿同族）。"""
+    page = FakeFamilyPage(mask_present=False, family_present=False)
+    with pytest.raises(UiFamilyMismatch) as ei:
+        wait_for_mask_gone(page)
+    assert ei.value.family == "element-ui" and ei.value.prefixes == [".el-"]
+
+
+def test_wait_for_mask_gone_card_page_no_mask_passes():
+    """回归（本次修复）：纯展示页（只有 .el-card/.el-row 等，无签名选择器）遮罩缺席 = 本族在场
+    → 放行，不被误报。旧实现用固定 5 选择器签名，会把这种合法页判成 UiFamilyMismatch。"""
+    page = FakeFamilyPage(mask_present=False, family_present=True)   # 前缀特征命中
+    wait_for_mask_gone(page)                 # 不抛即通过
+
+
+def test_wait_for_mask_gone_uses_family_prefixes_not_signature():
+    """回归：族特征判据走 `prefixes`（evaluate + `_FAMILY_PRESENT_JS`），不再用固定签名选择器。"""
+    from atlas.waits import _FAMILY_PRESENT_JS
+    captured = {}
+
+    class P(FakePage):
+        def query_selector(self, sel):
+            return None                       # 遮罩缺席 → 触发族特征判断
+
+        def evaluate(self, script, *args):
+            captured["script"] = script
+            captured["prefixes"] = args[0]
+            return True
+
+    wait_for_mask_gone(P())
+    assert captured["script"] is _FAMILY_PRESENT_JS
+    assert captured["prefixes"] == [".el-"]
+
+
+def test_wait_for_mask_gone_mask_present_skips_family_check():
+    """正向对照：遮罩存在即证是本族——照常等它消失，不做族特征判断（正常路径零涟漪 #115）。"""
+    page = FakeFamilyPage(mask_present=True, family_present=False)
+    wait_for_mask_gone(page)
+    assert ("selector", ".el-loading-mask", "hidden") in page.calls
+
+
+def test_wait_for_mask_gone_has_mask_false_is_noop(monkeypatch):
+    """has_mask=False 的族（无遮罩概念）：无事可等，直接返回——不查询、不等、不报错。"""
+    monkeypatch.setattr(
+        "atlas.waits.resolve_family",
+        lambda name=None: {"name": "no-mask", "signature": ".nm", "has_mask": False,
+                           "prefixes": [], "declared_in_table": True})
+    page = FakeFamilyPage(mask_present=False, family_present=False)
+    wait_for_mask_gone(page)
+    assert page.calls == []
+
+
+def test_wait_for_rows_mask_absent_family_mismatch_raises():
+    """wait_for_rows 的 mask 步同族判据：遮罩缺席 + 族前缀特征缺席 → UiFamilyMismatch（不读 stale）。"""
+    page = FakeFamilyPage(mask_present=False, family_present=False)
+    with pytest.raises(UiFamilyMismatch):
+        wait_for_rows(page, min_rows=1)
+
+
+def test_wait_for_rows_custom_table_selector_card_page_no_misfire():
+    """回归（verify3 补）：**自定义 table_selector** + 纯卡片页（遮罩缺席但族前缀特征在场）→ 不误报。
+    旧签名判据在这条路径上会抛 UiFamilyMismatch（默认 `.el-table` 不存在时被 table-wait 超时掩盖，
+    自定义选择器命中时暴露）——前缀存在性判据天然覆盖。"""
+    page = FakeFamilyPage(mask_present=False, family_present=True, evaluations=[3])
+    assert wait_for_rows(page, table_selector=".my-list", min_rows=1) == 3
+
+
+def test_wait_for_rows_no_vue_names_runtime_error_not_zero():
+    """uf-2：表格在却无 __vue__（换运行时）→ 点名 RuntimeError，绝不回落 0 把运行时错配
+    伪装成「未达 N 行」（旧实现 return 0）。"""
+    page = FakePage(evaluations=["__atlas_no_vue__"])
+    with pytest.raises(RuntimeError, match="非 Vue2"):
+        wait_for_rows(page, min_rows=1)
+
+
+def test_wait_for_rows_data_not_array_names_runtime_error():
+    page = FakePage(evaluations=["__atlas_no_array__"])
+    with pytest.raises(RuntimeError, match="字段位置不同"):
+        wait_for_rows(page, min_rows=0)
+
+
+def test_wait_for_rows_legal_empty_table_still_returns_zero():
+    """正向对照：data:[]（合法空表）走数字路径，min_rows=0 照常返回 0（uf-2 不误伤）。"""
+    page = FakePage(evaluations=[0])
+    assert wait_for_rows(page, min_rows=0) == 0
+
+
+def test_wait_for_vue_field_no_vue_names_runtime_error():
+    page = FakePage(evaluations=["__atlas_no_vue__"])
+    with pytest.raises(RuntimeError, match="非 Vue2"):
+        wait_for_vue_field(page, "a.b")
+
+
+def test_wait_for_vue_field_no_app_retries_then_times_out():
+    """#app 尚未挂载是导航期常态：按未就绪重试，窗口耗尽仍是 TimeoutError（不误报运行时错配）。"""
+    page = FakePage(evaluations=["__atlas_no_app__"] * 50)
+    with pytest.raises(TimeoutError, match="无值"):
+        wait_for_vue_field(page, "a.b", timeout_ms=200)

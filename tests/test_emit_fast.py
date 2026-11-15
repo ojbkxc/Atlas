@@ -100,6 +100,10 @@ class FakePage:
     def wait_for_selector(self, selector, state=None, timeout=None):
         return None
 
+    def query_selector(self, selector):
+        """默认「元素都在」（遮罩存在 + 族签名命中）——uf-1 族/遮罩缺席分支由专门 fake 覆盖。"""
+        return object()
+
     def evaluate(self, script, arg=None):
         if self.evaluate_seq:
             item = self.evaluate_seq.pop(0)
@@ -421,6 +425,50 @@ def test_transient_error_split_present():
 def test_transient_marks_lockstep_with_atlas_waits(tmp_path, monkeypatch, request):
     support, _ = _load_artifact(tmp_path, monkeypatch, request)
     assert support._TRANSIENT_MARKS == atlas_waits._TRANSIENT_MARKS
+
+
+def test_ui_family_lockstep_with_ui_family_table(tmp_path, monkeypatch, request):
+    """uf-1 锁步：产物固化的族 signature/prefixes/has_mask 必须与通用包族表 element-ui 条目一致
+    （同 TICK_MS/_TRANSIENT_MARKS 先例——从知识表真值比对，非手抄常量）；族特征 JS 与
+    atlas.waits 逐字等值（同构派生，判据单一 #92）。"""
+    support, _ = _load_artifact(tmp_path, monkeypatch, request)
+    from atlas.ui_family import resolve_family
+    fam = resolve_family("element-ui")
+    assert support.UI_FAMILY == fam["name"] == "element-ui"
+    assert support.UI_FAMILY_SIGNATURE == fam["signature"]
+    assert list(support.UI_FAMILY_PREFIXES) == fam["prefixes"]
+    assert support.UI_FAMILY_HAS_MASK == fam["has_mask"]
+    assert support.UI_FAMILY_SIGNATURE in SUPPORT_SRC   # 源文本层也钉（防等价但源码漂移）
+    assert support._FAMILY_PRESENT_JS == atlas_waits._FAMILY_PRESENT_JS   # 族特征 JS 逐字同构
+
+
+def _family_present_mirror(tokens, prefixes):
+    """与 `_FAMILY_PRESENT_JS` 同谓词（token 以族前缀开头）的 Python 镜像，供离线断言语义。"""
+    ps = [p.lstrip(".") for p in prefixes]
+    return any(t.startswith(pref) for t in tokens for pref in ps)
+
+
+def test_family_present_js_card_page_is_family(tmp_path, monkeypatch, request):
+    """uf-1 对抗①（过严方向）：族特征必须按 class token **前缀**匹配，不是固定签名选择器列表——
+    纯展示页（只有 .el-card/.el-row/.el-col，无签名选择器）也算本族。把 JS 改成精确 token 相等
+    或退回只认签名选择器 → 本测红（离线无 JS 引擎，故钉 JS 构造 + Python 镜像语义；真机行为
+    由终验子代理取证）。"""
+    support, _ = _load_artifact(tmp_path, monkeypatch, request)
+    js = support._FAMILY_PRESENT_JS
+    assert js == atlas_waits._FAMILY_PRESENT_JS
+    assert "tokens[j].indexOf(ps[k]) === 0" in js                  # 前缀匹配（非精确 token）
+    assert _family_present_mirror(["el-card", "el-row", "el-col"], [".el-"]) is True
+
+
+def test_family_present_js_substring_lookalike_not_family(tmp_path, monkeypatch, request):
+    """uf-1 对抗②（过宽方向）：`model-x`/`panel-y` 含 "el-" 子串但不是本族 token——
+    JS 不能用子串匹配（`[class*=`/`.includes(`），否则把非本族页面当本族（uf-1 要防的假阳）。
+    改成子串 → 本测红。"""
+    support, _ = _load_artifact(tmp_path, monkeypatch, request)
+    js = support._FAMILY_PRESENT_JS
+    assert "[class*=" not in js and ".includes(" not in js
+    assert _family_present_mirror(["model-x", "panel-y"], [".el-"]) is False
+
 
 
 def test_tick_ms_lockstep_with_waits_source(tmp_path, monkeypatch, request):
@@ -1067,6 +1115,34 @@ def test_wait_for_vue_field_and_url_change(tmp_path, monkeypatch, request):
     assert support.wait_for_url_change(page, timeout_ms=500) == "https://x/detail"
     with pytest.raises(TimeoutError, match="未变化"):
         support.wait_for_url_change(FakePage(url_seq=["u"] * 50), timeout_ms=200)
+
+
+def test_artifact_wait_for_rows_no_vue_names_runtime_error(tmp_path, monkeypatch, request):
+    """uf-2 产物侧：表在却无 __vue__ → 点名 RuntimeError（不回落 0 伪装「未达 N 行」）。"""
+    support, _ = _load_artifact(tmp_path, monkeypatch, request)
+    with pytest.raises(RuntimeError, match="非 Vue2"):
+        support.wait_for_rows(FakePage(evaluate_seq=["__atlas_no_vue__"]), min_rows=1)
+
+
+def test_artifact_wait_for_vue_field_no_vue_names_runtime_error(tmp_path, monkeypatch, request):
+    support, _ = _load_artifact(tmp_path, monkeypatch, request)
+    with pytest.raises(RuntimeError, match="非 Vue2"):
+        support.wait_for_vue_field(FakePage(evaluate_seq=["__atlas_no_vue__"]), "a.b")
+
+
+def test_artifact_wait_for_mask_gone_family_branches(tmp_path, monkeypatch, request):
+    """uf-1 产物侧：遮罩缺席时按族前缀特征分流（命中=未加载放行 / 缺席=UiFamilyMismatch）；
+    遮罩存在即跳过族判断（正常路径零涟漪）。"""
+    support, _ = _load_artifact(tmp_path, monkeypatch, request)
+    ok = FakePage(evaluate_seq=[True])
+    ok.query_selector = lambda sel: None              # 遮罩缺席
+    support.wait_for_mask_gone(ok)                    # 族特征命中 → 不抛
+    bad = FakePage(evaluate_seq=[False])
+    bad.query_selector = lambda sel: None
+    with pytest.raises(support.UiFamilyMismatch):
+        support.wait_for_mask_gone(bad)
+    present = FakePage(evaluate_seq=[False])          # 默认 query_selector → 遮罩存在
+    support.wait_for_mask_gone(present)               # 遮罩存在即证本族 → 不查族、不抛
 
 
 # ---------------------------------------------------------------------------

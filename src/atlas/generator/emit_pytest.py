@@ -1283,6 +1283,15 @@ def emit_pytest_package(*, out_dir: Path, endpoints: list[Endpoint] | None = Non
     comps_map = _components_map(comps)
     # F-9 闸门必须在任何写盘之前——拒绝不得残留半成品（正向对照测钉「目录都别建」）。
     if fast:
+        # uf-3：声明族 vs 选择器前缀（换族接入错配）——判据唯一在 atlas.ui_family（#92）。
+        # 生成期闸：只在组件库**显式声明族**且与选择器前缀冲突时拒（未声明族不猜，避免把
+        # 「通用包经 base_roots 带入 element-ui 族」误报）。拒绝先于 mkdir、零残留。
+        from ..ui_family import family_prefix_problems
+        _fam_problems = family_prefix_problems(comps)
+        if _fam_problems:
+            raise PytestEmitError(
+                "组件库声明族与选择器前缀不符（换族接入错配）：" + "；".join(_fam_problems)
+                + "——请修正 components.json 的 family 声明或选择器后再生成")
         _fast_ui_gates(specs, comps_map)
     out_dir.mkdir(parents=True, exist_ok=True)
     written: list[str] = []

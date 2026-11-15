@@ -270,6 +270,10 @@ class _FakePage:
     def wait_for_selector(self, sel, state=None, timeout=None):
         return None
 
+    def query_selector(self, sel):
+        # 默认「元素都在」（遮罩存在 + 族签名命中）——uf-1 族/遮罩缺席分支由专门 fake 覆盖
+        return object()
+
     def wait_for_timeout(self, ms):
         self.ticks.append(ms)
 

@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 import yaml
-from . import __version__, boundaries, versioning
+from . import __version__, boundaries, ui_family, versioning
 from .composition import catalog, compose_for_goal
 from .config import ENV_URL_KEYS, AtlasConfig, load_dotenv
 from .dsl import FlowCompiler, FlowDocument, TaskRegistry
@@ -689,7 +689,15 @@ def main(argv: list[str] | None = None) -> int:
                       "atlas": __version__,
                       "knowledge": versioning.knowledge_fingerprint(
                           getattr(plugin.knowledge(), "root", None)),
-                      "tz_data": versioning.tz_data_status()}}
+                      "tz_data": versioning.tz_data_status()},
+                  # uf-3：声明族 vs 选择器前缀一致性（判据唯一在 atlas.ui_family，#92）。
+                  # 展示项，**不并入 rc**——前缀启发式存在假阳性空间（平台确无族前缀等），
+                  # 硬拦应由生成期闸/人审决定；doctor 只如实汇报声明族、解析结果与不一致清单。
+                  "ui_family": {
+                      "declared": ui_family.declared_family(),
+                      "resolved": ui_family.resolve_family(),
+                      "prefix_problems": ui_family.family_prefix_problems(
+                          plugin.knowledge().load_composed("components"))}}
         # Docker/CI 资产一致性：防「已提供但已过期」——引用的文件/命令漂移时提前暴露
         docker_ok = True
         dockerfile = config.root / "Dockerfile"

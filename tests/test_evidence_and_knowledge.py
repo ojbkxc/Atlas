@@ -721,3 +721,26 @@ def test_save_component_selector_bad_shape_named_before_writing(tmp_path):
         with pytest.raises(locators.LocatorSpecError):
             kb.save_component_selector("c", "e", bad, approved=True, source="test")
     assert not (tmp_path / "components.json").exists()
+
+
+def test_save_component_selector_preserves_other_top_level_keys(tmp_path):
+    """uf-3 回归：写目标文件里 `components` 之外的顶层键（如平台声明的 family）必须保留——
+    旧实现无条件重写 {"components": ...}，第一次批准选择器就把 family 静默丢弃（平台族判据
+    无声失效，#102/#105 假绿同族）。"""
+    kb = KnowledgeBase(tmp_path)
+    (tmp_path / "components.json").write_text(
+        json.dumps({"family": "element-ui", "policy": "keep me", "components": {}},
+                   ensure_ascii=False), encoding="utf-8")
+    kb.save_component_selector("c", "e", ".el-btn", approved=True, source="test")
+    saved = json.loads((tmp_path / "components.json").read_text(encoding="utf-8"))
+    assert saved["family"] == "element-ui"
+    assert saved["policy"] == "keep me"
+    assert saved["components"]["c"]["selectors"]["e"] == ".el-btn"
+
+
+def test_save_component_selector_first_write_no_extra_keys(tmp_path):
+    """正向对照：目标文件不存在时落盘仍是 {"components": ...}（与旧行为逐字节一致，#115）。"""
+    kb = KnowledgeBase(tmp_path)
+    kb.save_component_selector("c", "e", ".el-btn", approved=True, source="test")
+    saved = json.loads((tmp_path / "components.json").read_text(encoding="utf-8"))
+    assert list(saved) == ["components"]

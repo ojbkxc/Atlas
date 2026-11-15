@@ -92,6 +92,15 @@ TICK_MS = 100
 # 完整子串口径：navigating≠navigation；"detached" 兜 frame-detached 形态。
 _TRANSIENT_MARKS = ("execution context was destroyed", "navigation", "detached")
 
+# UI 族签名（uf-1）：生成期从通用包 plugins/_common/knowledge/ui_family.json 解析后**固化**到
+# 产物（产物零 import atlas，运行期读不到知识包）。页面无此签名 = 非本族，mask「已落定」不可信。
+# 锁步测（tests/test_emit_fast.py）从本源提取这几个字面量与 atlas.ui_family.resolve_family() 比对，
+# 通用包改族条目而这里没同步即红（#92：不留两份各自漂移）。
+UI_FAMILY = "element-ui"
+UI_FAMILY_SIGNATURE = ".el-button, .el-table, .el-menu, .el-dialog__wrapper, .el-input__inner"
+UI_FAMILY_PREFIXES = (".el-",)
+UI_FAMILY_HAS_MASK = True
+
 # run 级 reason 截断（同 Atlas 口径）
 REASON_MAX_LEN = 200
 
@@ -530,21 +539,87 @@ class RunWriter:
 
 
 # ---------------------------------------------------------------------------
-# 语义等待（waits.py 同源冻结派生版，F3；#133 瞬态分流）
+# 语义等待（waits.py 同源冻结派生版，F3；#133 瞬态分流；uf-1 族前缀特征 / uf-2 运行时点名）
 # ---------------------------------------------------------------------------
+
+
+class UiFamilyMismatch(RuntimeError):
+    """页面未呈现族前缀特征（uf-1）：mask「已落定」不可信——显式点名，不静默秒回。"""
+
+    def __init__(self, family, prefixes, declared_in_table=True):
+        self.family = family
+        self.prefixes = list(prefixes or [])
+        self.declared_in_table = declared_in_table
+        tail = ("" if declared_in_table
+                else "；且族表缺族 %r 条目——已按 default 条目前缀判定" % family)
+        super().__init__(
+            "页面未呈现族 %r 的前缀特征（期望 class token 以 %s 开头）——换平台后等待/读取"
+            "判据不可信（核对 components.json 的 family 声明与页面真实选择器）%s"
+            % (family, self.prefixes, tail))
+
+
+# 族前缀特征存在性（与 atlas.waits._FAMILY_PRESENT_JS 逐字等值，锁步测钉）：按 class token
+# 边界判（token 以族前缀开头），**不用子串**——`model-x` 含 "el-" 子串但 token 不以 `el-`
+# 开头，子串匹配会把非本族页面当本族（uf-1 要防的假绿）。
+_FAMILY_PRESENT_JS = r"""(prefixes) => {
+    const ps = (prefixes || []).map(p => String(p).replace(/^\\./, '')).filter(Boolean);
+    if (!ps.length) return false;
+    const nodes = document.querySelectorAll('[class]');
+    for (let i = 0; i < nodes.length; i++) {
+        const tokens = (nodes[i].getAttribute('class') || '').split(/\\s+/);
+        for (let j = 0; j < tokens.length; j++) {
+            for (let k = 0; k < ps.length; k++) {
+                if (tokens[j].indexOf(ps[k]) === 0) return true;
+            }
+        }
+    }
+    return false;
+}"""
+
+
+def _family_present(page):
+    """页面是否呈现族前缀特征（DOM 层）。取不到 evaluate 或抛错 → False（fail-closed）。"""
+    ev = getattr(page, "evaluate", None)
+    if ev is None:
+        return False
+    try:
+        return bool(ev(_FAMILY_PRESENT_JS, list(UI_FAMILY_PREFIXES)))
+    except Exception:
+        return False
+
+
+def _settle_mask(page, mask_selector, timeout_ms):
+    """等 mask 落定；mask 缺席时先由族前缀特征确认页面确属本族（uf-1，模板与 waits 同构）。"""
+    if not UI_FAMILY_HAS_MASK:
+        return
+    qs = getattr(page, "query_selector", None)
+    present = None
+    if qs is not None:
+        try:
+            present = qs(mask_selector)
+        except Exception:
+            present = None
+    if present is not None:
+        page.wait_for_selector(mask_selector, state="hidden", timeout=timeout_ms)
+        return
+    if not _family_present(page):
+        raise UiFamilyMismatch(UI_FAMILY, UI_FAMILY_PREFIXES)
+
 
 _TABLE_ROWS_JS = """(sel) => {
     const t = document.querySelector(sel);
-    if (!t) return 0;
+    if (!t) return "__atlas_no_table__";
     const vm = t.__vue__;
-    if (!vm || !Array.isArray(vm.data)) return 0;
+    if (!vm) return "__atlas_no_vue__";
+    if (!Array.isArray(vm.data)) return "__atlas_no_array__";
     return vm.data.length;
 }"""
 
 _VM_FIELD_JS = """(path) => {
     const root = document.querySelector('#app');
-    const vm = root && root.__vue__;
-    if (!vm) return null;
+    if (!root) return "__atlas_no_app__";
+    const vm = root.__vue__;
+    if (!vm) return "__atlas_no_vue__";
     let v = vm;
     for (const key of path.split('.')) {
         if (v == null) return null;
@@ -561,17 +636,29 @@ def wait_for_rows(page, table_selector: str = ".el-table", min_rows: int = 1,
     表格容器用 state="attached" 而非默认 visible——空结果时 .el-table 高度为 0 会被判
     hidden，「合法空表」第一步就超时（真实 Chrome 取证，waits.py 同款坑）。
     min_rows=0：只等落定、如实返回行数（「无来源单」这类业务事实不是超时）。
-    evaluate 抛错分流：导航瞬态穿越 reload 下一拍再读；其余立即传播（#133）。"""
+    evaluate 抛错分流：导航瞬态穿越 reload 下一拍再读；其余立即传播（#133）。
+    mask 缺席时先用族签名判「未加载 vs 非本族」（uf-1）；读行数遇无 __vue__/data 非数组
+    点名 RuntimeError（uf-2），绝不回落 0 伪装成「未达 N 行」。"""
     page.wait_for_selector(table_selector, state="attached", timeout=timeout_ms)
-    page.wait_for_selector(mask_selector, state="hidden", timeout=timeout_ms)
+    _settle_mask(page, mask_selector, timeout_ms)
     for _ in range(max(1, timeout_ms // TICK_MS)):
         try:
-            count = page.evaluate(_TABLE_ROWS_JS, table_selector) or 0
+            result = page.evaluate(_TABLE_ROWS_JS, table_selector)
         except Exception as exc:
             if not _is_transient(exc):
                 raise
             page.wait_for_timeout(TICK_MS)
             continue
+        if isinstance(result, str) and result.startswith("__atlas_"):
+            if result == "__atlas_no_table__":
+                count = 0
+            else:
+                raise RuntimeError(
+                    "读取表格行数失败：页面非 Vue2 运行时或字段位置不同"
+                    "（%s 的 __vue__.data 不可读，%s）——换族/换运行时后等待判据不可信（uf-2）"
+                    % (table_selector, result))
+        else:
+            count = result or 0
         if count >= min_rows:
             return count
         page.wait_for_timeout(TICK_MS)
@@ -579,15 +666,18 @@ def wait_for_rows(page, table_selector: str = ".el-table", min_rows: int = 1,
 
 
 def wait_for_mask_gone(page, mask_selector: str = ".el-loading-mask", timeout_ms: int = 15000) -> None:
-    """等待全屏 loading mask 消失（Element UI 的 .el-loading-mask 遮挡点击）。"""
-    page.wait_for_selector(mask_selector, state="hidden", timeout=timeout_ms)
+    """等待全屏 loading mask 消失（Element UI 的 .el-loading-mask 遮挡点击）。
+    uf-1：mask 缺席时先由族签名确认页面确属本族（「无遮罩=未加载」才可信），签名缺席则
+    UiFamilyMismatch，绝不静默秒回（`state="hidden"` 对不存在的选择器恒满足）。"""
+    _settle_mask(page, mask_selector, timeout_ms)
 
 
 def wait_for_vue_field(page, vm_path: str, timeout_ms: int = 10000):
     """等待 Vue 组件某个字段有值（非 null/undefined/空串）。vm_path 点路径，如 a.b.c。
 
     evaluate 抛错按 #133 分流：导航瞬态容忍重试，不可恢复错误立即传播；窗口耗尽是带
-    归因的 TimeoutError 而不是裸崩。"""
+    归因的 TimeoutError 而不是裸崩。uf-2：`#app` 有而 `__vue__` 缺 → 点名 RuntimeError
+    （非 Vue2 运行时），不回落 null 伪装「无值」；`#app` 自身缺席按未就绪重试。"""
     for _ in range(max(1, timeout_ms // TICK_MS)):
         try:
             value = page.evaluate(_VM_FIELD_JS, vm_path)
@@ -596,6 +686,13 @@ def wait_for_vue_field(page, vm_path: str, timeout_ms: int = 10000):
                 raise
             page.wait_for_timeout(TICK_MS)
             continue
+        if isinstance(value, str) and value.startswith("__atlas_"):
+            if value == "__atlas_no_app__":
+                page.wait_for_timeout(TICK_MS)
+                continue
+            raise RuntimeError(
+                "读取 Vue 字段 %s 失败：页面非 Vue2 运行时或字段位置不同"
+                "（#app 无 __vue__，%s）——换运行时后取值判据不可信（uf-2）" % (vm_path, value))
         if value is not None:
             return value
         page.wait_for_timeout(TICK_MS)
