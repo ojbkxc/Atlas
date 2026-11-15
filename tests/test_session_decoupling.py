@@ -241,3 +241,55 @@ def test_runtime_enter_fails_before_browser_when_legacy_web_missing(tmp_path, mo
             pass
     assert events["entered"] == 0        # 浏览器根本没开：路径输入错误不烧真实会话
     assert events["closed"] == 0
+
+
+# ---- en-7：ATLAS_BROWSER_PROXY 装配点（launch kwargs 透传，不真连）----
+
+def test_launch_kwargs_include_proxy_only_when_set(monkeypatch):
+    """未设置时 launch kwargs 逐字节同旧实现；设置后多一个 proxy 键（值来自 config 属性）。
+
+    用 fake playwright 捕获 kwargs——不真起浏览器（真机由 verify 侧另行取证）。
+    """
+    import sys, types
+    from atlas.config import AtlasConfig
+    from atlas.session import BrowserSession
+
+    captured = {}
+
+    class _FakeBrowser:
+        def new_context(self, **kw):
+            class _Ctx:
+                def new_page(self):
+                    return object()
+                def close(self):
+                    pass
+            return _Ctx()
+        def close(self):
+            pass
+
+    class _FakeChromium:
+        def launch(self, **kw):
+            captured.clear()
+            captured.update(kw)
+            return _FakeBrowser()
+
+    class _FakePW:
+        chromium = _FakeChromium()
+        def stop(self):
+            pass
+
+    fake = types.ModuleType("playwright.sync_api")
+    fake.sync_playwright = lambda: types.SimpleNamespace(start=lambda: _FakePW())
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", fake)
+
+    cfg = AtlasConfig.from_root(None)
+    monkeypatch.delenv("ATLAS_BROWSER_PROXY", raising=False)
+    with BrowserSession(cfg):
+        pass
+    assert "proxy" not in captured
+
+    monkeypatch.setenv("ATLAS_BROWSER_PROXY", "http://127.0.0.1:8080")
+    cfg2 = AtlasConfig.from_root(None)
+    with BrowserSession(cfg2):
+        pass
+    assert captured.get("proxy") == {"server": "http://127.0.0.1:8080"}

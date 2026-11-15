@@ -91,3 +91,49 @@ def test_explicit_account_wins_over_plugin_defaults(tmp_path, monkeypatch):
     monkeypatch.setattr(runtime, "resolve_plugin", lambda: stub)
     assert runtime.resolve_account(_config(tmp_path), "cli-acct") == "cli-acct"
     assert stub.env_seen is None, "显式账号在场时插件根本不该被咨询"
+
+
+# ---- en-13：登录协议四入口装配期预检 ----
+
+def test_check_login_protocol_accepts_conforming_module():
+    """符合协议的登录模块零涟漪（含「可选入口缺失」的合法单入口平台）。"""
+    import types
+    from atlas.runtime import check_login_protocol
+    mod = types.SimpleNamespace(do_login=lambda *a, **k: None)
+    check_login_protocol(mod)                       # 可选三项全缺：合法
+    mod2 = types.SimpleNamespace(do_login=lambda *a, **k: None,
+                                 switch_to_ou=lambda *a, **k: None,
+                                 switch_to_lang=lambda *a, **k: None,
+                                 LOCATORS={"login_indicator": "#x"})
+    check_login_protocol(mod2)                      # 四项齐：合法
+
+
+def test_check_login_protocol_names_missing_required_entry():
+    """缺必填 do_login：装配期点名文件与入口名，不让 AttributeError 漂到登录链深处。"""
+    import types
+    import pytest as _pytest
+    from atlas.runtime import check_login_protocol
+    with _pytest.raises(ValueError, match=r"login\.py.*do_login（缺失，必填）"):
+        check_login_protocol(types.SimpleNamespace(), where="legacy-web/lib/login.py")
+
+
+def test_check_login_protocol_rejects_bad_shapes():
+    """存在但不可调用 / LOCATORS 非 dict：点名形态（#63 存在≠可用的同族）。"""
+    import types
+    import pytest as _pytest
+    from atlas.runtime import check_login_protocol
+    with _pytest.raises(ValueError, match="do_login（应为可调用函数，实际 str）"):
+        check_login_protocol(types.SimpleNamespace(do_login="not-callable"))
+    with _pytest.raises(ValueError, match="LOCATORS（形态应为 dict，实际 list）"):
+        check_login_protocol(types.SimpleNamespace(do_login=lambda: None,
+                                                   LOCATORS=["x"]))
+
+
+def test_check_login_protocol_optional_entries_may_be_bad_but_callable_checked():
+    """可选入口：缺失放行，存在但不可调用仍点名（守卫会调用它，坏形态到调用点才炸）。"""
+    import types
+    import pytest as _pytest
+    from atlas.runtime import check_login_protocol
+    with _pytest.raises(ValueError, match="switch_to_ou（应为可调用函数"):
+        check_login_protocol(types.SimpleNamespace(do_login=lambda: None,
+                                                   switch_to_ou=42))

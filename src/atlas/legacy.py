@@ -6,7 +6,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
-from .config import AtlasConfig, check_legacy_paths, load_dotenv
+from .config import AtlasConfig, check_legacy_paths, load_legacy_dotenv
 from .core import Channel, Task, TaskMetadata
 
 @dataclass(frozen=True)
@@ -42,7 +42,8 @@ class LegacyAdapter:
     def __init__(self, config: AtlasConfig, project_root: Path | None = None):
         self.config = config
         self.root = (project_root or config.legacy_project).resolve()
-        load_dotenv(self.root)
+        # en-5：白名单隔离（ATLAS_* + 当前前缀凭据/URL 键），非引擎键不落进程环境。
+        load_legacy_dotenv(self.root, where=f"{self.root.name}/.env")
 
     def case(self, relative_yaml: str, case_id: str) -> LegacyCase:
         path = (self.root / relative_yaml).resolve()

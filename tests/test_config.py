@@ -245,3 +245,122 @@ def test_cli_reports_dotenv_error_as_rc2_not_traceback(tmp_path, monkeypatch, ca
     assert main(["--root", str(tmp_path), "doctor"]) == 2
     err = capsys.readouterr().err
     assert ".env" in err and "Traceback" not in err
+
+
+# ---- en-5 / ob-5：旧仓 .env 白名单隔离（不污染主进程环境）----
+
+def test_legacy_dotenv_isolates_non_engine_keys(tmp_path, monkeypatch, capsys):
+    """旧仓 .env 整份 setdefault 进 os.environ＝跨平台残留面：上一平台的业务键会串到
+    本进程后续所有 os.environ.get。白名单只放行 ATLAS_* 与当前前缀的凭据/URL 键。"""
+    import os
+    from atlas.config import load_legacy_dotenv
+    (tmp_path / ".env").write_text(
+        "ATLAS_SESSION_ACCOUNT=alice\n"
+        "DEMO_URL_SIT=https://demo.example\n"
+        "SOME_OTHER_APP_SECRET=leak\n"
+        "DEMO_UNRELATED_FLAG=1\n", encoding="utf-8")
+    for key in ("ATLAS_SESSION_ACCOUNT", "DEMO_URL_SIT",
+                "SOME_OTHER_APP_SECRET", "DEMO_UNRELATED_FLAG"):
+        monkeypatch.delenv(key, raising=False)
+    load_legacy_dotenv(tmp_path, where="legacy-suite/.env")
+    assert os.environ["ATLAS_SESSION_ACCOUNT"] == "alice"
+    assert os.environ["DEMO_URL_SIT"] == "https://demo.example"
+    assert "SOME_OTHER_APP_SECRET" not in os.environ      # 白名单外：不落 env
+    assert "DEMO_UNRELATED_FLAG" not in os.environ
+    err = capsys.readouterr().err
+    assert "WARN:" in err and "2 个非引擎键被隔离" in err
+    assert "leak" not in err and "leak" not in capsys.readouterr().out  # 值不回显
+
+
+def test_legacy_dotenv_respects_existing_env(tmp_path, monkeypatch):
+    """已有进程变量优先（与旧 load_dotenv 的 setdefault 语义一致，零涟漪）。"""
+    import os
+    from atlas.config import load_legacy_dotenv
+    (tmp_path / ".env").write_text("ATLAS_SESSION_ACCOUNT=from_file\n", encoding="utf-8")
+    monkeypatch.setenv("ATLAS_SESSION_ACCOUNT", "from_shell")
+    load_legacy_dotenv(tmp_path)
+    assert os.environ["ATLAS_SESSION_ACCOUNT"] == "from_shell"
+
+
+def test_legacy_dotenv_allowed_criterion_single_point(monkeypatch):
+    """白名单判据单点：ATLAS_* 与当前前缀凭据/URL 键放行，别的前缀键拒绝；
+    换前缀（ATLAS_ENV_PREFIX）后判据随之改变——不是写死 DEMO_。"""
+    from atlas.config import legacy_env_allowed
+    monkeypatch.delenv("ATLAS_ENV_PREFIX", raising=False)
+    assert legacy_env_allowed("ATLAS_KNOWLEDGE_DIR")
+    assert legacy_env_allowed("DEMO_USERNAME")
+    assert legacy_env_allowed("DEMO_PWD_ALICE")
+    assert legacy_env_allowed("DEMO_URL_PROD_EU")
+    assert not legacy_env_allowed("ISERVICE_USERNAME")     # 非当前前缀
+    assert not legacy_env_allowed("PATH")
+    monkeypatch.setenv("ATLAS_ENV_PREFIX", "ISERVICE_")
+    assert legacy_env_allowed("ISERVICE_USERNAME")
+    assert not legacy_env_allowed("DEMO_USERNAME")
+
+
+# ---- en-7：ATLAS_BROWSER_PROXY opt-in ----
+
+def test_browser_proxy_default_off_returns_none(monkeypatch):
+    """未设置＝None，launch 参数与旧实现逐字节相同（零涟漪）。"""
+    from atlas.config import AtlasConfig
+    monkeypatch.delenv("ATLAS_BROWSER_PROXY", raising=False)
+    assert AtlasConfig.from_root(None).browser_proxy is None
+    monkeypatch.setenv("ATLAS_BROWSER_PROXY", "   ")
+    assert AtlasConfig.from_root(None).browser_proxy is None   # 空白等同未设
+
+
+def test_browser_proxy_parses_and_rejects_bad_shape(monkeypatch):
+    from atlas.config import AtlasConfig
+    monkeypatch.setenv("ATLAS_BROWSER_PROXY", "http://127.0.0.1:8080")
+    assert AtlasConfig.from_root(None).browser_proxy == {"server": "http://127.0.0.1:8080"}
+    monkeypatch.setenv("ATLAS_BROWSER_PROXY", "socks5://proxy.example:1080")
+    assert AtlasConfig.from_root(None).browser_proxy == {"server": "socks5://proxy.example:1080"}
+    for bad in ("127.0.0.1:8080", "http://", "ftp://x:1"):
+        monkeypatch.setenv("ATLAS_BROWSER_PROXY", bad)
+        with pytest.raises(ValueError, match="ATLAS_BROWSER_PROXY"):
+            AtlasConfig.from_root(None).browser_proxy
+
+
+# ---- en-4：envs.json entrypoints（多入口平台，opt-in）----
+
+def _entry_cfg(monkeypatch, monkeypatch_kb=None):
+    from atlas.config import AtlasConfig
+    return AtlasConfig.from_root(None, env="sit")
+
+
+def test_entrypoint_default_ignored(monkeypatch):
+    """未设 ATLAS_ENTRYPOINT：base_url 仍读单键（默认路径逐字节不变）。"""
+    import os
+    from atlas.config import AtlasConfig
+    monkeypatch.delenv("ATLAS_ENTRYPOINT", raising=False)
+    monkeypatch.setenv("DEMO_URL_SIT", "https://single.example/")
+    assert AtlasConfig.from_root(None).base_url == "https://single.example"
+
+
+def test_entrypoint_reads_envs_json_entrypoints(monkeypatch):
+    """ATLAS_ENTRYPOINT 选名后从 envs.json entrypoints 取地址；坏/缺形态点名拒绝，
+    绝不静默回落到单 base_url（回落＝跑错环境还看着绿）。"""
+    from atlas.config import AtlasConfig
+    cfg = AtlasConfig.from_root(None, env="sit")
+    monkeypatch.setenv("ATLAS_ENTRYPOINT", "admin")
+    monkeypatch.setattr(AtlasConfig, "environment_config",
+                        property(lambda self: {"entrypoints": {
+                            "admin": "https://admin.example/",
+                            "seller": "https://seller.example"}}))
+    assert cfg.base_url == "https://admin.example"
+    monkeypatch.setenv("ATLAS_ENTRYPOINT", "nope")
+    with pytest.raises(ValueError, match="ATLAS_ENTRYPOINT"):
+        cfg.base_url
+
+
+def test_entrypoints_bad_shape_degrades_to_empty(monkeypatch):
+    """entrypoints 非映射/半份坏数据 → 空表（判据不猜），显式选名则报「可用入口：无」。"""
+    from atlas.config import AtlasConfig
+    cfg = AtlasConfig.from_root(None, env="sit")
+    monkeypatch.setenv("ATLAS_ENTRYPOINT", "admin")
+    for bad in (["admin"], {"admin": ""}, {"": "https://x"}, {"admin": 5}):
+        monkeypatch.setattr(AtlasConfig, "environment_config",
+                            property(lambda self, b=bad: {"entrypoints": b}))
+        assert cfg.entrypoint_urls == {}
+        with pytest.raises(ValueError, match="找不到"):
+            cfg.base_url

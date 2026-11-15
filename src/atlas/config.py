@@ -36,10 +36,15 @@ def env_url_keys(prefix: str | None = None) -> dict[str, str]:
 # 默认前缀下的完整键名。环境集合校验与 plugins/demo/knowledge/envs.json 以它为准。
 ENV_URL_KEYS = env_url_keys(ENV_PREFIX_DEFAULT)
 
-def load_dotenv(root: Path) -> None:
+def parse_dotenv(root: Path) -> dict[str, str]:
+    """读 `<root>/.env` 并**返回**键值（不写进程环境）——en-5 的纯读形态。"""
+    return dict(_read_dotenv_pairs(root))
+
+
+def _read_dotenv_pairs(root: Path) -> list[tuple[str, str]]:
     path = root / ".env"
     if not path.exists():
-        return
+        return []
     # 编码兜底（Windows 真实路径）：记事本旧版「另存为 UTF-8」带 BOM，PowerShell 5 的
     # Set-Content/Out-File 默认 UTF-16 LE——旧实现直读 utf-8：utf-16 文件 UnicodeDecodeError
     # 从 main()/runtime 装配链裸崩 traceback，UTF-8 BOM 则把 `DEMO_USERNAME` 静默变成
@@ -58,6 +63,7 @@ def load_dotenv(root: Path) -> None:
     except (UnicodeDecodeError, OSError) as exc:
         raise ValueError(f"{path} 无法按 {encoding} 解码（期望 UTF-8；PowerShell 请 "
                          f"`Set-Content -Encoding UTF8`），原始错误：{exc}") from exc
+    pairs: list[tuple[str, str]] = []
     for line in text.splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
@@ -68,7 +74,49 @@ def load_dotenv(root: Path) -> None:
             raise ValueError(f"{path} 存在无效环境变量名（含空格/引号或为空）：{key!r}")
         if value[:1] == value[-1:] and value[:1] in {"'", '"'}:
             value = value[1:-1]
+        pairs.append((key, value))
+    return pairs
+
+
+def load_dotenv(root: Path) -> None:
+    for key, value in _read_dotenv_pairs(root):
         os.environ.setdefault(key, value)
+
+
+# 旧仓 .env 可进入**本进程环境**的键白名单（en-5 的隔离判据，单一实现）。
+# 旧仓 .env 是「上一平台的部署事实」，不是本进程配置：整份 setdefault 进 os.environ 会让
+# `ISERVICE_*`/`DEMO_*` 一类键跨平台残留，后续所有 os.environ.get 读到串味值（归因漂移）。
+# 只放行**引擎真的会读**的两族键：
+#   ① `ATLAS_*`（引擎自身的映射/会话/开关，含 ATLAS_SESSION_*）；
+#   ② 当前前缀的凭据/URL 键（`<PREFIX>USERNAME|PASSWORD|PWD_*|URL_*`）。
+# 其余键一律不落 env，只计数 + WARN 一行（不回显键值——旧仓 .env 常带真实凭据）。
+_LEGACY_ENV_ALLOW_ATLAS_PREFIX = "ATLAS_"
+
+
+def legacy_env_allowed(key: str) -> bool:
+    """旧仓 .env 键是否允许进入主进程环境（判据单点，见上方注释）。"""
+    if key.startswith(_LEGACY_ENV_ALLOW_ATLAS_PREFIX):
+        return True
+    prefix = env_prefix()
+    return (key.startswith(f"{prefix}USERNAME") or key.startswith(f"{prefix}PASSWORD")
+            or key.startswith(f"{prefix}PWD_") or key.startswith(f"{prefix}URL_"))
+
+
+def load_legacy_dotenv(root: Path, *, where: str = "旧仓 .env") -> None:
+    """把旧仓 .env 的**白名单键**并入进程环境（en-5）；白名单外只计数 + WARN。
+
+    与 `load_dotenv` 的差别只在「哪些键能进环境」这一道筛：解码/形态判据仍共用
+    `_read_dotenv_pairs`（#92 不留第二把刀）。已有进程变量优先（`setdefault`）不变。
+    """
+    dropped = 0
+    for key, value in _read_dotenv_pairs(root):
+        if legacy_env_allowed(key):
+            os.environ.setdefault(key, value)
+        else:
+            dropped += 1
+    if dropped:
+        print(f"WARN: {where} 有 {dropped} 个非引擎键被隔离（未写入进程环境；"
+              "如需生效请写进项目 .env 或显式 export）", file=sys.stderr)
 
 def _asset_path(root: Path, key: str, default: str) -> Path:
     value = Path(os.environ.get(key, default))
@@ -163,7 +211,53 @@ class AtlasConfig:
 
     @property
     def base_url(self) -> str:
+        entry = os.environ.get("ATLAS_ENTRYPOINT", "").strip()
+        if entry:
+            # en-4：多入口平台（同系统多个前端入口）用 `ATLAS_ENTRYPOINT` 选中一个名字，
+            # 地址从私有 `envs.json` 的 `environments.<env>.entrypoints.<name>` 取——
+            # 数据驱动，引擎不含任何入口名（红线 #11）。显式选名但找不到 = 点名拒绝，
+            # 不静默回落单 base_url（回落到另一个地址比报错更坏：跑错环境还看着绿）。
+            urls = self.entrypoint_urls
+            if entry not in urls:
+                raise ValueError(
+                    f"ATLAS_ENTRYPOINT={entry!r} 在该环境的 envs.json 里找不到"
+                    f"（可用入口：{', '.join(sorted(urls)) or '无'}）")
+            return urls[entry].rstrip("/")
         return os.environ.get(self.env_url_key, "").rstrip("/")
+
+    @property
+    def entrypoint_urls(self) -> dict[str, str]:
+        """`environments.<env>.entrypoints`（名→地址）；缺/坏形态一律空表（en-4）。
+
+        形态判据：必须是「非空标量名 → 非空标量地址」的映射，否则返回 `{}`——坏形态不让
+        `base_url` 静默取到半份数据；显式选名时由 `base_url` 点名拒绝。
+        """
+        entrypoints = (self.environment_config or {}).get("entrypoints")
+        if not isinstance(entrypoints, dict):
+            return {}
+        cleaned: dict[str, str] = {}
+        for name, url in entrypoints.items():
+            if (isinstance(name, str) and name and isinstance(url, str) and url.strip()):
+                cleaned[name] = url.strip()
+        return cleaned
+
+    @property
+    def environment_config(self) -> dict:
+        """读取**当前插件** envs.json 里 `environments.<env>` 一段（读不到返回 `{}`）。
+
+        复用插件知识契约（`resolve_plugin().knowledge().load("envs")`）而不是自己找文件：
+        私有→包内回退、坏形态容错、组合层语义全在那一处（#92 不留第二把刀）。任何异常
+        回落空表——配置读取失败不该把 `base_url` 变成 traceback（真正的错误由「缺 URL」
+        或「入口名找不到」点名）。
+        """
+        try:
+            from .plugin_api import resolve_plugin
+            data = resolve_plugin().knowledge().load("envs") or {}
+            environments = data.get("environments") or {}
+            coords = environments.get(self.env) or {}
+            return coords if isinstance(coords, dict) else {}
+        except Exception:
+            return {}
 
     @property
     def env_url_key(self) -> str:
@@ -201,6 +295,26 @@ class AtlasConfig:
     @property
     def slow_mo(self) -> int:
         return 300 if self.mode == "debug" and not self.headless else 0
+
+    @property
+    def browser_proxy(self) -> dict | None:
+        """`ATLAS_BROWSER_PROXY` 显式 opt-in（en-7）：需走代理的入口给 Playwright proxy。
+
+        形态 `http://host:port` 或 `http://user:pass@host:port`（也接受 socks5://）。
+        **未设置=返回 None，launch 参数与旧实现逐字节相同**（零涟漪）。设置但形态坏
+        （无 scheme/无 host）当场 ValueError 点名原值——代理坏形态若被静默忽略，真实
+        症状是「站点连不上」，归因漂到被测系统（#102/#103 同族假阴性）。
+        凭据只从 env 读；返回值只含 scheme+netloc，不回显到任何落盘文本。
+        """
+        raw = os.environ.get("ATLAS_BROWSER_PROXY", "")
+        if not raw.strip():
+            return None
+        parsed = urlparse(raw)
+        if parsed.scheme not in {"http", "https", "socks5"} or not parsed.hostname:
+            raise ValueError(
+                "ATLAS_BROWSER_PROXY 形态非法（期望 http(s)://host:port 或 socks5://host:port）"
+                f"：{raw!r}")
+        return {"server": f"{parsed.scheme}://{parsed.netloc}"}
 
     # ---- flaky 兜底（默认全部保守：重试 0 次 / 超时关闭 → 既有行为逐字不变，零回归）----
     @property

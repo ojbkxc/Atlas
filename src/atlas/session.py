@@ -92,6 +92,11 @@ class BrowserSession:
         else:
             launch_kwargs["channel"] = self.config.channel or None
         try:
+            # en-7：`ATLAS_BROWSER_PROXY` 显式 opt-in 才追加——未设置时 kwargs 逐字节同旧实现
+            # （属性在 launch 之前求值，坏形态 ValueError 于浏览器启动前点名，不烧会话）。
+            proxy = self.config.browser_proxy
+            if proxy:
+                launch_kwargs["proxy"] = proxy
             self.browser = self._pw.chromium.launch(**launch_kwargs)
             self.context = self.browser.new_context(
                 viewport={"width": 1920, "height": 1080} if headless else None,

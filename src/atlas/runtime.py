@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 from .core import Channel, TaskMetadata
 from .actor import Actor
-from .config import AtlasConfig, load_dotenv
+from .config import AtlasConfig, load_legacy_dotenv
 from .contracts import ContractRegistry
 from .credential_gate import sanitize_url
 from .dsl import TaskRegistry
@@ -25,6 +25,42 @@ def _load(path: Path, name: str):
     sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
+
+
+# 登录协议的四入口点（en-13）：新平台插件缺函数/属性时，旧实现到调用点才撞裸
+# AttributeError（`module 'login' has no attribute 'switch_to_ou'`），消息不点名
+# 「哪个入口缺、该补什么」——归因漂成框架缺陷（#90/#103/#122 面A 同族）。
+# 判据单点在本函数，装配期（登录动作之前）一次性点名全部缺失项。
+LOGIN_PROTOCOL = (("do_login", True), ("switch_to_ou", False),
+                  ("switch_to_lang", False), ("LOCATORS", False))
+
+
+def check_login_protocol(module, where: str = "lib/login.py") -> None:
+    """登录协议装配期预检（en-13）：逐点 getattr 检查并点名缺失项。
+
+    `do_login` 是**必填**（无它等于没有登录能力）；`switch_to_ou`/`switch_to_lang`/
+    `LOCATORS` 是**可选**——缺失时调用点已各自有 getattr/条件守卫（`if self.ou:`、
+    `getattr(login_module, "LOCATORS", {})`），故本函数只对「存在但不可调用」判错，
+    不对缺失判错（那会把「单入口平台不切 OU」的正常路径翻成错误，#115 教训）。
+    `do_login` 缺失或不可调用 → ValueError 点名文件与入口名，装配期拒绝（早于浏览器）。
+    """
+    names = []
+    for name, required in LOGIN_PROTOCOL:
+        member = getattr(module, name, None)
+        if name == "LOCATORS":
+            if member is not None and not isinstance(member, dict):
+                names.append(f"LOCATORS（形态应为 dict，实际 {type(member).__name__}）")
+            continue
+        if member is None:
+            if required:
+                names.append(f"{name}（缺失，必填）")
+            continue
+        if not callable(member):
+            names.append(f"{name}（应为可调用函数，实际 {type(member).__name__}）")
+    if names:
+        raise ValueError(
+            f"{where} 不符合登录协议：{('、'.join(names))}"
+            "——请在旧项目登录模块补齐（或用 ATLAS_LEGACY_* 指向正确模块）")
 
 
 def check_demo_api(config: AtlasConfig) -> None:
@@ -105,7 +141,11 @@ class DemoRuntime:
 
     def __enter__(self) -> "DemoRuntime":
         legacy = self.config.legacy_project
-        load_dotenv(legacy)  # 沿用同事项目 .env；已有进程变量优先，不复制凭据。
+        # en-5/ob-5：旧仓 .env 只并入**白名单键**（ATLAS_* 与当前前缀的凭据/URL 键），
+        # 其余键隔离 + WARN 计数——旧实现整份 setdefault 进 os.environ，上一平台的
+        # `ISERVICE_*`/`DEMO_*` 会跨平台残留，后续 os.environ.get 读到串味值（归因漂移）。
+        # 解码/形态判据仍与 load_dotenv 共用 `_read_dotenv_pairs`（#92 单点）。
+        load_legacy_dotenv(legacy, where=f"{legacy.name}/.env")
         # 空账号闸门必须在开浏览器 / 登录之前（#103 同族，判据与消息在 require_account 单点，
         # 同一函数也被 CLI 预检调用以投递 rc 2）。`credential("")` 会命中 `ISERVICE_PWD_`
         # 这类「键在、值为空」的残留键，拿到空密码后照样起 Chromium 走 SSO，失败点漂进旧登录
@@ -137,6 +177,10 @@ class DemoRuntime:
             if self.should_login:
                 login_module = _load(legacy / self.config.legacy_web / "lib/login.py",
                                      "atlas_demo_session_login")
+                # en-13：协议预检放在 do_login 调用之前——缺失/坏形态在此点名，
+                # 不让 AttributeError 漂到登录链深处（此处浏览器已开，但登录动作尚未发出）。
+                check_login_protocol(
+                    login_module, where=f"{self.config.legacy_web}/lib/login.py")
                 _, password = self.config.credential(self.account)
                 login_module.do_login(self.actor.page, self.config.base_url, self.account, password)
                 self._wait_topbar(login_module)
