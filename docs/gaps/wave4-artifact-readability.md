@@ -129,6 +129,20 @@ urllib 直调，零第三方依赖"）。
 快照表 `_FAST_OFF_BASELINE` 仅 `readme_pages`/`readme_nopages` 两项更新（其余 10 项未动，
 理由=README 是两形态共同的可读性改造，lead 落笔）。
 
-**未做（仍然留白）**：`_atlas_fast.py` 治理注记分层（P1）、conftest `ENV_KEYS` 死指针与
-`sole_page` 拆分（P1）、`atlas_pages.py` 的 models 注释/形态标记（P2）、`_atlas_support.py`
-网络层大捕注记（P2）——均不属 ae-6 的 README 面，留后续波次。
+**上述留白已在 wave5 补齐（2026-11-15，提交 e6e0d34 / e092c97 / 86cd27c）**：
+
+- `_atlas_fast.py` 治理注记分层（P1）：文件头新增「本文件结构（读者导航：想改什么→看哪节）」
+  与「治理注记对照表（维护者看这里；产物接线人可跳过）」两段——F-11/B-3/#92 这类治理
+  依据归入对照表，接线人不需要读；env 旋钮段点名「全量清单见文件顶部列表、产物内无独立
+  `ENV_KEYS` 常量」（死指针消除）。
+- conftest（P1）：删除指向不存在符号 `_atlas_fast.ENV_KEYS` 的表述（改为「生成器侧
+  自证测 `emit_fast.ENV_KEYS` 穷举，产物内无该常量」）；`sole_page` 拆成
+  `_attach_channel`/`_launch_channel` 两函数（行为不变，通道细节各自就近说明）；
+  补 `__` 前缀私有键约定说明（以 `__` 开头的 plan_ctx 键不落盘）。
+- `atlas_pages.py`（P2）：补形态标记（快/慢两形态的生成差异）+ models 注释
+  （数据从组件库哪来）+ `__all__` 折行 + 「与生成器同判据」注记。
+- `_atlas_support.py`（P2）：网络层大捕注记（为什么宽捕获、什么情况下才允许收窄）。
+- 判据测同步：`tests/test_emit_fast.py` / `tests/test_emit_pytest.py` /
+  `tests/test_emit_pytest_actions.py` 的字节基线只更新确有变化项（86cd27c）。
+
+留白口自此清零——wave4 评审的四份产物文件与 README 面全部落地。

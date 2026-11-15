@@ -3,7 +3,7 @@
 <p align="center">
   <a href="https://github.com/ojbkxc/Atlas"><img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License"></a>
-  <a href="#当前验证边界"><img src="https://img.shields.io/badge/tests-2805%20passed-brightgreen" alt="2805 passed"></a>
+  <a href="#当前验证边界"><img src="https://img.shields.io/badge/tests-2940%20passed-brightgreen" alt="2940 passed"></a>
   <img src="https://img.shields.io/badge/engine-Playwright-45edaa" alt="Playwright">
   <img src="https://img.shields.io/badge/self--healing-human--reviewed-orange" alt="Human-reviewed healing">
 </p>
@@ -603,13 +603,26 @@ PYTHONPATH=src python scripts/boundary_classify.py --diff incoming.diff --to-tow
 | `ATLAS_RUNLOG_HOME` | `../runlog` | runlog 目录 |
 | `ATLAS_TOOLBOX_PROJECT` | `../toolbox` | 感知器官目录 |
 | `ATLAS_BROWSER_CHANNEL` | `chrome` | 浏览器通道 |
+| `ATLAS_PLUGIN` | 空（回落 demo + WARN） | 业务插件域；显式写 `demo` 可静默使用 demo。`ATLAS_REQUIRE_PLUGIN=1`（只认精确 `1`）时未设本键直接启动期报错——防「拿虚构知识跑真实系统」 |
+| `ATLAS_ENTRYPOINT` | 空 | 多入口平台的入口名：从 `envs.json` `environments.<env>.entrypoints.<name>` 取 base_url；找不到点名拒绝，不静默回落 |
+| `ATLAS_BROWSER_PROXY` | 空（不启代理） | 浏览器代理（http/https/socks5）；未设置时 launch 参数逐字节同旧 |
+| `ATLAS_RUNS_SPLIT` | 空（单文件） | `plugin`=runs.jsonl 按平台分片写；summary/allure 读侧自动聚合分片 |
 | `ATLAS_KNOWLEDGE_DIR` | 空（只读库） | 私有知识目录：读逐文件回退包内虚构默认，人审批准写只落这里；未设置时写回被拒绝并点名本变量（包内资产只读，红线 #11） |
 
 ## 当前验证边界
 
-- 离线测试：**2805 passed / 9 failed（既有环境失败）**（Python 3.11；`PYTHONPATH=src py -3.11 -m pytest -q`，
-  2026-11-15 实测——8 skipped、`--collect-only` 2822（= 2805+9+8）；
-  较上一收口位 2797（2026-11-15 B/C 轴收口实测）净 +8，本波 **ae-6 产物 README 可读性改造**：
+- 离线测试：**2940 passed / 9 failed（既有环境失败）**（Python 3.11；`PYTHONPATH=src py -3.11 -m pytest -q`，
+  2026-11-16 实测——8 skipped、`--collect-only` 2957（= 2940+9+8）；
+  较上一收口位 2805（2026-11-15 实测）净 +135，本波 **wave5 backlog 收口**（gap14 待办 + ae-6 剩余留白，逐条处置见 `docs/gaps/wave5-backlog.md`）：
+  **en-1/en-3** 插件回落显式 WARN + `ATLAS_REQUIRE_PLUGIN=1` / 草稿 identity 掺平台维度 +
+  **en-2/ob-4** 知识条目平台维度与通用包族标签 + **en-4/en-5/en-7/en-13** envs 多入口 / 旧仓 .env 白名单隔离 /
+  浏览器代理 opt-in / 登录协议装配期预检 + **en-8** runs.jsonl 平台分流 opt-in（含 allure 读侧聚合）+
+  **en-10/en-11/en-12/en-15** await 轮询 / 只读 GET 重放接线 / `raises` 负向断言 / 跨模块对账 +
+  **en-9/en-14** 双入口口径文档 / exports 目录 root-anchored + **ob-3/ob-6/ob-7/ob-8** gen domain 接线 /
+  产物 README 去业务头 / doctor 接入清单 / 第一个 bug 最短路径 + **uf-5~uf-8** 遮罩探针单点 / 选择器样例族中立 /
+  playbook 族标签 + **ae-6 剩余** 产物四文件可读性补齐 + **pf-3** autopilot 语义等待（真机取证）+ 
+  **complex-flow** 复杂业务流脚手架（dispatch + 写腿示范，compile rc0）；
+  上一收口位 2797（2026-11-15 A 轴收口实测）→ 2805 净 +8，wave4 **ae-6 产物 README 可读性改造**：
   横幅去嵌套加粗 / 运行命令改 `pytest -q` / 快慢两形态未接线语义分叉 / 仓库相对路径死链加诚实注记 /
   双入口名（`export-pytest`+`gen`）/ env 旋钮按 `emit_fast.ENV_KEYS` 全量渲染 / 补「本包文件」清单
   （+8 测；样例 intent 的「requests 直调」失真文案一并修掉）；
