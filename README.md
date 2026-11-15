@@ -61,7 +61,7 @@ python -m playwright install chromium && pytest -q
   `atlas init`，或用 `--atlas-path <Atlas 仓库>` 指定。探测不到源码根时会在 stderr 打 `WARN:` 并
   给出两条补救路径（不静默给你一个装不上的骨架）。
 - `atlas doctor` 在未接旧项目时会 **rc 1**（`legacy_pages`/`demo_api` 为 False）——这是预期而非装坏，
-  接法见文末常见问题「怎么接回公司真实项目」。
+  接法见 [CLAUDE.md 常见问题](./CLAUDE.md)「怎么接回公司真实项目」（README 本身不设 FAQ 段）。
 - 想看 Atlas 自身的全量离线测试：`PYTHONPATH=src python -m pytest -q`（几分钟，不联网、不用凭据）。
 
 ## 已实现
