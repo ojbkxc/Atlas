@@ -668,3 +668,38 @@ def test_ob3_domain_drives_pitfall_scope_via_registry(tmp_path, monkeypatch):
     p.write_text("## GET /api/x\n\n```json\n{}```\n", encoding="utf-8")
     generate(p, None, GenOptions(plugin="iservice", check_only=True))
     assert calls, "emit_flow 未经 plugin_api.resolve_plugin 解析插件——ob-3 接线被绕过"
+
+
+# ---- complex-flow：复杂业务流脚手架（wave5 工具面） --------------------------
+
+
+def test_complex_flow_demo_compiles_offline():
+    # examples/complex_flow_demo.yaml 必须过 atlas compile（结构/Task 注册/dispatch
+    # 目标集/步 id 唯一/requires 声明全过静态+语义两段校验）
+    from pathlib import Path
+    from atlas.dsl import FlowCompiler
+    from atlas.cli import _full_registry
+    p = Path(__file__).resolve().parent.parent / "examples" / "complex_flow_demo.yaml"
+    flow = FlowCompiler(_full_registry()).load(p)
+    tasks = FlowCompiler(_full_registry()).validate_flow(flow)
+    names = [t.name for t in tasks]
+    assert "dispatch:route" in names, "dispatch 路由节点必须在位"
+    # dispatch 分支目标全部被路由认领（编译期已验）；路由决策只在运行期发生
+
+
+def test_complex_flow_demo_write_leg_gated_by_default():
+    # 写腿判据：click_new/click_save 元数据 read_only=False（UI 写腿），
+    # scheduling 只读档 admission 扫描必须把它们点名（默认闸下进不了调度台账）；
+    # 这是「写腿默认被拦」的离线形态（M14 只读护栏，engine 生产写闸是运行期第二道）。
+    from pathlib import Path
+    from atlas.dsl import FlowCompiler
+    from atlas.cli import _full_registry
+    p = Path(__file__).resolve().parent.parent / "examples" / "complex_flow_demo.yaml"
+    flow = FlowCompiler(_full_registry()).load(p)
+    tasks = FlowCompiler(_full_registry()).validate_flow(flow)
+    writes = [t.name for t in tasks if not t.metadata.read_only]
+    assert set(writes) == {"click_new", "click_save"}, f"写腿集合漂移：{writes}"
+    # 文档面：放行说明在位（改文案必须同步示例头注释——两处是同一份口径）
+    text = p.read_text(encoding="utf-8")
+    assert "ATLAS_ALLOW_PROD_WRITE=1" in text, "示例头缺运行轨放行键说明"
+    assert "--i-accept-writes" in text, "示例头缺调度登记放行旗标说明"

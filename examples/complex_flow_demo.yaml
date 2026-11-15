@@ -1,0 +1,64 @@
+# complex-flow 脚手架：复杂业务流的承接示范（dispatch 路由 + UI 写腿 + 数据供给）。
+#
+# 演示三种机制在同一 flow 里的组合（线性 DSL 不够表达时才用它，线性流程照旧用
+# examples/sales_order.yaml）：
+#   1. dispatch 路由——按已声明 ctx 字段的取值选分支（目标集/default 编译期校验；
+#      未选中分支整步不执行、不进 runs.jsonl）；
+#   2. UI 写腿——click_new/click_save（业务插件 Task，元数据 read_only=False）；
+#   3. flow 级 requires——find_only 数据供给（找不到不造数，红线 #3）。
+#
+# 运行（离线校验）：atlas compile examples/complex_flow_demo.yaml   # rc 0
+# 真实执行前必须过两道闸（本示例刻意展示它们，不要绕）：
+#   ① 生产写闸（engine 层，run 轨默认拦）：写腿在非放行环境抛 PermissionError →
+#      该步骤记 env_blocked（策略阻挡非代码缺陷，红线 #7）。显式放行键
+#      ATLAS_ALLOW_PROD_WRITE=1（放行时引擎打 ASCII 警告并把 prod_write_allowed
+#      记进 runs.jsonl step 记录，可审计）。
+#   ② 调度只读档（atlas schedule add，登记面）：含写步骤的 flow 必须
+#      --i-accept-writes 才能进调度台账（M14）。巡检场景请用不带写腿的 flow。
+# 「人工放行」的适用面：ATLAS_ALLOW_PROD_WRITE 是**运行轨**放行键（单人明确知道
+# 在写生产数据时用）；--i-accept-writes 只作用于**调度登记**（承认台账里挂着写
+# flow），两者互不替代——调度派发的子进程照样受 engine 生产写闸管。
+id: complex-order-demo
+plugin: demo
+requires:
+  source_order:
+    entity: SalesOrder
+    where:
+      status: [1003, 1006]
+    strategy: find_only
+    on_env_blocked: skip
+steps:
+  - id: fetch_order
+    task: api_call
+    method: GET
+    path: /demo/salesOrder/list
+    save_as: order_resp
+    intent: 查询销售单列表（API 腿，产出 order_resp 供路由）
+  - id: route
+    dispatch:
+      on: order_resp.data.total
+      to:
+        "0": [need_create]
+        default: [need_verify]
+    intent: 按列表是否有数据路由：0 条走造单腿，否则走核对腿
+  - id: need_create
+    task: click_new
+    page_key: sales_order
+    channel: ui
+    intent: 造单腿：打开新建（UI 写腿，生产环境默认被写闸拦下 env_blocked）
+  - id: need_create_save
+    task: click_save
+    page_key: sales_order
+    on_env_blocked: stop
+    intent: 造单腿：保存（写腿核心；on_env_blocked=stop 让被拦立即终态，不静默跳过）
+  - id: need_create_wait
+    task: wait_save_result
+    intent: 造单腿：等保存结果（只读；save_as 产出单号供断言）
+  - id: need_verify
+    task: open_doc_list
+    page_key: sales_order
+    channel: ui
+    intent: 核对腿：打开列表（只读）
+assert:
+  - order_resp.ok == true
+on_env_blocked: skip
