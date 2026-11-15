@@ -15,18 +15,24 @@ from typing import Any, Callable
 import yaml
 from .core import Channel, FunctionalTask, Task, TaskMetadata
 from .failures import (CONTROL_FLOW, EnvBlocked, AwaitingHuman, FailureClass,
-                       exception_brief)
+                       ReconciliationMismatch, exception_brief, raise_type,
+                       reconcile_diff)
 from .probes import DataProvider, DataRequirement
 from . import versioning
+from . import failures   # en-12：exception_text / exception_message 走 failures 单一真相
 
 # 步骤保留键：编译器消费后不透传给 Task 工厂。`requires` 是作者声明的依赖（编译期按
 # 未定义引用校验，见 _check_produces）、`dispatch` 是路由声明（不透传，否则工厂收到
 # 未知 kwargs 裸 TypeError）、`read_only`/`id`/`intent` 同族——LegacyCaseTask 的文档记过
 # 「写了也不透传」的坑，这里集中一处，不再散落字面量集合。
+# `raises`（en-12）：负向断言声明——期待本步抛出指定异常；编译器消费成 `_RaisesTask`
+# 包装器，不透传（工厂收到未知 kwargs 会裸 TypeError）。
 _RESERVED_KEYS = {"task", "channel", "intent", "requires", "read_only",
                   "on_env_blocked", "id", "dispatch",
                   # gap9b B-2 声明位（fast 导出消费；引擎路径不透传成 Task 参数）
-                  "page_object", "legacy_pages"}
+                  "page_object", "legacy_pages",
+                  # en-12 负向断言（期待抛）
+                  "raises"}
 # flow 级保留键：`template`/`slots` 是骨架实例化声明（load 期文本替换掉，不参与编译）。
 _TEMPLATE_KEYS = {"template", "slots"}
 # 骨架占位符 `{{name}}`：name 限标识符字符，嵌套花括号不当占位符吞掉。
@@ -416,6 +422,10 @@ class FlowCompiler:
             router = _router_of(step, index)
             if router is not None:
                 task = _RouterTask(task, router)
+            if "raises" in step:
+                # en-12：负向断言包装在最外层——异常穿过 channel/guard/router 时若被降级/
+                # 跳过，就不该被 raises 接住（那条路径不是「抛了期望异常」，是「没跑到」）。
+                task = _RaisesTask(task, step["raises"], index)
             tasks.append(task)
         return tasks
 
@@ -453,6 +463,7 @@ class FlowCompiler:
             problems.append(self._error(flow, ("harvest",),
                           f"flow 级 harvest 只支持布尔 true/false（跑绿后把动作序列固化为 "
                           f"flow_candidate 草稿进审核塔），得到 {harvest!r}"))
+        problems.extend(self._check_await(flow))
         steps = flow.get("steps")
         if not isinstance(steps, list):
             problems.append(self._error(flow, (), "DSL 至少需要 steps 列表"))
@@ -487,8 +498,49 @@ class FlowCompiler:
                               f"步骤 {index} 的 requires 必须是非空字符串或非空字符串列表，"
                               f"收到 {step['requires']!r}"))
             problems.extend(self._check_page_decl(flow, step, index))
+            problems.extend(self._check_raises(flow, step, index))
         problems.extend(self._check_dispatch(flow, steps, declared))
         problems.extend(self._check_asserts(flow))
+        return problems
+
+    def _check_raises(self, flow: dict, step: dict,
+                      index: int) -> list[FlowValidationError]:
+        """en-12 负向断言**形态**判据（compile 静态段单点，run/export-pytest 自动同尺）。
+
+        `raises:` 必须是映射，`type` 必填且经 `failures.raise_type` 解析成**内置异常类**
+        （解析失败=编译拒绝，坏名不进运行期）；可选 `match` 是正则字符串（对异常 str 形态
+        做 `re.search`）。坏形态**整体拒绝**、一个 Task 都不构造（原子应用纪律）。
+        键缺席 = 无声明，存量 flow 零涟漪。"""
+        problems: list[FlowValidationError] = []
+        if "raises" not in step:
+            return problems
+        raw = step["raises"]
+        if not isinstance(raw, dict):
+            return [self._error(flow, ("steps", index - 1, "raises"),
+                    f"步骤 {index} 的 raises 必须是映射（{{type, match?}}），收到 "
+                    f"{type(raw).__name__}：{raw!r}")]
+        unknown = sorted(k for k in raw if k not in {"type", "match"})
+        if unknown:
+            problems.append(self._error(flow, ("steps", index - 1, "raises"),
+                              f"步骤 {index} raises 未知字段：{unknown}——只支持 type 与 match"))
+        type_name = raw.get("type")
+        try:
+            raise_type(type_name)
+        except ValueError as exc:
+            problems.append(self._error(flow, ("steps", index - 1, "raises", "type"),
+                              f"步骤 {index} raises.type 不合法：{exc}"))
+        match = raw.get("match")
+        if match is not None:
+            if not isinstance(match, str) or not match.strip():
+                problems.append(self._error(flow, ("steps", index - 1, "raises", "match"),
+                                  f"步骤 {index} raises.match 必须是非空正则字符串，"
+                                  f"收到 {match!r}"))
+            else:
+                try:
+                    re.compile(match)
+                except re.error as exc:
+                    problems.append(self._error(flow, ("steps", index - 1, "raises", "match"),
+                                        f"步骤 {index} raises.match 不是合法正则：{exc}"))
         return problems
 
     def _check_page_decl(self, flow: dict, step: dict,
@@ -652,6 +704,37 @@ class FlowCompiler:
         if raw is not None and not isinstance(raw, list):
             return [self._error(flow, ("assert",), "assert 块必须是列表")]
         for index, item in enumerate(raw or [], 1):
+            if isinstance(item, dict) and "reconcile" in item:
+                # en-15：对账形态编译期校验（left/right 必填非空、fields 是非空字符串列表）
+                spec = item["reconcile"]
+                if not isinstance(spec, dict):
+                    problems.append(self._error(flow, ("assert", index - 1, "reconcile"),
+                                      f"assert 块第 {index} 条 reconcile 必须是映射"
+                                      f"（{{left, right, fields?}}），收到 "
+                                      f"{type(spec).__name__}：{spec!r}"))
+                    continue
+                for side in ("left", "right"):
+                    value = spec.get(side)
+                    if not isinstance(value, str) or not value.strip():
+                        problems.append(self._error(flow, ("assert", index - 1,
+                                                          "reconcile", side),
+                                            f"assert 块第 {index} 条 reconcile.{side} 必须是"
+                                            f"非空字符串（ctx 路径或字面量），收到 {value!r}"))
+                fields = spec.get("fields")
+                if fields is not None:
+                    if (not isinstance(fields, list) or not fields
+                            or not all(isinstance(f, str) and f.strip() for f in fields)):
+                        problems.append(self._error(flow, ("assert", index - 1,
+                                                          "reconcile", "fields"),
+                                            f"assert 块第 {index} 条 reconcile.fields 必须是"
+                                            f"非空字符串列表（点路径），收到 {fields!r}"))
+                unknown = sorted(k for k in spec
+                                 if k not in {"left", "right", "fields"})
+                if unknown:
+                    problems.append(self._error(flow, ("assert", index - 1, "reconcile"),
+                                      f"assert 块第 {index} 条 reconcile 未知字段：{unknown}"
+                                      f"——只支持 left/right/fields（不做模糊匹配）"))
+                continue
             if not isinstance(item, dict) or "task" not in item:
                 continue
             name = item["task"]
@@ -728,6 +811,66 @@ class FlowCompiler:
             alias = raw.get("as") if isinstance(raw, dict) else None
             targets.add(str(alias) if alias else str(name))
         return targets
+
+    def _check_await(self, flow: dict) -> list[FlowValidationError]:
+        """en-10：flow 级 `await` 形态判据（compile 静态段，run/compile 自动同尺）。
+
+        形态：`await: {kind: poll, timeout_ms: int>0, interval_ms: int>=0, assert: [...]}`。
+        `kind` 本波只支持 `poll`（轮询既有 assert 块直到通过或超时）；`assert` 必填非空列表，
+        复用既有 `_check_asserts` 的引用与参数校验；超时按 C9 口径落 waiting（dsl.run 现成的
+        AwaitingHuman 腿），绝不静默变绿。键缺席 = 无声明，存量 flow 零涟漪。
+        """
+        problems: list[FlowValidationError] = []
+        if "await" not in flow:
+            return problems
+        raw = flow["await"]
+        if not isinstance(raw, dict):
+            return [self._error(flow, ("await",),
+                    f"flow 级 await 必须是映射（{{kind, timeout_ms, interval_ms?, assert}}），"
+                    f"收到 {type(raw).__name__}：{raw!r}")]
+        unknown = sorted(k for k in raw
+                         if k not in {"kind", "timeout_ms", "interval_ms", "assert"})
+        if unknown:
+            problems.append(self._error(flow, ("await",),
+                              f"flow 级 await 未知字段：{unknown}——只支持 kind/timeout_ms/"
+                              f"interval_ms/assert"))
+        kind = raw.get("kind")
+        if kind != "poll":
+            problems.append(self._error(flow, ("await", "kind"),
+                              f"flow 级 await.kind 只支持 poll（轮询到 assert 通过或超时），"
+                              f"得到 {kind!r}"))
+        timeout = raw.get("timeout_ms")
+        if isinstance(timeout, bool) or not isinstance(timeout, int) or timeout <= 0:
+            problems.append(self._error(flow, ("await", "timeout_ms"),
+                              f"flow 级 await.timeout_ms 必须是正整数（毫秒），得到 {timeout!r}"))
+        interval = raw.get("interval_ms", 0)
+        if isinstance(interval, bool) or not isinstance(interval, int) or interval < 0:
+            problems.append(self._error(flow, ("await", "interval_ms"),
+                              f"flow 级 await.interval_ms 必须是非负整数（毫秒），"
+                              f"得到 {interval!r}"))
+        if timeout is not None and not isinstance(timeout, bool) \
+                and isinstance(timeout, int) and interval is not None \
+                and not isinstance(interval, bool) and isinstance(interval, int) \
+                and interval > timeout:
+            problems.append(self._error(flow, ("await", "interval_ms"),
+                              f"flow 级 await.interval_ms={interval} 大于 timeout_ms={timeout}"
+                              f"——轮询间隔超过总窗口，第一拍就超时"))
+        sub_asserts = raw.get("assert")
+        if not isinstance(sub_asserts, list) or not sub_asserts:
+            problems.append(self._error(flow, ("await", "assert"),
+                              f"flow 级 await.assert 必须是非空列表（复用既有 assert 形态），"
+                              f"得到 {sub_asserts!r}"))
+        else:
+            # 复用既有 assert 块的引用/参数校验（同一把尺）：把子 assert 当独立 flow 校验。
+            # 借用 document 的 ^ 指针时把路径从 ("assert", i) 平移到 ("await", "assert", i)。
+            sub_flow = dict(flow)
+            sub_flow["assert"] = sub_asserts
+            for problem in self._check_asserts(sub_flow):
+                if isinstance(problem, FlowReferenceError):
+                    problems.append(problem)   # 引用类：消息已完整（含 ^ 或步骤序号），直接复用
+                else:
+                    problems.append(self._error(flow, ("await", "assert"), str(problem)))
+        return problems
 
     def _error_message(self, flow: dict, path: tuple, message: str) -> str:
         document = _document(flow)
@@ -868,6 +1011,8 @@ class FlowCompiler:
                                 actor.ctx[key] = value
                 executed.append(task.name)
             self._run_asserts(flow, actor, engine)
+            if flow.get("await"):
+                self._run_await(flow, actor, engine)
         except CONTROL_FLOW:
             # 操作者 Ctrl-C / 显式退出 / 生成器关闭不是产品或用例失败：如实记 interrupted，
             # 避免 atlas summary 把「中断的跑」计进 failed 污染 pass/fail 真相（红线 #7 环境/操作
@@ -916,6 +1061,45 @@ class FlowCompiler:
         return {"status": status,
                 "steps": [r.task for r in engine.results] if engine else executed}
 
+    def _run_await(self, flow: dict, actor, engine=None) -> None:
+        """en-10：flow 级 `await: {kind: poll, ...}` 轮询既有 assert 块直到通过或超时。
+
+        语义：
+        - 每拍跑一次 `assert` 子块（复用 `_run_asserts` 同一把刀：字符串表达式 / dict task /
+          key=value / reconcile 全都可用）；子块**全部通过** = await 兑现，返回；
+        - 子块抛 `AssertionError`（含 `ReconciliationMismatch`，同族）= 本拍未就绪，
+          睡 `interval_ms` 后下一拍；**不洗绿**——超时仍没就绪就抛 `AwaitingHuman`，
+          由 `dsl.run` 现成的 waiting 腿收口（status=waiting + rc3 + reason 净化），不伪装通过；
+        - 子块抛**非断言**异常（业务/契约/会话/网络）= 真失败，原样传播（不等也不吞）——
+          await 是「等条件就绪」，不是「把失败按住」；
+        - 控制流（CONTROL_FLOW）恒穿透（#114）；
+        - 等待现场不写产出、不改 ctx（`_run_asserts` 里 dict-task 形态的 assert 若声明
+          save_as 会写 ctx——那是既有 assert 语义，await 不新增写路径）。
+
+        首拍立即执行（不先睡 interval）——条件已就绪时零额外等待；轮询时钟用 `time.monotonic`
+        （不受系统墙钟跳变影响），`sleep` 走 `time.sleep`（本波不做注入位：dsl.run 无 sleep
+        参数先例，测试用小 timeout_ms+大 interval_ms 让真实等待有界）。
+        """
+        import time
+        spec = flow["await"]
+        timeout_ms = int(spec["timeout_ms"])
+        interval_ms = int(spec.get("interval_ms", 0))
+        sub_flow = dict(flow)
+        sub_flow["assert"] = spec["assert"]
+        deadline = time.monotonic() + timeout_ms / 1000.0
+        while True:
+            try:
+                self._run_asserts(sub_flow, actor, engine)
+                return   # 子块全部通过：条件就绪
+            except AssertionError:
+                pass     # 未就绪，继续轮询（超时仍在下面判）
+            if time.monotonic() >= deadline:
+                raise AwaitingHuman(
+                    f"await poll 超时：{timeout_ms}ms 内 assert 未通过（interval_ms="
+                    f"{interval_ms}）——外部事件未就绪，等人工核实；绝不静默变绿")
+            if interval_ms > 0:
+                time.sleep(interval_ms / 1000.0)
+
     def _run_asserts(self, flow: dict, actor, engine=None) -> None:
         """执行 flow 的 assert 块：表达式断言 + 内联 Task 断言。
 
@@ -933,7 +1117,10 @@ class FlowCompiler:
             if isinstance(item, str):
                 self._assert_expression(item, actor, index)
             elif isinstance(item, dict):
-                if "task" in item:
+                if "reconcile" in item:
+                    # en-15：跨模块对账（两侧 save_as + 字段映射 + 值级 diff），只读无副作用
+                    _ReconcileAssert(item, index).run(actor)
+                elif "task" in item:
                     task = self.registry.create(item["task"], **{
                         k: v for k, v in item.items() if k != "task"})
                     bound = FunctionalTask(task.metadata,
@@ -1297,6 +1484,94 @@ class _RouterTask(Task):
             {"gate": self.router.gate, "on": self.router.on, "value": str(value),
              "selected": list(selected)})
         return result
+
+
+class _RaisesTask(Task):
+    """en-12：负向断言包装器——期待内层 Task 抛出指定异常（含 ApiEvidence/环境分类口径
+    不误伤）。
+
+    语义（design_en §en-12）：
+    - 内层**抛出** `type` 指定的异常（或其子类）→ **本步通过**（异常被吞，返回 None；
+      `match` 给了时还需异常文本 `re.search` 命中——文本不命中算断言失败，不洗绿）；
+    - 内层**没抛**任何异常 → 抛 AssertionError 点名「期望抛 X 但正常返回」（不洗绿）；
+    - 内层抛了**别的**异常 → 原样传播（不是期望的那一类，不吞、不翻成断言失败——
+      归因仍指真因，让 classify_failure/heal 走原本路径）；
+    - 控制流（CONTROL_FLOW）**恒穿透**：Ctrl-C 不是「期望的抛」，与 healing 的 #108 同纪律。
+
+    与 heal/auto 降级链的交互（钉测）：包装器在外层，**先于** engine 的 auto 降级闸与
+    heal 判据看到异常——命中即吞、没命中即传播，两条链都不再触发（「抛了期望异常」就是
+    本步的正常完成形态，不是待诊断缺陷）。所以：`raises` 命中 = 通过；未抛/文本不命中 =
+    AssertionError（engine 归 ASSERTION，不进 heal 不进降级）；其他异常 = 真因传播。
+
+    只读：包装器不改 metadata、不改 ctx、不写产出（内层若有产出且命中抛出，产出未发生
+    = 不写，与 skip 步骤同口径）。
+    """
+    def __init__(self, inner: Task, spec: dict, step_index: int):
+        self.inner = inner
+        self.step_index = step_index
+        # 构造期已由 _check_raises 校验过形态；此处再解析一次（同把 raise_type 单点），
+        # 拿到异常类缓存住——运行期不再碰 builtins。
+        self.expected_type = raise_type(spec["type"])
+        self.match = spec.get("match")
+        self.metadata = inner.metadata
+
+    @property
+    def name(self) -> str:
+        return self.inner.name
+
+    def perform(self, actor):
+        try:
+            result = _perform_interpolated(self.inner, actor)
+        except CONTROL_FLOW:
+            raise   # 终止信号不是「期望的抛」，恒穿透（#108/#114 同纪律）
+        except BaseException as exc:
+            if not isinstance(exc, self.expected_type):
+                raise   # 抛了别的异常：真因传播，不吞不翻
+            text = failures.exception_text(exc)
+            if self.match and not re.search(self.match, text):
+                raise AssertionError(
+                    f"步骤 {self.step_index} 的 raises 命中异常 {type(exc).__name__} 但文本"
+                    f"不匹配 /{self.match}/：{failures.exception_message(exc)}") from exc
+            return None   # 命中：异常被吞，本步通过
+        raise AssertionError(
+            f"步骤 {self.step_index} 期望抛出 {self.expected_type.__name__}"
+            f"{'（文本匹配 /' + self.match + '/）' if self.match else ''}，"
+            f"但正常返回 {result!r}——负向断言未兑现")
+
+
+class _ReconcileAssert:
+    """en-15：跨模块对账 assert（assert 块里的 `reconcile:` 形态）——只读、无副作用。
+
+    形态（assert 块条目）：
+        - reconcile: {left: <ctx 路径或字面量>, right: <同>, fields: [点路径, ...]}
+
+    语义：两侧都用 `interpolate` 解析（路径/字面量同 assert 表达式口径），可选 `fields`
+    做值级 diff（点路径下钻，路径不可解析记 `<missing>` 且算不等）；**不做模糊匹配**——
+    相等判据就是 `==`（数字/字符串不互转，与 assert 表达式 `==` 同把刀）。失败输出带
+    两侧值与路径，方便人比对；无 fields 时整值比。
+    """
+
+    def __init__(self, spec: dict, index: int):
+        self.spec = spec
+        self.index = index
+
+    def run(self, actor) -> dict:
+        raw = self.spec["reconcile"]
+        left_expr, right_expr = raw["left"], raw["right"]
+        fields = raw.get("fields") or []
+        left = interpolate(left_expr, actor.ctx)
+        right = interpolate(right_expr, actor.ctx)
+        diff = reconcile_diff(left, right, fields=list(fields),
+                              left_label=str(left_expr), right_label=str(right_expr))
+        if diff["equal"]:
+            return {"reconcile": True, "left": str(left_expr), "right": str(right_expr),
+                    "fields": list(fields), "mismatches": []}
+        rows = "; ".join(
+            f"path={m['path']!r} left={m['left']!r} right={m['right']!r}"
+            for m in diff["mismatches"])
+        raise ReconciliationMismatch(
+            f"assert 块第 {self.index} 条 reconcile 失败：left={left_expr!r} 与 "
+            f"right={right_expr!r} 不一致（fields={list(fields) or '<整值>'}）——{rows}")
 
 
 def _perform_interpolated(task: Task, actor) -> Any:

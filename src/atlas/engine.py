@@ -171,6 +171,16 @@ class ExecutionEngine:
         # 冻场钩子必须在 perform 之前：步骤坏了就再也回不到案发现场。
         self._step_index += 1
         cdp_maybe_pause(self.case_id, self._step_index, task.name)
+        # en-11（死接线补生产侧）：真实 run 里 `ApiEvidence.classify` 的 rich 分类恒不触发——
+        # 消费侧（api_evidence 的状态码/会话/环境判据）早已就绪，但**没有任何生产方**往
+        # `_handlers` 里注册重放器。本处在步骤执行**前**为「显式只读 + API 通道」的 Task
+        # 注册一个只读 GET 重放 handler：失败时 `evidence.classify` 会重放同接口拿实时证据，
+        # 把会话失效/网关 5xx/契约违规真正接通（不再一律落 unknown 污染缺陷分布）。
+        # 红线 #9：写任务**绝不**注册（`read_only` 元数据门在先）；GET 是只读语义，
+        # 且 handler 本体 fail-safe——任何异常（网络/非 JSON/超时）都跳过、返回 None，
+        # 由 ApiEvidence.classify 落到下一个 handler 或最终 None（回落 classify_failure）。
+        # 定性器绝不能先于被定性对象死（#89 同红线）。
+        self._register_readonly_replay(actor, task)
         context = self.recorder.step(task.name, task.metadata.channel.value) if self.recorder else _null_step()
         # 降级留痕游标：_perform 的 auto 降级原因只落在 ctx["_auto_degraded_to_ui"]，
         # 该键全仓除降级自身外零消费方——不并入 step record 就不落盘，runs.jsonl 里
@@ -367,6 +377,69 @@ class ExecutionEngine:
             raise
         self.results.append(outcome)
         return outcome
+
+    def _register_readonly_replay(self, actor: Actor, task: Task) -> None:
+        """en-11：为「显式只读 + API 通道」的 Task 注册一个只读 GET 重放 handler。
+
+        三重门（缺一不注册，红线 #9/#11）：
+        - `task.metadata.read_only` 必须为真——写任务绝不重放（副作用双跑）；
+        - `channel == Channel.API` 且 `api_operation` 非空——只有 API 通道有可重放的接口位；
+        - `actor.api` 在场（CallApi Ability 已装配）——没有 API 驱动就无从重放。
+
+        handler 契约（与 `ApiEvidence.classify` 对齐）：返回 dict（喂 `failures.api_evidence`）
+        或 None（跳过，试下一个 handler / 最终回落 classify_failure）。**任何异常都吞掉返回
+        None**——重放是「尽力而为的诊断」（#89：定性器绝不能先于被定性对象死，在 engine
+        的 except 块里抛错会顶掉原用例异常、清空整条证据链）。
+
+        只读性论证：GET 请求按 HTTP 语义无副作用；`CallApi.request` 本身不发写（method="GET"）；
+        唯一的「写味」是 `ensure_session`（保活回调重新烘焙 Cookie）——那是会话维护、不是业务
+        副作用，与任何正常 API 读同一张皮，不构成红线 #9 的「操作被自动第二次执行」。
+        """
+        if not task.metadata.read_only:
+            return
+        if task.metadata.channel != Channel.API or not task.metadata.api_operation:
+            return
+        if self.evidence is None:
+            return
+        # Ability 取用必须容忍三种形态，且**任何一条都不能抛**（本方法在 execute 的失败
+        # 路径之前跑，抛错会把原用例异常顶掉、results 不追加——#89 同红线）：
+        #   ① 标准装配：`actor.using(CallApi)`；② 测试/插件替身按自身类型注册（不是
+        #   CallApi 的子类）；③ 完全没有 API Ability。`getattr(actor, "api", None)` 不够：
+        #   Actor.api 属性在未注册时抛 **RuntimeError**（不是 AttributeError），getattr
+        #   的 default 根本接不住。
+        api = None
+        try:
+            api = actor.api
+        except Exception:
+            try:
+                api = next((a for a in getattr(actor, "abilities", {}).values()
+                            if hasattr(a, "get")), None)
+            except Exception:
+                api = None
+        if api is None or not hasattr(api, "get"):
+            return
+        path = str(task.metadata.api_operation)
+        # CallApi 在场；写死 GET（只读语义）。`params` 从 task.params 取（AssertApi 等既有
+        # API Task 的查询参数位），没有就空查——CallApi.request(query=None) 沿用默认。
+        params = getattr(task, "params", None)
+        if not isinstance(params, dict):
+            params = {}
+
+        def _replay() -> dict | None:
+            try:
+                response = api.get(path, query=params)
+            except Exception:
+                return None   # 网络/超时/会话崩：跳过，不顶掉原异常（#89）
+            if response is None or not isinstance(response, dict):
+                return None
+            # 归一成 api_evidence 期待的 {ok, status, data, error} 形态（ApiResponse 是 dict
+            # 子类，逐键 copy 一份防下游改写污染会话缓存）。
+            return {"ok": bool(response.get("ok")),
+                    "status": response.get("status"),
+                    "data": response.get("data"),
+                    "error": response.get("error", "")}
+
+        self.evidence.register(_replay)
 
     def _record_shot(self, record: Any, shot: Any) -> None:
         """#139：capture() 的截图路径并入 step 记录——旧实现三处调用全丢弃返回值，

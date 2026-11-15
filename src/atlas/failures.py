@@ -240,6 +240,86 @@ def _status_code(value: object) -> int | None:
         return int(value.strip())
     return None
 
+def raise_type(name: object) -> type:
+    """en-12：把 assert raises 的 `type` 字段解析成**内置异常类**——唯一解析点。
+
+    只认 `builtins` 里的真实异常类（ValueError / AssertionError / TimeoutError / …），
+    自定义名/非异常/容器/非字符串一律 ValueError 点名拒绝（构造期，不是跑到一半才炸）。
+    刻意**不**认业务插件自定义异常：跨插件名冲突会静默匹配错类（#92 不留第二份判据——
+    谁要扩展谁在 dsl 层显式传类对象，本函数只服务 YAML 文本边界）。
+
+    返回的是 `type[BaseException]`；DSL 的 `_RaisesTask` 用 `isinstance(exc, cls)` 判命中，
+    因此子类也算（TimeoutError 命中 raises: OSError 是合法写法，与 Python except 语义一致）。
+    """
+    import builtins
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError(f"assert raises 的 type 必须是非空字符串（内置异常名），收到 {name!r}")
+    candidate = getattr(builtins, name.strip(), None)
+    if not (isinstance(candidate, type) and issubclass(candidate, BaseException)):
+        raise ValueError(f"assert raises 的 type {name!r} 不是内置异常名——只支持 builtins 里的"
+                         f"异常类（ValueError / AssertionError / TimeoutError / …），业务自定义"
+                         f"异常不在白名单（引擎不猜跨插件名）")
+    return candidate
+
+
+class ReconciliationMismatch(AssertionError):
+    """en-15：跨模块对账失败——两侧值不一致（或路径不可解析）。
+
+    继承 AssertionError：`atlas summary` 与 review 的现有断言桶直接可吃（不新增 fail_class，
+    不翻存量断言）。语义上是**数据不一致**（DATA 桶更贴切），但既有 classify_failure 的
+    ASSERTION 规则先命中 "expected" 关键词——保持 ASSERTION 落桶，与 `assert a == b` 表达式
+    失败同桶，人审时按消息里的 reconcile 前缀辨认（不为此新开第 10 类，红线 #12：不给零
+    消费方加投机分类）。
+    """
+
+
+def reconcile_diff(left: object, right: object, *, fields: list[str] | None = None,
+                   left_label: str = "left", right_label: str = "right") -> dict:
+    """en-15 对账 diff：只读、无副作用，失败返回带两侧值与路径的清单（不抛）。
+
+    `fields` 为空 → 整值相等（`left == right`）——字典/列表整体比，不等时返回单条路径 ""；
+    `fields` 非空 → 逐字段下钻（点路径，复用 `tasks._dig` 的路径判据语义但不抛——任一侧
+    路径不可解析记为 `<missing>` 并算不等），只对列出的字段做值级 diff，不做模糊匹配。
+
+    返回 `{"equal": bool, "mismatches": [{"path", "left", "right"}]}`；调用方（dsl
+    `_assert_reconcile`）拿 mismatches 拼 AssertionError 消息（两侧值全带，方便人比对）。
+    值展示用 repr 截 200 字符（防大响应淹没消息）——**展示截断，判据不截断**。
+    """
+    mismatches: list[dict] = []
+    if not fields:
+        equal = left == right
+        if not equal:
+            mismatches.append({"path": "", "left": left, "right": right})
+        return {"equal": equal, "mismatches": mismatches}
+    for path in fields:
+        if not isinstance(path, str) or not path.strip():
+            mismatches.append({"path": str(path), "left": "<bad-path>",
+                               "right": "<bad-path>"})
+            continue
+        lv = _dig_or_missing(left, path)
+        rv = _dig_or_missing(right, path)
+        if lv != rv:
+            mismatches.append({"path": path, "left": lv, "right": rv})
+    return {"equal": not mismatches, "mismatches": mismatches}
+
+
+def _dig_or_missing(value: object, path: str) -> object:
+    """对账下钻：路径不可解析返回 `<missing>` 哨兵（不抛）——任一侧缺字段=不等，不是崩。"""
+    missing = "__atlas_missing__"   # 与 waits 的 "__atlas_*" 哨兵同族（字符串化安全）
+    cur = value
+    for part in str(path).split("."):
+        try:
+            if isinstance(cur, dict):
+                cur = cur[part]
+            elif isinstance(cur, (list, tuple)):
+                cur = cur[int(part)]
+            else:
+                return missing
+        except (KeyError, IndexError, ValueError, TypeError):
+            return missing
+    return cur
+
+
 def api_evidence(original: BaseException, replay: dict) -> FailureClass:
     """UI 失败时重放同接口：API 正常归交互；API 失败优先识别会话/环境/契约。"""
     if replay.get("ok"):
