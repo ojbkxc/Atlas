@@ -332,3 +332,75 @@ def test_generated_session_defaults_env_coords_only_fill_empty(tmp_path, monkeyp
     from atlas.plugin_api import resolve_plugin
     plugin = resolve_plugin()
     assert plugin.session_defaults(env="sit")["account"] == "from_session"
+
+
+# ---- ob-2 回归：生成的 envs.json 骨架补 account/ou 占位键（值留空，不伪造值）----
+
+def test_generated_envs_json_has_account_ou_placeholders(tmp_path):
+    """ob-2：骨架 envs.json 每个环境都带 account/ou 占位键（值留空，不伪造值）。
+
+    消费方（本骨架 session_defaults 与 runtime.require_account 报错文案）按
+    `environments.<env>.account/ou` 读坐标——骨架缺键时，用户照报错文案
+    （点名 environments.<env>.account）在骨架里找不到落点。"""
+    rc = main(["config", "add", "acme_envs", "--out", str(tmp_path)])
+    assert rc == 0
+    envs = json.loads((tmp_path / "plugins" / "acme_envs" / "knowledge" / "envs.json")
+                      .read_text(encoding="utf-8"))
+    assert envs["environments"], "骨架 envs.json 不应为空环境集合"
+    for env_name, coords in envs["environments"].items():
+        assert "account" in coords and "ou" in coords, f"{env_name} 缺 account/ou 占位键"
+        assert coords["account"] == "" and coords["ou"] == "", \
+            f"{env_name} account/ou 占位必须留空（不伪造值）"
+
+
+def test_generated_session_defaults_envs_placeholder_does_not_fake_account(tmp_path, monkeypatch):
+    """ob-2：骨架 envs.json 的 account/ou 占位为空时，session_defaults(env=...) 不伪造
+    账号——回落空串（空账号闸门照常点名），红线 #11 不猜凭据。"""
+    rc = main(["config", "add", "acme_ph", "--out", str(tmp_path)])
+    assert rc == 0
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.setenv("ATLAS_PLUGIN", "plugins.acme_ph")
+    for key in ("ATLAS_SESSION_ACCOUNT", "ATLAS_SESSION_OU",
+                "ATLAS_SESSION_DIVISION", "ATLAS_SESSION_LANGUAGE"):
+        monkeypatch.delenv(key, raising=False)
+
+    from atlas.plugin_api import resolve_plugin
+    plugin = resolve_plugin()
+    coords = plugin.session_defaults(env="sit")
+    assert coords["account"] == "", "空占位不得伪造账号"
+    assert coords["ou"] == "", "空占位不得伪造 OU"
+
+
+def test_generated_session_defaults_session_json_wins_over_native_envs_coords(tmp_path, monkeypatch):
+    """ob-2：三层优先级行为不变——session.json 的 account 优先于 envs.json 坐标
+    （用骨架原生 account/ou 键，不新造键）。"""
+    rc = main(["config", "add", "acme_pri", "--out", str(tmp_path)])
+    assert rc == 0
+    session_path = tmp_path / "plugins" / "acme_pri" / "knowledge" / "session.json"
+    session = json.loads(session_path.read_text(encoding="utf-8"))
+    session["account"] = "from_session"
+    session_path.write_text(json.dumps(session, ensure_ascii=False), encoding="utf-8")
+    envs_path = tmp_path / "plugins" / "acme_pri" / "knowledge" / "envs.json"
+    envs = json.loads(envs_path.read_text(encoding="utf-8"))
+    envs["environments"]["sit"]["account"] = "from_envs"   # 原生占位键填值
+    envs_path.write_text(json.dumps(envs, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.setenv("ATLAS_PLUGIN", "plugins.acme_pri")
+    monkeypatch.delenv("ATLAS_SESSION_ACCOUNT", raising=False)
+
+    from atlas.plugin_api import resolve_plugin
+    plugin = resolve_plugin()
+    assert plugin.session_defaults(env="sit")["account"] == "from_session"
+
+
+def test_generated_session_defaults_docstring_names_three_layers(tmp_path):
+    """ob-2：骨架 session_defaults 文档与三层优先级口径对齐（ATLAS_SESSION_* env >
+    session.json > envs.json 坐标 > 包内默认）——点名每层改哪个键。"""
+    rc = main(["config", "add", "acme_doc", "--out", str(tmp_path)])
+    assert rc == 0
+    text = (tmp_path / "plugins" / "acme_doc" / "plugin.py").read_text(encoding="utf-8")
+    session_defaults_src = text.split("def session_defaults", 1)[1]
+    assert "ATLAS_SESSION_ACCOUNT" in session_defaults_src   # 最高层 env 键名
+    assert "ATLAS_SESSION_OU" in session_defaults_src
+    assert "session.json" in session_defaults_src            # 第二层落点
+    assert "environments" in session_defaults_src            # 第三层坐标键名

@@ -134,10 +134,14 @@ class {{Domain}}Plugin:
         `session_defaults(env=...)` 调用）：env 形参必须接受——旧骨架没有它，
         `atlas run` 在账号预检处裸 TypeError traceback（ob-1，生成的骨架跑不起来）。
 
-        三层优先级（与仓库内已实现 env 契约的平台插件同口径，单一实现）：
-        1. 包内 `knowledge/session.json`（结构默认：account/ou 留空）；
-        2. `envs.json` 环境坐标 `environments[env].account/ou`——只在 (1) 为空时兜底；
-        3. `ATLAS_SESSION_*` 显式 env（overlay_session 最后跑，恒最优先）。
+        三层优先级（高→低，前者覆盖后者；与仓库内已实现 env 契约的平台插件同口径，
+        单一实现；改账号/OU 按此三层落点）：
+        1. `ATLAS_SESSION_ACCOUNT` / `ATLAS_SESSION_OU` 显式 env（overlay_session
+           最后跑，恒最优先）；
+        2. `knowledge/session.json` 的 `account`/`ou`（骨架结构默认，留空）；
+        3. `knowledge/envs.json` 环境坐标 `environments.<env>.account/ou`——骨架
+           生成时是空占位，只在 (2) 为空时兜底（runtime 空账号闸门报错点名的就是
+           这一层键）。
 
         env 为空（旧调用形态）时行为与只接两层的旧实现一致（红线 #11 不猜凭据）。
         """
@@ -268,7 +272,12 @@ def _build_envs_json(prefix: str) -> str:
         else:
             write_policy = "ask_first"
             sso = "unverified"
-        envs[env_name] = {"url_key": url_key, "write": write_policy, "sso_captcha": sso}
+        # account/ou 占位键（值留空，不伪造值——红线 #11）：消费方（本骨架
+        # session_defaults 与 runtime.require_account 报错文案）按
+        # `environments.<env>.account/ou` 读坐标，骨架缺键时用户照报错文案
+        # 找不到落点（ob-2）。
+        envs[env_name] = {"url_key": url_key, "write": write_policy, "sso_captcha": sso,
+                          "account": "", "ou": ""}
     return json.dumps({"environments": envs}, ensure_ascii=False)
 
 # ---- knowledge/domains.json ----
