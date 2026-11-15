@@ -175,6 +175,8 @@ def _write_fingerprint(results_dir: Path, touched: dict) -> None:
 
     缓存形态 {文件名: {"sig": [mtime_ns, size], "finding": <AllureFinding 的 JSON 形态>}}——
     跳过未变文件时反序列化回填 findings（否则汇总归零，那是「跳过解析」被读成「结果消失」）。
+    `touched` 必须含**未变条目**（缓存命中时原样保留）+ 新解析条目——只写新解析条目会把
+    未变条目清空，下次运行全量重读，增量形同虚设（warm 重复分析正是本特性的存在理由）。
     """
     try:
         atomic_write_text(_fingerprint_path(results_dir),
@@ -215,6 +217,9 @@ def _load(results_dir: Path, *, incremental: bool = True) -> tuple[list[AllureFi
                         pass   # 缓存条目形态坏 → 落到下方全量解析（自愈，不点名刷屏）
                     else:
                         unchanged += 1
+                        # 未变条目原样保留——只写新解析条目会把未变条目清空，
+                        # 下次运行全量重读，增量形同虚设（warm 重复分析是本特性的存在理由）
+                        touched[fpath.name] = cached
                         continue
         # 先严格读保真；撞坏字节回落 errors="replace"——残行 JSON 解析必败自然落 skipped 计数
         try:

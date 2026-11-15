@@ -55,6 +55,19 @@ class TestIncrementalSkipUnchanged:
         assert second["total"] == 2
         assert second["skipped_unchanged"] == 2   # 指纹未变 → 全跳过
 
+    def test_third_run_still_skips_unchanged(self, tmp_path):
+        """缓存持久：全跳过轮不得把未变条目清空（否则下次全量重读，增量形同虚设）。"""
+        rdir = tmp_path / "allure-results"
+        _write_result(rdir, "tc1")
+        _write_result(rdir, "tc2", status="passed", fail_class="", message="")
+
+        analyze_allure(rdir)                       # 首轮全量
+        second = analyze_allure(rdir)              # 全跳过
+        assert second["skipped_unchanged"] == 2
+        third = analyze_allure(rdir)               # 仍全跳过（缓存未被清空）
+        assert third["skipped_unchanged"] == 2
+        assert third["total"] == 2
+
     def test_new_result_is_read(self, tmp_path):
         """负向对照：新落盘 result 必须被读到（不许被缓存跳过）。"""
         rdir = tmp_path / "allure-results"
