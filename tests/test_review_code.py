@@ -399,3 +399,48 @@ def test_text_format_report(tmp_path):
                         reports_dir=tmp_path / "reports")
     assert "_text" in result
     assert "总分" in result["_text"]
+
+
+# ── uf-7：MAINT-002 选择器样例族中立（wave5 工具面）─────────────────────────
+
+class _FakeRegistry:
+    """最小 SelectorRegistry 替身（_selector_in_registry 只读 .components）。"""
+    def __init__(self, selectors):
+        self.components = {"comp": {"selectors": dict(selectors)}}
+
+
+def test_uf7_selector_pattern_family_neutral(tmp_path):
+    # 族中立类选择器：`.el-table__fixed-right`/`.el-loading-mask` 这类真实变体必须
+    # 被找全（旧精确清单 `\.app-main|\.el-table|\.el-button` 全漏判——探针实证）；
+    # knowledge 模式下不在注册表 → MAINT-002
+    f = _write(tmp_path, "test_sel.py", """
+        def test_something():
+            page.locator(".el-table__fixed-right").click()
+            page.locator(".el-loading-mask").wait_for(state="hidden")
+    """)
+    findings = scan_pytest_file(f, _default_config(), registry=_FakeRegistry({}))
+    maint2 = [f for f in findings if f["rule_id"] == "MAINT-002"]
+    assert len(maint2) == 2, f"族中立类选择器必须逐条命中，实得 {len(maint2)}"
+
+
+def test_uf7_selector_registered_not_flagged(tmp_path):
+    # 注册表内的选择器不标（knowledge 模式判定仍在注册表比对，本波只放宽「找全」）
+    f = _write(tmp_path, "test_ok.py", """
+        def test_something():
+            page.locator(".el-table__fixed-right").click()
+    """)
+    reg = _FakeRegistry({"table_fixed": ".el-table__fixed-right"})
+    findings = scan_pytest_file(f, _default_config(), registry=reg)
+    assert not any(f["rule_id"] == "MAINT-002" for f in findings)
+
+
+def test_uf7_non_class_literals_untouched(tmp_path):
+    # 非 .class 的字符串不是选择器字面量（#/#id/[attr] 等结构面不变，不误报噪音）
+    f = _write(tmp_path, "test_txt.py", """
+        def test_something():
+            name = "plain string"
+            path = ".env"
+            value = "3.14"
+    """)
+    findings = scan_pytest_file(f, _default_config(), registry=_FakeRegistry({}))
+    assert not any(f["rule_id"] == "MAINT-002" for f in findings)

@@ -208,8 +208,15 @@ def _safe001_urls_exempt(line: str) -> bool:
     return bool(urls) and all(_url_host_reserved(u) for u in urls)
 
 # 选择器模式（MAINT-002）：CSS/XPath 选择器字面量
+# uf-7（wave5）：类选择器从 `.app-main/.el-table/.el-button` **精确样例清单**改为族中立
+# `\.[\w-]+`——精确清单只认写死的三个名字，`.el-table__fixed-right`/`.el-loading-mask`
+# 这类真实变体全部漏判（探针实证）；族里再添新类名也不必回来改正则（与 ui_family 族
+# 标签治理同向）。#id/[attr]/xpath/html 的结构面不变；MAINT-002 判定仍在 knowledge
+# 模式按注册表比对（本模式只负责把「像选择器的字面量」找全）。
+# 常见仓库元数据 dotfile（.env/.git*/.vscode/.idea）不是选择器，负向前瞻排除——
+# 这是文档化的小排除清单，不是完备判据（其余 `.hidden` 类字符串仍按选择器处理）。
 _SELECTOR_PATTERN = re.compile(
-    r"['\"](\.app-main|\.el-table|\.el-button|#\w+|\[.*?\]|//\w+|/html)['\"]")
+    r"['\"](\.(?!env(?:['\"]|$)|git|github|vscode|idea)[\w-]+|#\w+|\[.*?\]|//\w+|/html)['\"]")
 
 # 写死数据模式（MAINT-003）：历史单号/客户号
 _HARDCODED_DATA_PATTERN = re.compile(
