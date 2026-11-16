@@ -66,10 +66,52 @@ class PytestEmitError(ValueError):
 
 @dataclass
 class AssertSpec:
-    """一条断言。kind="ok" 存活；kind="result_code" 文档给值；kind="note" 只留 TODO。"""
+    """一条断言。kind="ok" 存活；kind="result_code" 文档给值；kind="note" 只留 TODO。
+
+    **kind 的取值域由 `ASSERT_KINDS` 声明，并在三个渲染循环之前由
+    `_reject_unknown_assert_kinds()` 统一拒绝**。为什么不在每个 `for a in spec.asserts`
+    里补 `else: raise`：渲染循环有 3 处（快/慢 × api/ui），逐处补 `else` 等于让「新增
+    一种 kind」依赖作者记得改三处——这正是本仓已被咬过多次的「改一漏一」形态。
+
+    实测过的危险形态（2026-11-16）：往 asserts 塞一个未知 kind，慢/快两个 API 渲染器
+    都**静默丢弃**它（既不渲染断言也不留 TODO），生成物测试全绿而断言凭空消失——直接
+    撞红线 #7「不放宽断言」。所以判据必须在**生成期**、在渲染之前。
+    """
     kind: str
     expected: str = ""
     note: str = ""
+
+
+# 断言 kind 的唯一取值域（新增 kind 必须同时在这里与对应渲染分支落地）。
+# `ok` 由渲染器无条件产出（`assert result.ok`），渲染循环不消费它——但它是合法 kind，
+# 必须在本表里，否则 `_flow_asserts` 造出的 `AssertSpec("ok")` 会在闸门上被误拒。
+ASSERT_KINDS = frozenset({"ok", "result_code", "note"})
+
+# 只有 API 腿渲染器能兑现的 kind。UI 腿出现这些 kind = 构建器把 flow 级 assert 归给了
+# 一个不会发请求的步骤，渲染器无从渲染 → 必须点名拒绝，而不是丢弃。
+_API_ONLY_ASSERT_KINDS = frozenset({"result_code"})
+
+
+def _reject_unknown_assert_kinds(specs: list["StepSpec"]) -> None:
+    """生成期断言闸：未知 kind / 只在 API 腿成立的 kind 出现在 UI 腿 → 点名拒绝。
+
+    这是**唯一判据位**（3 个渲染循环共用，它们不再各写一份类型判断）。判据只做两件事：
+    kind 在取值域内、且与步骤腿型相容。**不**校验 expected 的语义（那是 D7/文档解析的面）。
+    """
+    for spec in specs:
+        for a in spec.asserts:
+            if a.kind not in ASSERT_KINDS:
+                raise PytestEmitError(
+                    f"步骤 {spec.index}「{spec.slug}」的断言 kind={a.kind!r} 不在取值域 "
+                    f"{sorted(ASSERT_KINDS)}——渲染器只认这三种，未知 kind 会被静默丢弃"
+                    f"（红线 #7：断言绝不凭空消失）。请改对 kind 或先在 ASSERT_KINDS "
+                    f"与对应渲染分支里落地新类型。")
+            if not spec.is_api and a.kind in _API_ONLY_ASSERT_KINDS:
+                raise PytestEmitError(
+                    f"步骤 {spec.index}「{spec.slug}」是 UI 腿（task={spec.task!r}），"
+                    f"却带 kind={a.kind!r} 断言——该 kind 只能由 API 腿渲染（UI 步骤不产出 "
+                    f"result.data）。多半是 flow 级 assert 被按 save_as 归到了不发请求的步骤上："
+                    f"把该 assert 挂到真正的 api_call 步骤，或改成 kind='note' 留人审。")
 
 
 @dataclass
@@ -567,6 +609,8 @@ def render_test_module(specs: list[StepSpec], *, flow_id: str = "",
     ``components_map``（仅 fast 用）：组件库映射（``_components_map`` 形态），用于从数据派生
     auto-wire 映射（task→组件动作）——非 fast 完全无视它（旧形态零涟漪）。
     """
+    # 断言明细闸**先于任何渲染**（快慢两形态共用这一处，不在两个渲染器里各写一遍）。
+    _reject_unknown_assert_kinds(specs)
     if fast:
         wiring = _task_action_wiring(components_map) if components_map else None
         return _render_test_module_fast(specs, flow_id=flow_id, base_url=base_url,

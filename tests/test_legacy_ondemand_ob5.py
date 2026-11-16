@@ -135,11 +135,45 @@ def test_runtime_enter_default_still_checks_legacy(tmp_path, monkeypatch):
 
 
 def test_cli_uses_whitelisted_legacy_env_loader():
-    """en-5 CLI 侧封口：cli.py 不再有未过滤的 legacy .env 整份加载。"""
+    """en-5 CLI 侧封口：cli.py 不再有未过滤的 legacy .env 整份加载。
+
+    2026-11-16 更新：预检序列已收敛到 `runtime.precheck_session_inputs` 单点，cli.py
+    里的 `load_legacy_dotenv(config.legacy_project)` 从「四处各抄一遍」变成「零处」——
+    原断言 `count == 3` 钉的是**旧结构**（四处内联），收敛后必然红。这里改成钉
+    **新结构**：cli.py 一处都不许持有该调用（唯一持有者是 runtime 的序列单点下文校验），
+    而 doctor 侧的 `load_legacy_dotenv(legacy)` 仍在（那是诊断读，不是预检）。
+
+    意图未变：**cli.py 不得出现未过滤的整份 `load_dotenv(...)`**（负向断言原样保留），
+    且白名单加载器必须仍在位（改为对 runtime 的正向校验，见下一段）。
+    """
     src = (Path(__file__).resolve().parent.parent / "src" / "atlas" / "cli.py").read_text(
         encoding="utf-8")
+    # 负向（原样保留）：不得有未过滤的整份加载
     assert "load_dotenv(config.legacy_project)" not in src
     assert "load_dotenv(legacy)" not in src
-    # 正向对照：白名单加载器仍在四处预检在位（改回未过滤会同时命中上面的负向断言）。
-    assert src.count("load_legacy_dotenv(config.legacy_project)") == 3
+    # 收敛后：cli.py 不再内联预检，因此也不该出现白名单加载器（唯一持有者是 runtime 单点）
+    assert "load_legacy_dotenv(config.legacy_project)" not in src
+    # doctor 的诊断读仍在（它读 base_url 来源，不改判据）
     assert src.count("load_legacy_dotenv(legacy)") == 1
+
+
+def test_preflight_sequence_is_the_only_place_that_loads_legacy_env():
+    """正向对照（补上原测丢失的那一半）：白名单加载器在本仓**只有一处**在预检序列里。
+
+    收敛前 cli.py 抄了 4 份，所以「加载器在位」只能在 cli.py 里点数；收敛后它的
+    唯一持有者是 `runtime.precheck_session_inputs`。这条钉住那个唯一性——
+    若有人在别处又内联一段预检，这里会因为他新增了第二个持有者而红。
+    """
+    src = (Path(__file__).resolve().parent.parent / "src" / "atlas" / "runtime.py").read_text(
+        encoding="utf-8")
+    assert src.count("load_legacy_dotenv(config.legacy_project") == 1, (
+        "runtime.py 里 load_legacy_dotenv 的出现次数应为 1（预检序列单点）；"
+        "多出来说明有人又抄了一段预检")
+    # 且它确实在 precheck_session_inputs 体内（不是别的函数）
+    import ast
+    tree = ast.parse(src)
+    holders = [fn.name for fn in ast.walk(tree)
+               if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
+               and "load_legacy_dotenv(config.legacy_project" in ast.get_source_segment(src, fn)]
+    assert holders == ["precheck_session_inputs"], (
+        f"load_legacy_dotenv 所在函数应恰为 precheck_session_inputs，实得 {holders}")

@@ -241,6 +241,29 @@ def _fake_runtime(monkeypatch, page):
     return closed
 
 
+def _satisfy_session_precheck(tmp_path, monkeypatch):
+    """把入口输入预检所需的三个输入配齐（base_url / 旧仓 / DemoApi）。
+
+    2026-11-16 起预检序列收敛到 `runtime.precheck_session_inputs`，CLI 各入口都会真跑
+    它（此前 `_explore_auto` 只查账号，缺 URL 也能一路跑到假 runtime）。本文件的测验证
+    的是探索循环本身，不是预检，所以用这个 helper 把输入补齐而不是在每条测试里重复。
+
+    刻意造**真目录**（不是 patch 判据）：patch 判据会让「预检是否真被执行」变成不可见，
+    而这正是收敛那波要保住的性质。
+    """
+    legacy = tmp_path / "legacy"
+    (legacy / "legacy-web").mkdir(parents=True, exist_ok=True)
+    api = tmp_path / "api"
+    (api / "scripts").mkdir(parents=True, exist_ok=True)
+    (api / "scripts" / "demo_api.py").write_text("", encoding="utf-8")
+    monkeypatch.setenv("ATLAS_LEGACY_PROJECT", str(legacy))
+    monkeypatch.setenv("ATLAS_DEMO_API_PROJECT", str(api))
+    monkeypatch.setenv("DEMO_URL_SIT", "https://sit.example/")
+    monkeypatch.setenv("ATLAS_SESSION_ACCOUNT", "someone")
+    # 显式声明插件：避免 fallback WARN 混进被测的 stdout/stderr 断言
+    monkeypatch.setenv("ATLAS_PLUGIN", "demo")
+
+
 def test_keyboard_interrupt_propagates_with_prior_decisions_kept(env):
     """E.9：控制流异常原样传播，且中断前已落痕的决策不许被吞（#114/#85 同纪律）。"""
     class _KiPage(FakePage):
@@ -309,6 +332,10 @@ def test_cli_auto_full_chain_lands_pending_review_drafts(tmp_path, capsys, monke
     monkeypatch.setenv("ATLAS_LLM_BASE_URL", "http://gw/v1")
     monkeypatch.setenv("ATLAS_LLM_API_KEY", "k")
     monkeypatch.setenv("ATLAS_LLM_MODEL", "m")
+    # 入口输入预检（2026-11-16 收敛到 runtime.precheck_session_inputs）现在真的会跑，
+    # 缺 base_url/旧仓/DemoApi 任一条都会 rc 2——本测验的是「探索链路把事情做完」，
+    # 不是预检，所以把这三个输入配齐（此前这里能过，是因为 _explore_auto 压根没预检）。
+    _satisfy_session_precheck(tmp_path, monkeypatch)
     trace = tmp_path / "trace.jsonl"
     assert main(["--root", str(tmp_path), "explore", "--auto", "--goal", "探索列表页",
                  "--trace", str(trace)]) == 0

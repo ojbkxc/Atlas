@@ -303,10 +303,15 @@ def _agent_cli(tmp_path, monkeypatch, raiser, goal="doc"):
     import contextlib
     import io
     from atlas import cli as cli_module
+    from atlas import runtime as runtime_mod
     monkeypatch.setenv("DEMO_URL_SIT", "https://sit.example.com")
     # 预检里的 DemoApi 文件/旧项目路径存在性与本测要验的「终态腿」无关：
     # 前者替成直通，后者按 #103 fail-fast 要求造出真目录（不造就得等登录才撞错）
-    monkeypatch.setattr(cli_module, "check_demo_api", lambda _config: None)
+    # 哨兵打在 `atlas.runtime.check_demo_api`（判据所在模块），**不是** `atlas.cli`：
+    # 预检序列已收敛到 `runtime.precheck_session_inputs`（2026-11-16），cli 只 import
+    # 了那一个序列函数、不再持有 `check_demo_api` 绑定——打在 cli 上会 AttributeError
+    # （改造后首次全量实跑即红，正是这类哨兵该有的表现）。
+    monkeypatch.setattr(runtime_mod, "check_demo_api", lambda _config: None)
     legacy = tmp_path / "legacy-suite"
     (legacy / "legacy-web").mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("ATLAS_LEGACY_PROJECT", str(legacy))
@@ -363,8 +368,13 @@ def test_cli_agent_ordinary_failure_escapes_without_new_markers(tmp_path, monkey
     import contextlib
     import io
     from atlas import cli as cli_module
+    from atlas import runtime as runtime_mod
     monkeypatch.setenv("DEMO_URL_SIT", "https://sit.example.com")
-    monkeypatch.setattr(cli_module, "check_demo_api", lambda _config: None)
+    # 哨兵打在 `atlas.runtime.check_demo_api`（判据所在模块），**不是** `atlas.cli`：
+    # 预检序列已收敛到 `runtime.precheck_session_inputs`（2026-11-16），cli 只 import
+    # 了那一个序列函数、不再持有 `check_demo_api` 绑定——打在 cli 上会 AttributeError
+    # （改造后首次全量实跑即红，正是这类哨兵该有的表现）。
+    monkeypatch.setattr(runtime_mod, "check_demo_api", lambda _config: None)
     legacy = tmp_path / "legacy-suite"
     (legacy / "legacy-web").mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("ATLAS_LEGACY_PROJECT", str(legacy))

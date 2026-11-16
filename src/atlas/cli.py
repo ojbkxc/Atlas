@@ -18,8 +18,8 @@ from .config import ENV_URL_KEYS, AtlasConfig, load_legacy_dotenv
 from .dsl import FlowCompiler, FlowDocument, TaskRegistry
 from .legacy import LegacyAdapter
 from .plugin_api import resolve_plugin
-from .runtime import (DemoRuntime, check_demo_api, check_legacy_required,
-                      legacy_required_for, require_account, resolve_account)
+from .runtime import (DemoRuntime, legacy_required_for, precheck_session_inputs,
+                      resolve_account)
 
 def core_tasks(legacy_pages_path=None):
     """任务枚举的插件缝**单一入口**（cli 的 tasks/compose/agent 经此走 resolve_plugin().tasks()）。
@@ -381,6 +381,576 @@ def _full_registry() -> TaskRegistry:
     from .runtime import build_registry
     return build_registry()
 
+def _doctor(args, config, plugin) -> int:
+    """`atlas doctor`：本机现状快照（只读、离线、不改任何状态）。
+
+    从 `main()` 抽出（2026-11-16 结构治理）：这段 86 行原是 main 里最长的分支之一，
+    rc 判据与展示项混在一起读不出边界。抽成函数后 main 只留一句分派，`atlas doctor`
+    的完整语义（哪些项改 rc、哪些只展示）集中在一处可读。**行为逐字节不变**——
+    搬移未改任何判据（rc 表达式原样）。
+
+    rc 判据（原样搬运）：`legacy_pages` ∧ `demo_api` ∧ `docker_assets_consistent`
+    ∧ `boundary_assets_consistent` 全真才 rc 0。展示项（version_triple / ui_family /
+    platform_checklist / boundary_ledger 缺失面）**不并入 rc**，理由见各自行内注。
+    """
+    legacy = config.legacy_project
+    api = config.api_project
+    # base_url 口径必须与 DemoRuntime 一致：Atlas .env 缺失时继承旧项目 .env，
+    # 否则 doctor 报 false 但 atlas run 实际能连（诊断误导）。记录来源，不复制凭据。
+    # en-5：继承只走白名单键（URL_* 在白名单内，base_url 继承语义不变）。
+    own_base_url = bool(config.base_url)
+    load_legacy_dotenv(legacy)
+    checks = {"python": sys.version.split()[0], "root": str(config.root), "env": config.env,
+              "env_prefix": config.env_url_key.rsplit("URL_", 1)[0],
+              "base_url_configured": own_base_url or bool(config.base_url),
+              "base_url_source": "atlas.env" if own_base_url else ("legacy.env" if config.base_url else "unset"),
+              "legacy_web": config.legacy_web,
+              "legacy_pages": (legacy / config.legacy_web / "lib/pages.py").is_file(),
+              "legacy_pytest_ini": (legacy / config.legacy_web / "pytest.ini").is_file(),
+              "demo_api": (api / "scripts" / config.api_module_file).is_file(),
+              "knowledge_pitfalls": len(plugin.knowledge().pitfalls()),
+              # C6 版本三元组入诊断：`atlas doctor` 是「本机现状」的快照入口，
+              # 三元组在这里能当场看出「知识被人手改过（source=private，sha1 变了）」
+              # 或「根本没配私有目录（source=builtin，读的是仓库虚构默认）」。
+              # 展示项，不改 rc 逻辑；unreadable 指纹如实报 source，不静默。
+              "version_triple": {
+                  "atlas": __version__,
+                  "knowledge": versioning.knowledge_fingerprint(
+                      getattr(plugin.knowledge(), "root", None)),
+                  "tz_data": versioning.tz_data_status()},
+              # uf-3：声明族 vs 选择器前缀一致性（判据唯一在 atlas.ui_family，#92）。
+              # 展示项，**不并入 rc**——前缀启发式存在假阳性空间（平台确无族前缀等），
+              # 硬拦应由生成期闸/人审决定；doctor 只如实汇报声明族、解析结果与不一致清单。
+              "ui_family": {
+                  "declared": ui_family.declared_family(),
+                  "resolved": ui_family.resolve_family(),
+                  "prefix_problems": ui_family.family_prefix_problems(
+                      plugin.knowledge().load_composed("components"))}}
+    # Docker/CI 资产一致性：防「已提供但已过期」——引用的文件/命令漂移时提前暴露
+    docker_ok = True
+    dockerfile = config.root / "Dockerfile"
+    if dockerfile.exists():
+        text = _read_text_safe(dockerfile)
+        if text is None:
+            checks["docker_unreadable"] = str(dockerfile)   # 非 UTF-8/权限：汇报而非崩溃整个诊断
+            docker_ok = False
+        else:
+            for ref in ("pyproject.toml", "requirements.txt", "examples/smoke_browser.py"):
+                if ref in text and not (config.root / ref).exists():
+                    checks["docker_ref_missing"] = ref
+                    docker_ok = False
+            checks["docker_cmd_matches_compose"] = _compose_cmd_matches(config.root)
+            if not checks["docker_cmd_matches_compose"]:
+                docker_ok = False
+    checks["docker_assets_consistent"] = docker_ok
+    # C5 边界账本一致性（design_c5 §4）：账本是数据不是引擎字面量（红线 #11）——
+    # 引擎运行时永不解析 docs/ownership/，只有这里与 scripts/boundary_classify.py
+    # 两个薄消费方，判据唯一实现在 atlas.boundaries（#92，doctor 不复制第二份校验）。
+    # rc 并入 docker_ok 同侧：账本「存在但坏」=漂移 → rc1（与 docker 资产同纪律 #134）；
+    # 文件缺失 → present:false **不改 rc**——新波次前的历史分支/精简克隆不该被账本卡死，
+    # 如实报缺失不猜不编（缺账本 ≠ 账本漂移，两个事实分开陈述）。
+    bpath = boundaries.ledger_path(config.root)
+    ledger_present = bpath.is_file()
+    boundary_ok = True
+    if ledger_present:
+        ledger, ledger_problems = boundaries.load_ledger(bpath)
+        ledger_warnings, ledger_uncovered = boundaries.ledger_disk_coverage(config.root, ledger)
+        boundary_ok = (not ledger_problems) and (not ledger_uncovered)
+        regions = ledger.get("regions")
+        checks["boundary_ledger"] = {
+            "present": True,
+            "regions": len(regions) if isinstance(regions, list) else 0,
+            "problems": ledger_problems,
+            "warnings": ledger_warnings,
+            "uncovered_regions": ledger_uncovered,
+            "accepted_debts": boundaries.accepted_debt_summary(ledger)}
+        checks["boundary_assets_consistent"] = boundary_ok
+    else:
+        checks["boundary_ledger"] = {"present": False, "path": boundaries.LEDGER_REL_PATH}
+    # ob-7：新平台接入检查清单（playbook §9 八项）接入 doctor——`_common/domains.json`
+    # 此前零消费方（清单只活在文档里，换平台的人不会碰它）。只读、离线、纯展示：
+    # 缺文件/坏形态如实 present:false **不改 rc**（与 boundary_ledger 缺失同口径——
+    # 缺清单 ≠ 清单漂移，两个事实分开陈述；该包随仓库分发，正常安装恒在）。
+    # 判据不在 cli 复制（#92）：加载/校验唯一实现在 atlas.knowledge.platform_checklist。
+    checks["platform_checklist"] = knowledge_platform_checklist(plugin.knowledge())
+    if getattr(args, "format", "json") == "text":
+        print(doctor_text(checks))
+    else:
+        dump_json(checks)
+    return 0 if checks["legacy_pages"] and checks["demo_api"] and docker_ok and boundary_ok else 1
+
+
+def _legacy(args, config) -> int:
+    """旧仓桥接轨（pytest 轨 + dry-run 预览）。
+    """
+    try:
+        adapter = LegacyAdapter(config)
+    except (OSError, ValueError) as exc:
+        return _user_error(exc)
+    headed = getattr(args, "headed", False)
+    if args.dry_run:
+        # dry-run 的文档语义是「只检查路径和命令」——修复前对不存在的目录照样
+        # 打印命令并返回 0，检查形同虚设；真实 CI 里会假绿通过预检。
+        try:
+            adapter.check_exec_dir()
+        except (OSError, ValueError) as exc:
+            return _user_error(exc)
+        fast = getattr(args, "fast", False)
+        print(" ".join(adapter.pytest_command(args.node, headed, args.keyword,
+                                              fast=fast)))
+        print(f"cwd={adapter.exec_dir}")
+        if fast:
+            # 可核性：注入后的 PYTHONPATH（相对项已转绝对）+ 开关清单**三态**——
+            # (explicit)=用户显式设（含 off，恒优先）；
+            # (default --fast)=--fast 置位的**清单内**键（#36 后只剩截图抑制）；
+            # unset=未开。旧版只看父 os.environ 会把「默认已开」显示成 unset——
+            # 展示的必须是子进程实际会拿到的 env。
+            env = adapter.fast_child_env()
+            print(f"PYTHONPATH={env.get('PYTHONPATH', '')}")
+            for key in adapter.FAST_ENV_SWITCHES:
+                explicit = os.environ.get(key)
+                if explicit:
+                    print(f"{key}={explicit} (explicit)")
+                elif env.get(key):
+                    print(f"{key}={env[key]} (default --fast)")
+                else:
+                    print(f"{key}=unset")
+        return 0
+    try:
+        return adapter.run_pytest(args.node, headed, args.keyword,
+                                  fast=getattr(args, "fast", False))
+    except FileNotFoundError as exc:
+        # 路径是输入问题（rc 2），不是执行失败；pytest 自身退出码原样透传不吞
+        return _user_error(exc)
+
+
+def _run(args, config, plugin) -> int:
+    """单 flow 执行轨：结构校验 → 输入预检 → DemoRuntime → FlowCompiler.run。
+
+    rc 口径（原样搬运）：0 成功 / 1 真实失败 / 2 输入错误 / 3 等人 / 124 case 超时。
+    """
+    case_timeout = getattr(args, "case_timeout", None)
+    if case_timeout is not None and case_timeout <= 0:
+        return _user_error(ValueError(
+            f"--case-timeout 必须是正整数秒（不限就别传），收到 {case_timeout}"))
+    if args.bu:
+        from .plugins.demo.tasks import apply_bu
+        try:
+            result = apply_bu(args.bu, plugin.knowledge().load_overlays())
+        except (KeyError, ValueError) as exc:
+            # KeyError=BU 不在库；ValueError=#134 BU 值形态非映射（手滑存成数组/字符串）。
+            # 旧只捕 KeyError，AttributeError 漏网变裸 traceback，违反用户输入 rc2 口径。
+            print(str(exc), file=sys.stderr)
+            return 2
+        print(f"BU={result['bu']} 坐标生效：{json.dumps(result['applied'], ensure_ascii=False)}"
+              f"；未接执行路径/被显式env覆盖：{result['ignored']}", file=sys.stderr)
+    # pf-5 接线：flow 位置参数从单文件变多文件（nargs="+"）。单 flow 的既有路径**一字不动**
+    # ——这里只把 argparse 的列表形态还原成单个 Path，下方 load/预检/with/收尾全部原样；
+    # 多条 flow 走独立编排 _run_multi_flows（一次 Chromium launch + 一次登录串行跑完，
+    # 语义与红线见该函数 docstring）。位置在 --bu 之后：BU 坐标是「本次调用」级注入，
+    # 单/多 flow 语义相同。
+    if len(args.flow) > 1:
+        return _run_multi_flows(args, config, args.flow)
+    args.flow = args.flow[0]
+    # load 是「用户传入 flow 文件」的输入边界，与 compile 同口径：路径坏/YAML 非法/误传状态机
+    # 文件都属输入错误 → 一行 stderr + rc 2，且在 DemoRuntime 构造/登录**之前**失败（fail fast，
+    # 不启动浏览器不登录）。真正的执行失败（EnvBlocked/断言/网络）仍走下方 runtime.run 原样语义，
+    # 绝不降级成输入错误。
+    try:
+        flow = FlowCompiler(TaskRegistry()).load(args.flow)
+        # #97：结构校验（步骤形态/task 引用/assert/requires 供给块/flow 级策略）同为输入错误，
+        # 旧实现登录+开浏览器之后才在 compile/provision 里炸——真实踩点：`atlas run` 跑坏 flow
+        # 会先起真实 Chromium 走真实 SIT 登录再报裸 KeyError，浪费会话还可能留半截现场。
+        # registry 与运行时同源（_full_registry ≡ DemoRuntime.registry），compile 绿=run 不再结构炸。
+        tasks = FlowCompiler(_full_registry()).validate_flow(flow)
+    except (OSError, ValueError, KeyError, RuntimeError, yaml.YAMLError) as exc:
+        return _user_error(exc)
+    # ob-5：compile 期判定本次 flow 是否需要旧仓（判据单点在 runtime.legacy_required_for）。
+    needs_legacy = legacy_required_for(no_login=args.no_login, tasks=tasks)
+    # #103：入口输入错误（缺环境 URL / 坏 DemoApi 路径）与 DemoRuntime.__enter__ 同口径
+    # 预检——先继承旧项目 .env 再检查（doctor 同款坑：不 load_dotenv 会用未继承的
+    # ATLAS_DEMO_API_*/URL 误报缺失）。放在 with 之前：这些是输入错误（一行 stderr + rc 2），
+    # 不得裸 traceback，更绝不允许走到开浏览器/真实登录（fail-fast 与 #97 同红线）。
+    # 探针实锤：旧实现合法 flow + 缺 DEMO_URL_SIT 直接裸崩 ValueError traceback。
+    try:
+        # 判据序列单点：`runtime.precheck_session_inputs`（顺序与理由见其 docstring）。
+        # --no-login（不登录）时不查账号：没有会话就没有「拿空账号去登录」这件事。
+        precheck_session_inputs(
+            config,
+            account=args.account,
+            no_login=args.no_login,
+            legacy_required=needs_legacy)
+    except (OSError, ValueError) as exc:
+        return _user_error(exc)
+    if case_timeout is not None:
+        # per-case 超时（执行层短板 #1）：supervisor 在父进程看护，真实执行在子进程。
+        return _run_case_supervised(args, config, flow, case_timeout)
+    from .failures import AwaitingHuman, exception_brief
+    # 落库线：--harvest 注入 flow 级开关（overlay 保形态；单次运行的显式人决）。
+    # 注入必须在这里而非 run() 内部——dsl.run 只认 flow dict 里的键。
+    if getattr(args, "harvest", False):
+        flow = flow.overlay(harvest=True) if isinstance(flow, FlowDocument) \
+            else {"harvest": True, **flow}
+    try:
+        with DemoRuntime(config, login=not args.no_login, account=args.account, ou=args.ou,
+                         division_code=args.division, language=args.language,
+                         create_quota=args.create_quota,
+                         legacy_required=needs_legacy) as runtime:
+            # overlay 而不是 {**flow}：字典解包会丢掉 FlowDocument 的源文本形态，
+            # md5 编译缓存与 ^ 指针定位随之失效（同一份 flow 白编译第二遍、报错白丢行号）
+            FlowCompiler(runtime.registry(), runtime.provider).run(
+                flow.overlay(engine=config) if isinstance(flow, FlowDocument)
+                else {"engine": config, **flow}, runtime.actor)
+    except AwaitingHuman as exc:
+        # C9 显态：**等人不是失败**——run 轨 rc 3 是「需要人来处置」的信号，
+        # 与 agent 审批门的 rc 3 同值（cli agent 分支现盘 :454-457 已实测；口径限定在
+        # run/agent/dispatch 子进程面，`atlas gen` 的 rc 3 是结构自检失败，两义不并表——
+        # 评审必改 C9-D）。0/1/2/124/130 既有语义零变化：1 仍是真实失败，2 仍是输入错误。
+        # 收尾照常：`with` 的 __exit__ 在 except 之前跑完（浏览器关闭、回收清单落盘、
+        # 决策留痕都不因这条腿丢失），runs.jsonl 的 waiting 行已由 dsl 落好。
+        # stderr 前缀 ASCII（X4：`WAITING-HUMAN:`），冒号后才可能是中文——中文段走
+        # exception_brief 的净化刀（C4②），截 200 防长报文淹没终端。
+        print(f"WAITING-HUMAN: {exception_brief(exc)[:200]}", file=sys.stderr)
+        return 3
+    return 0
+
+
+def _agent(args, config) -> int:
+    """{
+
+      "goal": "document_no",
+
+      "risk": "medium",
+
+      "auto_allowed": false,
+
+      "tasks": [
+
+        {
+
+          "name": "open_doc_list",
+
+          "channel": "auto",
+
+          "read_only": true,
+
+          "intent": "打开业务单据列表"
+
+        },
+
+        {
+
+          "name": "click_new",
+
+          "channel": "ui",
+
+          "read_only": false,
+
+          "intent": "进入新建单据页"
+
+        },
+
+        {
+
+          "name": "select_customer",
+
+          "channel": "auto",
+
+          "read_only": false,
+
+          "intent": "选择客户并等待异步回填"
+
+        },
+
+        {
+
+          "name": "ensure_warehouse",
+
+          "channel": "ui",
+
+          "read_only": false,
+
+          "intent": "选择仓库并刷新校验状态"
+
+        },
+
+        {
+
+          "name": "ensure_sales_person",
+
+          "channel": "ui",
+
+          "read_only": false,
+
+          "intent": "选择销售员"
+
+        },
+
+        {
+
+          "name": "mount_other_header",
+
+          "channel": "ui",
+
+          "read_only": true,
+
+          "intent": "挂载扩展头，规避保存链缺陷"
+
+        },
+
+        {
+
+          "name": "click_save",
+
+          "channel": "ui",
+
+          "read_only": false,
+
+          "intent": "保存业务单据"
+
+        },
+
+        {
+
+          "name": "wait_save_result",
+
+          "channel": "auto",
+
+          "read_only": true,
+
+          "intent": "等待保存结果并提取单号"
+
+        }
+
+      ]
+
+    }：规划（propose）或执行（--execute）。
+
+    rc 口径（原样搬运）：0 成功 / 2 输入错误 / 3 需人处置（审批门或 AwaitingHuman）/ 1 真实失败（含 DeliveryUncertain）。
+    """
+    from .agent import ApprovalRequired, AtlasAgent, RiskLevel
+    from .failures import (AwaitingHuman, DeliveryUncertain, FlowCompositionError,
+                           exception_brief)
+    agent = AtlasAgent(production=config.is_production,
+                       max_auto_risk=RiskLevel(args.max_auto_risk),
+                       journal=config.reports_dir / "agent_decisions.jsonl")
+    tasks = core_tasks()
+    if not args.execute:
+        try:
+            proposal = agent.propose(tasks, args.goal)   # 规划期就拼不出目标 → 输入错误，友好 rc 2
+        except FlowCompositionError as exc:
+            return _user_error(exc)
+        print(json.dumps(proposal, ensure_ascii=False, indent=2))
+        return 0
+    # #103：同 run 口径——缺 URL/路径/账号都是输入错误 rc 2，且在开浏览器/登录之前拒绝。
+    # 判据序列单点在 `runtime.precheck_session_inputs`（含 en-5 白名单 dotenv 加载、
+    # ob-5 按需旧仓预检）；agent 恒登录 → 旧仓始终需要。
+    try:
+        precheck_session_inputs(
+            config,
+            # agent 子命令无 --account（账号只来自插件/知识库坐标），故 getattr 兜底。
+            account=getattr(args, "account", None),
+            no_login=False,
+            legacy_required=True)
+    except (OSError, ValueError) as exc:
+        return _user_error(exc)
+    with DemoRuntime(config) as runtime:
+        try:
+            decision = agent.run(tasks, args.goal, runtime.actor, approved=args.approve)
+        except ApprovalRequired as exc:
+            print(json.dumps({"approved": False, "reason": str(exc)}, ensure_ascii=False, indent=2),
+                  file=sys.stderr)
+            return 3
+        except FlowCompositionError as exc:
+            return _user_error(exc)
+        except AwaitingHuman as exc:
+            # C9 补齐（2026-11-06）：agent 轨此前只捕审批门与组合错，`AwaitingHuman`
+            # 一路穿透到顶层泛捕获，journal 记「执行失败」、CLI 返 rc1——run 轨早就有的
+            # 「等人=rc3」显态在 agent 轨是漏网第二条腿（#92 改一漏一的又一处）。
+            # rc3 与本分支既有 ApprovalRequired 同值：两者都是「需要人来处置」，
+            # 口径仍限 run/agent/dispatch 子进程面（评审必改 C9-D）。
+            # 差异如实标注：agent 轨不经 dsl/RunRecorder，**不产 runs.jsonl 的 waiting 行**，
+            # 终态只体现在 rc + stderr + journal reason（journal 侧见 agent.run 的 outcome 分流）。
+            print(f"WAITING-HUMAN: {exception_brief(exc)[:200]}", file=sys.stderr)
+            return 3
+        except DeliveryUncertain as exc:
+            # C12 补齐：写可能已发出、结果未知。rc 仍是 1（真失败，红线 #7 不洗绿），
+            # 但终端必须与一般失败区分开——看到「执行失败」的直觉动作是重跑，
+            # 而这里的正确动作是先核实系统里有没有这条数据（重跑=写双跑）。
+            print(f"DELIVERY-UNCERTAIN: {exception_brief(exc)[:200]}", file=sys.stderr)
+            return 1
+    print(json.dumps(decision.as_dict(), ensure_ascii=False, indent=2))
+    return 0
+
+
+def _summary(args, config) -> int:
+    """运行摘要（人读 text / 机读 json 双形态）。
+    """
+    from .reporting import run_attention, summarize
+    from .review import ReviewQueue
+    try:
+        result = summarize(args.input)
+    except (OSError, ValueError) as exc:
+        return _user_error(exc)
+    # C9：「等人」与操作/环境族计数单独成块——批量巡检的失败列表里混着等人工步骤时，
+    # 处置动作是找人而不是查 bug。塔读数**真去读**再传进去：没读就没资格说 0（#64），
+    # 而这里读了，所以 notes 里的 TOWER-NOT-READ 只在调用方不读塔时出现（单元测钉）。
+    # summarize 本体零改动：status Counter 天然容纳新终态取值（#115），attention 是
+    # 附加键，既有 status/fail_classes/versions 各键的取值形态逐字节不变。
+    result["attention"] = run_attention(result, ReviewQueue(config.reports_dir).stats())
+    if getattr(args, "format", "json") == "text":
+        print(summary_text(result))
+    else:
+        dump_json(result)
+    return 0
+
+
+def _allure(args, config) -> int:
+    """runs.jsonl → Allure 结果集（只读转换，不执行用例）。
+    """
+    from .allure_report import ALLURE_RESULTS_DIR, emit_allure
+    # 默认输出与 config.reports_dir 同源（不赌 CWD）；输入缺省 <root>/reports/runs.jsonl
+    runs = args.input if args.input is not None else config.reports_dir / "runs.jsonl"
+    out = args.out if args.out is not None else config.reports_dir / ALLURE_RESULTS_DIR
+    try:
+        # #139：相对附件按项目根解析（engine 落 runs.jsonl 的就是 root 相对路径）；
+        # 旧实现不传，消费侧回落 runs_path.parent=reports/ 做基准——截图明明在
+        # root/artifacts/snapshots/ 却假报「无法读取」生成占位（假阴性证据）。
+        # clean 由 --clean/--no-clean 控制（默认即清，与历史行为逐字节一致）
+        result = emit_allure(runs, out, clean=args.clean, attachments_dir=config.root,
+                             source_dimension=getattr(args, "source_dimension", False))
+    except (OSError, ValueError) as exc:
+        return _user_error(exc)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    if getattr(args, "serve", False):
+        # 只打印命令，不自行拉起浏览器/网络（设计 §3.4）
+        print(f"allure serve {out}", file=sys.stderr)
+        # C4③ 分发口径落文案：结果集里可能有真实 URL/单号/截图，自建 HTTP 只绑回环
+        # （既有测试断言的是上一行的 `allure serve <目录>` 子串，本行只做补充提示）
+        print("分发提醒：如需自建 HTTP 服务，只绑回环——"
+              "python -m http.server 8765 --bind 127.0.0.1 --directory <报告目录>",
+              file=sys.stderr)
+    return 0
+
+
+def _machine(args) -> int:
+    """状态机文件查询（路径/状态集，不执行）。
+    """
+    from .state_machine import StateMachine
+    try:
+        machine = StateMachine.load(args.file)
+        if args.target:
+            result = {"target": args.target, "tasks": machine.path(args.target)}
+        else:
+            result = {"initial": machine.initial, "states": sorted(machine.states),
+                      "terminal": sorted(machine.terminal)}
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        return _user_error(exc)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _contracts(args, plugin) -> int:
+    """契约清单 / validate 只读结构自校验。
+    """
+    if getattr(args, "validate", False):
+        return _validate_contracts(plugin, getattr(args, "format", "json"))
+    registry = plugin.contracts()
+    report = {"levels": registry.stats(), "total": len(registry.contracts),
+              "contracts": [{"name": c.name, "method": c.method, "path": c.path, "level": c.level}
+                            for c in registry.contracts.values()]}
+    if getattr(args, "format", "json") == "text":
+        print(contracts_text(report))
+    else:
+        dump_json(report)
+    return 0
+
+
+def _selectors(args, plugin) -> int:
+    """组件选择器注册表查询。
+    """
+    registry = plugin.selectors()
+    if args.component:
+        dump_json(registry.find(args.component))
+    else:
+        payload = {"components": registry.names(),
+                   "without_selectors": registry.missing()}
+        if getattr(args, "format", "json") == "text":
+            print(selectors_text(payload))
+        else:
+            dump_json(payload)
+    return 0
+
+
+def _allure_analyze(args, config, plugin) -> int:
+    """Allure 结果集 → 缺陷分析（可选增量读）。
+    """
+    from .allure_analysis import analyze_allure, format_text
+    # 知识库：用插件装配（与 review/knowledge 命令同源）
+    knowledge = plugin.knowledge()
+    to_tower = None
+    if getattr(args, "to_tower", False):
+        from .experience import ExperienceJournal
+        to_tower = ExperienceJournal(config.reports_dir)
+    try:
+        result = analyze_allure(args.results_dir, knowledge=knowledge, to_tower=to_tower,
+                                incremental=not getattr(args, "no_incremental", False))
+    except (OSError, ValueError) as exc:
+        return _user_error(exc)
+    if getattr(args, "format", "json") == "text":
+        print(format_text(result))
+    else:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _tasks(args) -> int:
+    """任务目录（text/json 双形态）。
+    """
+    rows = catalog(core_tasks())
+    if getattr(args, "format", "json") == "text":
+        print(tasks_text(rows))
+    else:
+        dump_json(rows)
+    return 0
+
+
+def _compose(args) -> int:
+    """按目标拼装任务集（拼不出=输入错误 rc 2）。
+    """
+    from .failures import FlowCompositionError
+    try:
+        selected = compose_for_goal(core_tasks(), args.goal)
+    except FlowCompositionError as exc:
+        return _user_error(exc)   # 目标不可拼装=用户输入问题，友好 rc 2，与 compile/run 同口径
+    for task in selected:
+        print(task.name)
+    return 0
+
+
+def _knowledge(args, plugin) -> int:
+    """知识库坑点查询（可按关键词过滤）。
+    """
+    rows = plugin.knowledge().pitfalls()
+    if args.query:
+        rows = [row for row in rows if args.query.lower() in json.dumps(row, ensure_ascii=False).lower()]
+    print(json.dumps(rows, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _compile(args) -> int:
+    """离线结构门禁（不登录不执行）。
+    """
+    try:
+        flow = FlowCompiler(TaskRegistry()).load(args.flow)
+        tasks = FlowCompiler(_full_registry()).validate_flow(flow)
+    except (OSError, ValueError, KeyError, RuntimeError, yaml.YAMLError) as exc:
+        return _user_error(exc)
+    print(json.dumps({"flow": str(args.flow), "tasks": [t.name for t in tasks],
+                      "asserts": len(flow.get("assert") or [])}, ensure_ascii=False, indent=2))
+    return 0
+
+
 def _read_text_safe(path: Path) -> str | None:
     """读诊断用文本资产；present-but-unreadable（非 UTF-8/权限/IO）返回 None，由调用方判为
     「无法确认」而非让 `atlas doctor` 抛 UnicodeDecodeError 崩掉整个诊断（doctor 的职责是汇报状态）。"""
@@ -497,438 +1067,57 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as exc:
         # ATLAS_PLUGIN 指到未注册 domain 是用户输入问题：一行 stderr + rc 2（#79/#80 口径）
         return _user_error(exc)
-    if args.command == "tasks":
-        rows = catalog(core_tasks())
-        if getattr(args, "format", "json") == "text":
-            print(tasks_text(rows))
-        else:
-            dump_json(rows)
-        return 0
-    if args.command == "compose":
-        from .failures import FlowCompositionError
-        try:
-            selected = compose_for_goal(core_tasks(), args.goal)
-        except FlowCompositionError as exc:
-            return _user_error(exc)   # 目标不可拼装=用户输入问题，友好 rc 2，与 compile/run 同口径
-        for task in selected:
-            print(task.name)
-        return 0
-    if args.command == "knowledge":
-        rows = plugin.knowledge().pitfalls()
-        if args.query:
-            rows = [row for row in rows if args.query.lower() in json.dumps(row, ensure_ascii=False).lower()]
-        print(json.dumps(rows, ensure_ascii=False, indent=2))
-        return 0
-    if args.command == "library":
-        return _library(args, plugin)
-    if args.command == "agent":
-        from .agent import ApprovalRequired, AtlasAgent, RiskLevel
-        from .failures import (AwaitingHuman, DeliveryUncertain, FlowCompositionError,
-                               exception_brief)
-        agent = AtlasAgent(production=config.is_production,
-                           max_auto_risk=RiskLevel(args.max_auto_risk),
-                           journal=config.reports_dir / "agent_decisions.jsonl")
-        tasks = core_tasks()
-        if not args.execute:
-            try:
-                proposal = agent.propose(tasks, args.goal)   # 规划期就拼不出目标 → 输入错误，友好 rc 2
-            except FlowCompositionError as exc:
-                return _user_error(exc)
-            print(json.dumps(proposal, ensure_ascii=False, indent=2))
-            return 0
-        # #103：同 run 口径——缺 URL/路径输入错误 rc 2，且在开浏览器/登录之前拒绝。
-        try:
-            # en-5：旧仓 .env 只并入白名单键（ATLAS_* + 当前前缀凭据/URL），
-            # 不再整份 setdefault 进进程环境（跨平台残留污染；判据在 config 单点）。
-            load_legacy_dotenv(config.legacy_project)
-            if not config.base_url:
-                raise ValueError(f"缺少 {config.env} 对应的 {config.env_url_key} 配置")
-            config.validate_base_url(config.base_url)
-            check_demo_api(config)
-            # ob-5：预检唯一消费口（agent 恒登录 → 旧仓始终需要；跳过开关仍经此生效）。
-            check_legacy_required(config, required=True)
-            # 空账号也在 `with` 之前投递成 rc 2（判据/消息在 runtime.require_account 单点）：
-            # 旧实现只在 __enter__ 判，ValueError 穿透 main() 变 ~20 行 traceback。
-            # agent 子命令无 --account（账号只来自插件/知识库坐标），故 getattr 兜底。
-            require_account(config, resolve_account(config, getattr(args, "account", None)))
-        except (OSError, ValueError) as exc:
-            return _user_error(exc)
-        with DemoRuntime(config) as runtime:
-            try:
-                decision = agent.run(tasks, args.goal, runtime.actor, approved=args.approve)
-            except ApprovalRequired as exc:
-                print(json.dumps({"approved": False, "reason": str(exc)}, ensure_ascii=False, indent=2),
-                      file=sys.stderr)
-                return 3
-            except FlowCompositionError as exc:
-                return _user_error(exc)
-            except AwaitingHuman as exc:
-                # C9 补齐（2026-11-06）：agent 轨此前只捕审批门与组合错，`AwaitingHuman`
-                # 一路穿透到顶层泛捕获，journal 记「执行失败」、CLI 返 rc1——run 轨早就有的
-                # 「等人=rc3」显态在 agent 轨是漏网第二条腿（#92 改一漏一的又一处）。
-                # rc3 与本分支既有 ApprovalRequired 同值：两者都是「需要人来处置」，
-                # 口径仍限 run/agent/dispatch 子进程面（评审必改 C9-D）。
-                # 差异如实标注：agent 轨不经 dsl/RunRecorder，**不产 runs.jsonl 的 waiting 行**，
-                # 终态只体现在 rc + stderr + journal reason（journal 侧见 agent.run 的 outcome 分流）。
-                print(f"WAITING-HUMAN: {exception_brief(exc)[:200]}", file=sys.stderr)
-                return 3
-            except DeliveryUncertain as exc:
-                # C12 补齐：写可能已发出、结果未知。rc 仍是 1（真失败，红线 #7 不洗绿），
-                # 但终端必须与一般失败区分开——看到「执行失败」的直觉动作是重跑，
-                # 而这里的正确动作是先核实系统里有没有这条数据（重跑=写双跑）。
-                print(f"DELIVERY-UNCERTAIN: {exception_brief(exc)[:200]}", file=sys.stderr)
-                return 1
-        print(json.dumps(decision.as_dict(), ensure_ascii=False, indent=2))
-        return 0
-    if args.command == "machine":
-        from .state_machine import StateMachine
-        try:
-            machine = StateMachine.load(args.file)
-            if args.target:
-                result = {"target": args.target, "tasks": machine.path(args.target)}
-            else:
-                result = {"initial": machine.initial, "states": sorted(machine.states),
-                          "terminal": sorted(machine.terminal)}
-        except (OSError, ValueError, yaml.YAMLError) as exc:
-            return _user_error(exc)
-        print(json.dumps(result, ensure_ascii=False, indent=2))
-        return 0
-    if args.command == "contracts":
-        if getattr(args, "validate", False):
-            return _validate_contracts(plugin, getattr(args, "format", "json"))
-        registry = plugin.contracts()
-        report = {"levels": registry.stats(), "total": len(registry.contracts),
-                  "contracts": [{"name": c.name, "method": c.method, "path": c.path, "level": c.level}
-                                for c in registry.contracts.values()]}
-        if getattr(args, "format", "json") == "text":
-            print(contracts_text(report))
-        else:
-            dump_json(report)
-        return 0
-    if args.command == "selectors":
-        registry = plugin.selectors()
-        if args.component:
-            dump_json(registry.find(args.component))
-        else:
-            payload = {"components": registry.names(),
-                       "without_selectors": registry.missing()}
-            if getattr(args, "format", "json") == "text":
-                print(selectors_text(payload))
-            else:
-                dump_json(payload)
-        return 0
-    if args.command == "summary":
-        from .reporting import run_attention, summarize
-        from .review import ReviewQueue
-        try:
-            result = summarize(args.input)
-        except (OSError, ValueError) as exc:
-            return _user_error(exc)
-        # C9：「等人」与操作/环境族计数单独成块——批量巡检的失败列表里混着等人工步骤时，
-        # 处置动作是找人而不是查 bug。塔读数**真去读**再传进去：没读就没资格说 0（#64），
-        # 而这里读了，所以 notes 里的 TOWER-NOT-READ 只在调用方不读塔时出现（单元测钉）。
-        # summarize 本体零改动：status Counter 天然容纳新终态取值（#115），attention 是
-        # 附加键，既有 status/fail_classes/versions 各键的取值形态逐字节不变。
-        result["attention"] = run_attention(result, ReviewQueue(config.reports_dir).stats())
-        if getattr(args, "format", "json") == "text":
-            print(summary_text(result))
-        else:
-            dump_json(result)
-        return 0
-    if args.command == "allure":
-        from .allure_report import ALLURE_RESULTS_DIR, emit_allure
-        # 默认输出与 config.reports_dir 同源（不赌 CWD）；输入缺省 <root>/reports/runs.jsonl
-        runs = args.input if args.input is not None else config.reports_dir / "runs.jsonl"
-        out = args.out if args.out is not None else config.reports_dir / ALLURE_RESULTS_DIR
-        try:
-            # #139：相对附件按项目根解析（engine 落 runs.jsonl 的就是 root 相对路径）；
-            # 旧实现不传，消费侧回落 runs_path.parent=reports/ 做基准——截图明明在
-            # root/artifacts/snapshots/ 却假报「无法读取」生成占位（假阴性证据）。
-            # clean 由 --clean/--no-clean 控制（默认即清，与历史行为逐字节一致）
-            result = emit_allure(runs, out, clean=args.clean, attachments_dir=config.root,
-                                 source_dimension=getattr(args, "source_dimension", False))
-        except (OSError, ValueError) as exc:
-            return _user_error(exc)
-        print(json.dumps(result, ensure_ascii=False, indent=2))
-        if getattr(args, "serve", False):
-            # 只打印命令，不自行拉起浏览器/网络（设计 §3.4）
-            print(f"allure serve {out}", file=sys.stderr)
-            # C4③ 分发口径落文案：结果集里可能有真实 URL/单号/截图，自建 HTTP 只绑回环
-            # （既有测试断言的是上一行的 `allure serve <目录>` 子串，本行只做补充提示）
-            print("分发提醒：如需自建 HTTP 服务，只绑回环——"
-                  "python -m http.server 8765 --bind 127.0.0.1 --directory <报告目录>",
-                  file=sys.stderr)
-        return 0
-    if args.command == "allure-analyze":
-        from .allure_analysis import analyze_allure, format_text
-        # 知识库：用插件装配（与 review/knowledge 命令同源）
-        knowledge = plugin.knowledge()
-        to_tower = None
-        if getattr(args, "to_tower", False):
-            from .experience import ExperienceJournal
-            to_tower = ExperienceJournal(config.reports_dir)
-        try:
-            result = analyze_allure(args.results_dir, knowledge=knowledge, to_tower=to_tower,
-                                    incremental=not getattr(args, "no_incremental", False))
-        except (OSError, ValueError) as exc:
-            return _user_error(exc)
-        if getattr(args, "format", "json") == "text":
-            print(format_text(result))
-        else:
-            print(json.dumps(result, ensure_ascii=False, indent=2))
-        return 0
+    # 装配完成后的**唯一分派点**：命令名 → handler。
+    #
+    # 为什么是表而不是一串 `if args.command == "...": return _foo(...)`：这些分支的主体
+    # 就只是一句调用，内联在 main 里会让「27 个分支」的视觉成本压在真正有逻辑的块上
+    # （改造前 main 473 行，其中 run/doctor/agent/legacy 四块占一半以上）。表让
+    # 「哪些命令有独立 handler」一眼可见，新增命令也必须在这一处登记。
+    #
+    # **三张表按调用签名分**（不用 `**kwargs`、也不用反射签名）：`handler(args)` /
+    # `handler(args, config)` / `handler(args, config, plugin)` / `handler(args, plugin)`。
+    # 按签名硬分组的代价是「加命令要选对表」，收益是参数传错会在**这里**当场 TypeError，
+    # 而不是被动态派发吞成运行期才炸的隐蔽错误。
+    _DISPATCH: dict[str, tuple] = {
+        # handler(args)
+        "tasks": (_tasks, ()),
+        "compose": (_compose, ()),
+        "machine": (_machine, ()),
+        "compile": (_compile, ()),
+        # handler(args, config)
+        "summary": (_summary, ("config",)),
+        "allure": (_allure, ("config",)),
+        "recycle": (_recycle, ("config",)),
+        "explore": (_explore, ("config",)),
+        "overlay": (_overlay, ("config",)),
+        "gen": (_gen, ("config",)),
+        "devops-sync": (_devops_sync, ("config",)),
+        "review-code": (_review_code, ("config",)),
+        "schedule": (_schedule, ("config",)),
+        "export-pytest": (_export_pytest, ("config",)),
+        "legacy": (_legacy, ("config",)),
+        "run": (_run, ("config", "plugin")),
+        # handler(args, plugin)
+        "knowledge": (_knowledge, ("plugin",)),
+        "contracts": (_contracts, ("plugin",)),
+        "selectors": (_selectors, ("plugin",)),
+        "library": (_library, ("plugin",)),
+        # handler(args, config, plugin)
+        "agent": (_agent, ("config",)),
+        "allure-analyze": (_allure_analyze, ("config", "plugin")),
+        "review": (_review, ("config", "plugin")),
+        "doctor": (_doctor, ("config", "plugin")),
+    }
+    _extra = {"config": config, "plugin": plugin}
+    if args.command in _DISPATCH:
+        handler, wanted = _DISPATCH[args.command]
+        return handler(args, *(_extra[name] for name in wanted))
     if args.command == "report":
         from .reporting import export_runlog
         try:
             print(export_runlog(args.input, args.output))
         except (OSError, ValueError) as exc:
             return _user_error(exc)
-        return 0
-    if args.command == "recycle":
-        return _recycle(args, config)
-    if args.command == "review":
-        return _review(args, config, plugin)
-    if args.command == "explore":
-        return _explore(args, config)
-    if args.command == "overlay":
-        return _overlay(args, config)
-    if args.command == "gen":
-        return _gen(args, config)
-    if args.command == "devops-sync":
-        return _devops_sync(args, config)
-    if args.command == "review-code":
-        return _review_code(args, config)
-    if args.command == "schedule":
-        return _schedule(args, config)
-    if args.command == "doctor":
-        legacy = config.legacy_project
-        api = config.api_project
-        # base_url 口径必须与 DemoRuntime 一致：Atlas .env 缺失时继承旧项目 .env，
-        # 否则 doctor 报 false 但 atlas run 实际能连（诊断误导）。记录来源，不复制凭据。
-        # en-5：继承只走白名单键（URL_* 在白名单内，base_url 继承语义不变）。
-        own_base_url = bool(config.base_url)
-        load_legacy_dotenv(legacy)
-        checks = {"python": sys.version.split()[0], "root": str(config.root), "env": config.env,
-                  "env_prefix": config.env_url_key.rsplit("URL_", 1)[0],
-                  "base_url_configured": own_base_url or bool(config.base_url),
-                  "base_url_source": "atlas.env" if own_base_url else ("legacy.env" if config.base_url else "unset"),
-                  "legacy_web": config.legacy_web,
-                  "legacy_pages": (legacy / config.legacy_web / "lib/pages.py").is_file(),
-                  "legacy_pytest_ini": (legacy / config.legacy_web / "pytest.ini").is_file(),
-                  "demo_api": (api / "scripts" / config.api_module_file).is_file(),
-                  "knowledge_pitfalls": len(plugin.knowledge().pitfalls()),
-                  # C6 版本三元组入诊断：`atlas doctor` 是「本机现状」的快照入口，
-                  # 三元组在这里能当场看出「知识被人手改过（source=private，sha1 变了）」
-                  # 或「根本没配私有目录（source=builtin，读的是仓库虚构默认）」。
-                  # 展示项，不改 rc 逻辑；unreadable 指纹如实报 source，不静默。
-                  "version_triple": {
-                      "atlas": __version__,
-                      "knowledge": versioning.knowledge_fingerprint(
-                          getattr(plugin.knowledge(), "root", None)),
-                      "tz_data": versioning.tz_data_status()},
-                  # uf-3：声明族 vs 选择器前缀一致性（判据唯一在 atlas.ui_family，#92）。
-                  # 展示项，**不并入 rc**——前缀启发式存在假阳性空间（平台确无族前缀等），
-                  # 硬拦应由生成期闸/人审决定；doctor 只如实汇报声明族、解析结果与不一致清单。
-                  "ui_family": {
-                      "declared": ui_family.declared_family(),
-                      "resolved": ui_family.resolve_family(),
-                      "prefix_problems": ui_family.family_prefix_problems(
-                          plugin.knowledge().load_composed("components"))}}
-        # Docker/CI 资产一致性：防「已提供但已过期」——引用的文件/命令漂移时提前暴露
-        docker_ok = True
-        dockerfile = config.root / "Dockerfile"
-        if dockerfile.exists():
-            text = _read_text_safe(dockerfile)
-            if text is None:
-                checks["docker_unreadable"] = str(dockerfile)   # 非 UTF-8/权限：汇报而非崩溃整个诊断
-                docker_ok = False
-            else:
-                for ref in ("pyproject.toml", "requirements.txt", "examples/smoke_browser.py"):
-                    if ref in text and not (config.root / ref).exists():
-                        checks["docker_ref_missing"] = ref
-                        docker_ok = False
-                checks["docker_cmd_matches_compose"] = _compose_cmd_matches(config.root)
-                if not checks["docker_cmd_matches_compose"]:
-                    docker_ok = False
-        checks["docker_assets_consistent"] = docker_ok
-        # C5 边界账本一致性（design_c5 §4）：账本是数据不是引擎字面量（红线 #11）——
-        # 引擎运行时永不解析 docs/ownership/，只有这里与 scripts/boundary_classify.py
-        # 两个薄消费方，判据唯一实现在 atlas.boundaries（#92，doctor 不复制第二份校验）。
-        # rc 并入 docker_ok 同侧：账本「存在但坏」=漂移 → rc1（与 docker 资产同纪律 #134）；
-        # 文件缺失 → present:false **不改 rc**——新波次前的历史分支/精简克隆不该被账本卡死，
-        # 如实报缺失不猜不编（缺账本 ≠ 账本漂移，两个事实分开陈述）。
-        bpath = boundaries.ledger_path(config.root)
-        ledger_present = bpath.is_file()
-        boundary_ok = True
-        if ledger_present:
-            ledger, ledger_problems = boundaries.load_ledger(bpath)
-            ledger_warnings, ledger_uncovered = boundaries.ledger_disk_coverage(config.root, ledger)
-            boundary_ok = (not ledger_problems) and (not ledger_uncovered)
-            regions = ledger.get("regions")
-            checks["boundary_ledger"] = {
-                "present": True,
-                "regions": len(regions) if isinstance(regions, list) else 0,
-                "problems": ledger_problems,
-                "warnings": ledger_warnings,
-                "uncovered_regions": ledger_uncovered,
-                "accepted_debts": boundaries.accepted_debt_summary(ledger)}
-            checks["boundary_assets_consistent"] = boundary_ok
-        else:
-            checks["boundary_ledger"] = {"present": False, "path": boundaries.LEDGER_REL_PATH}
-        # ob-7：新平台接入检查清单（playbook §9 八项）接入 doctor——`_common/domains.json`
-        # 此前零消费方（清单只活在文档里，换平台的人不会碰它）。只读、离线、纯展示：
-        # 缺文件/坏形态如实 present:false **不改 rc**（与 boundary_ledger 缺失同口径——
-        # 缺清单 ≠ 清单漂移，两个事实分开陈述；该包随仓库分发，正常安装恒在）。
-        # 判据不在 cli 复制（#92）：加载/校验唯一实现在 atlas.knowledge.platform_checklist。
-        checks["platform_checklist"] = knowledge_platform_checklist(plugin.knowledge())
-        if getattr(args, "format", "json") == "text":
-            print(doctor_text(checks))
-        else:
-            dump_json(checks)
-        return 0 if checks["legacy_pages"] and checks["demo_api"] and docker_ok and boundary_ok else 1
-    if args.command == "legacy":
-        try:
-            adapter = LegacyAdapter(config)
-        except (OSError, ValueError) as exc:
-            return _user_error(exc)
-        headed = getattr(args, "headed", False)
-        if args.dry_run:
-            # dry-run 的文档语义是「只检查路径和命令」——修复前对不存在的目录照样
-            # 打印命令并返回 0，检查形同虚设；真实 CI 里会假绿通过预检。
-            try:
-                adapter.check_exec_dir()
-            except (OSError, ValueError) as exc:
-                return _user_error(exc)
-            fast = getattr(args, "fast", False)
-            print(" ".join(adapter.pytest_command(args.node, headed, args.keyword,
-                                                  fast=fast)))
-            print(f"cwd={adapter.exec_dir}")
-            if fast:
-                # 可核性：注入后的 PYTHONPATH（相对项已转绝对）+ 开关清单**三态**——
-                # (explicit)=用户显式设（含 off，恒优先）；
-                # (default --fast)=--fast 置位的**清单内**键（#36 后只剩截图抑制）；
-                # unset=未开。旧版只看父 os.environ 会把「默认已开」显示成 unset——
-                # 展示的必须是子进程实际会拿到的 env。
-                env = adapter.fast_child_env()
-                print(f"PYTHONPATH={env.get('PYTHONPATH', '')}")
-                for key in adapter.FAST_ENV_SWITCHES:
-                    explicit = os.environ.get(key)
-                    if explicit:
-                        print(f"{key}={explicit} (explicit)")
-                    elif env.get(key):
-                        print(f"{key}={env[key]} (default --fast)")
-                    else:
-                        print(f"{key}=unset")
-            return 0
-        try:
-            return adapter.run_pytest(args.node, headed, args.keyword,
-                                      fast=getattr(args, "fast", False))
-        except FileNotFoundError as exc:
-            # 路径是输入问题（rc 2），不是执行失败；pytest 自身退出码原样透传不吞
-            return _user_error(exc)
-    if args.command == "compile":
-        # 离线门禁：任务引用、assert 块、数据供给字段在 compile 期就报错，不登录不执行
-        try:
-            flow = FlowCompiler(TaskRegistry()).load(args.flow)
-            tasks = FlowCompiler(_full_registry()).validate_flow(flow)
-        except (OSError, ValueError, KeyError, RuntimeError, yaml.YAMLError) as exc:
-            return _user_error(exc)
-        print(json.dumps({"flow": str(args.flow), "tasks": [t.name for t in tasks],
-                          "asserts": len(flow.get("assert") or [])}, ensure_ascii=False, indent=2))
-        return 0
-    if args.command == "export-pytest":
-        return _export_pytest(args, config)
-    if args.command == "run":
-        # --case-timeout 是参数值校验（输入错误 rc 2 口径），排在 flow load 之前：
-        # 值本身非法时没必要先读文件再报第二个错。
-        case_timeout = getattr(args, "case_timeout", None)
-        if case_timeout is not None and case_timeout <= 0:
-            return _user_error(ValueError(
-                f"--case-timeout 必须是正整数秒（不限就别传），收到 {case_timeout}"))
-        if args.bu:
-            from .plugins.demo.tasks import apply_bu
-            try:
-                result = apply_bu(args.bu, plugin.knowledge().load_overlays())
-            except (KeyError, ValueError) as exc:
-                # KeyError=BU 不在库；ValueError=#134 BU 值形态非映射（手滑存成数组/字符串）。
-                # 旧只捕 KeyError，AttributeError 漏网变裸 traceback，违反用户输入 rc2 口径。
-                print(str(exc), file=sys.stderr)
-                return 2
-            print(f"BU={result['bu']} 坐标生效：{json.dumps(result['applied'], ensure_ascii=False)}"
-                  f"；未接执行路径/被显式env覆盖：{result['ignored']}", file=sys.stderr)
-        # pf-5 接线：flow 位置参数从单文件变多文件（nargs="+"）。单 flow 的既有路径**一字不动**
-        # ——这里只把 argparse 的列表形态还原成单个 Path，下方 load/预检/with/收尾全部原样；
-        # 多条 flow 走独立编排 _run_multi_flows（一次 Chromium launch + 一次登录串行跑完，
-        # 语义与红线见该函数 docstring）。位置在 --bu 之后：BU 坐标是「本次调用」级注入，
-        # 单/多 flow 语义相同。
-        if len(args.flow) > 1:
-            return _run_multi_flows(args, config, args.flow)
-        args.flow = args.flow[0]
-        # load 是「用户传入 flow 文件」的输入边界，与 compile 同口径：路径坏/YAML 非法/误传状态机
-        # 文件都属输入错误 → 一行 stderr + rc 2，且在 DemoRuntime 构造/登录**之前**失败（fail fast，
-        # 不启动浏览器不登录）。真正的执行失败（EnvBlocked/断言/网络）仍走下方 runtime.run 原样语义，
-        # 绝不降级成输入错误。
-        try:
-            flow = FlowCompiler(TaskRegistry()).load(args.flow)
-            # #97：结构校验（步骤形态/task 引用/assert/requires 供给块/flow 级策略）同为输入错误，
-            # 旧实现登录+开浏览器之后才在 compile/provision 里炸——真实踩点：`atlas run` 跑坏 flow
-            # 会先起真实 Chromium 走真实 SIT 登录再报裸 KeyError，浪费会话还可能留半截现场。
-            # registry 与运行时同源（_full_registry ≡ DemoRuntime.registry），compile 绿=run 不再结构炸。
-            tasks = FlowCompiler(_full_registry()).validate_flow(flow)
-        except (OSError, ValueError, KeyError, RuntimeError, yaml.YAMLError) as exc:
-            return _user_error(exc)
-        # ob-5：compile 期判定本次 flow 是否需要旧仓（判据单点在 runtime.legacy_required_for）。
-        needs_legacy = legacy_required_for(no_login=args.no_login, tasks=tasks)
-        # #103：入口输入错误（缺环境 URL / 坏 DemoApi 路径）与 DemoRuntime.__enter__ 同口径
-        # 预检——先继承旧项目 .env 再检查（doctor 同款坑：不 load_dotenv 会用未继承的
-        # ATLAS_DEMO_API_*/URL 误报缺失）。放在 with 之前：这些是输入错误（一行 stderr + rc 2），
-        # 不得裸 traceback，更绝不允许走到开浏览器/真实登录（fail-fast 与 #97 同红线）。
-        # 探针实锤：旧实现合法 flow + 缺 DEMO_URL_SIT 直接裸崩 ValueError traceback。
-        try:
-            # en-5：只并入白名单键（URL_*/ATLAS_* 在白名单内，base_url 继承语义不变）。
-            load_legacy_dotenv(config.legacy_project)
-            if not config.base_url:
-                raise ValueError(f"缺少 {config.env} 对应的 {config.env_url_key} 配置")
-            config.validate_base_url(config.base_url)
-            check_demo_api(config)
-            check_legacy_required(config, required=needs_legacy)
-            # 空账号也在 `with` 之前投递成 rc 2（判据/消息在 runtime.require_account 单点）：
-            # 旧实现只在 __enter__ 判，ValueError 穿透 main() 变 ~20 行 traceback。
-            # --no-login（不登录）时不查：没有会话就没有「拿空账号去登录」这件事。
-            if not args.no_login:
-                require_account(config, resolve_account(config, args.account))
-        except (OSError, ValueError) as exc:
-            return _user_error(exc)
-        if case_timeout is not None:
-            # per-case 超时（执行层短板 #1）：supervisor 在父进程看护，真实执行在子进程。
-            return _run_case_supervised(args, config, flow, case_timeout)
-        from .failures import AwaitingHuman, exception_brief
-        # 落库线：--harvest 注入 flow 级开关（overlay 保形态；单次运行的显式人决）。
-        # 注入必须在这里而非 run() 内部——dsl.run 只认 flow dict 里的键。
-        if getattr(args, "harvest", False):
-            flow = flow.overlay(harvest=True) if isinstance(flow, FlowDocument) \
-                else {"harvest": True, **flow}
-        try:
-            with DemoRuntime(config, login=not args.no_login, account=args.account, ou=args.ou,
-                             division_code=args.division, language=args.language,
-                             create_quota=args.create_quota,
-                             legacy_required=needs_legacy) as runtime:
-                # overlay 而不是 {**flow}：字典解包会丢掉 FlowDocument 的源文本形态，
-                # md5 编译缓存与 ^ 指针定位随之失效（同一份 flow 白编译第二遍、报错白丢行号）
-                FlowCompiler(runtime.registry(), runtime.provider).run(
-                    flow.overlay(engine=config) if isinstance(flow, FlowDocument)
-                    else {"engine": config, **flow}, runtime.actor)
-        except AwaitingHuman as exc:
-            # C9 显态：**等人不是失败**——run 轨 rc 3 是「需要人来处置」的信号，
-            # 与 agent 审批门的 rc 3 同值（cli agent 分支现盘 :454-457 已实测；口径限定在
-            # run/agent/dispatch 子进程面，`atlas gen` 的 rc 3 是结构自检失败，两义不并表——
-            # 评审必改 C9-D）。0/1/2/124/130 既有语义零变化：1 仍是真实失败，2 仍是输入错误。
-            # 收尾照常：`with` 的 __exit__ 在 except 之前跑完（浏览器关闭、回收清单落盘、
-            # 决策留痕都不因这条腿丢失），runs.jsonl 的 waiting 行已由 dsl 落好。
-            # stderr 前缀 ASCII（X4：`WAITING-HUMAN:`），冒号后才可能是中文——中文段走
-            # exception_brief 的净化刀（C4②），截 200 防长报文淹没终端。
-            print(f"WAITING-HUMAN: {exception_brief(exc)[:200]}", file=sys.stderr)
-            return 3
         return 0
     return 2
 
@@ -1169,14 +1358,11 @@ def _run_multi_flows(args, config, flows: list) -> int:
     # 单点判据函数——复制的是调用序列不是判据，#92 判据本体仍各在其单一真相处）。
     needs_legacy = legacy_required_for(no_login=args.no_login, tasks=all_tasks)
     try:
-        load_legacy_dotenv(config.legacy_project)
-        if not config.base_url:
-            raise ValueError(f"缺少 {config.env} 对应的 {config.env_url_key} 配置")
-        config.validate_base_url(config.base_url)
-        check_demo_api(config)
-        check_legacy_required(config, required=needs_legacy)
-        if not args.no_login:
-            require_account(config, resolve_account(config, args.account))
+        precheck_session_inputs(
+            config,
+            account=args.account,
+            no_login=args.no_login,
+            legacy_required=needs_legacy)
     except (OSError, ValueError) as exc:
         return _user_error(exc)
     from .failures import AwaitingHuman, exception_brief
@@ -1471,11 +1657,23 @@ def _explore(args, config) -> int:
     if args.auto:
         return _explore_auto(args, config)
     from .explore import start
-    # 空账号在开浏览器/登录前投递成 rc 2（判据单点在 runtime.require_account）；
-    # 与 __init__ 同解析状态（此刻尚未加载旧仓 .env，与 DemoRuntime 构造期一致）。
+    # 生产闸**必须早于输入预检**：探索在生产环境根本不该发生（`explore.start` 与
+    # `_explore_auto` 同判据 `config.is_production`）。若让预检先跑，缺 URL 的生产项目
+    # 会收到「缺 DEMO_URL_PROD_EU」而不是「探索禁止连生产」——把越界拒绝降级成配置提示，
+    # 用户补上 URL 就会真的连上生产点击了。rc 1 与 start()/auto 的 PermissionError 同值。
+    if config.is_production:
+        from .explore import PRODUCTION_REFUSED
+        print(PRODUCTION_REFUSED, file=sys.stderr)
+        return 1
+    # 输入预检必须在开浏览器/登录之前（#103 同口径，序列单点在 precheck_session_inputs）。
+    # 此前这里**只**调了 require_account：缺 DEMO_URL_* 时 DemoRuntime.__enter__ 的
+    # ValueError 一路穿透 main() → 实测 `atlas explore` 给 rc 1 + 16 行裸 traceback，
+    # 而 `atlas run` 同一份配置给 rc 2 + 一行（同族「抄漏一条」的第 3 例）。
+    # 探索恒登录 → 旧仓始终需要（legacy_required=True）。
     try:
-        require_account(config, resolve_account(config, args.account))
-    except ValueError as exc:
+        precheck_session_inputs(config, account=args.account, no_login=False,
+                                legacy_required=True)
+    except (OSError, ValueError) as exc:
         return _user_error(exc)
     try:
         trace = start(config, account=args.account, url=args.url, trace=args.trace)
@@ -1513,10 +1711,13 @@ def _explore_auto(args, config) -> int:
     trace = Path(args.trace) if args.trace else (
         config.reports_dir / f"explore_auto_{time.strftime('%Y%m%d_%H%M%S')}.jsonl")
     journal = ExperienceJournal(config.reports_dir)
-    # 空账号同 run 口径：开浏览器/登录前 rc 2 一行 stderr（判据单点在 runtime.require_account）。
+    # 空账号/缺 URL/坏路径同 run 口径：开浏览器/登录前 rc 2 一行 stderr。
+    # 序列单点在 `runtime.precheck_session_inputs`（此前这里只调 require_account，
+    # 缺 DEMO_URL_* 会裸 traceback 穿透——与 _explore 同族漏检，一并收敛）。
     try:
-        require_account(config, resolve_account(config, args.account))
-    except ValueError as exc:
+        precheck_session_inputs(config, account=args.account, no_login=False,
+                                legacy_required=True)
+    except (OSError, ValueError) as exc:
         return _user_error(exc)
     runtime = None
     try:

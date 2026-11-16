@@ -113,6 +113,51 @@ def check_legacy_required(config: AtlasConfig, *, required: bool) -> None:
     config.check_legacy_paths()
 
 
+def precheck_session_inputs(config: AtlasConfig, *, account: str | None = None,
+                            no_login: bool = False,
+                            legacy_required: bool = True,
+                            dotenv_where: str = "旧仓 .env") -> None:
+    """**运行时入口输入预检的唯一序列**（判定顺序即语义，勿在调用点重排/裁剪）。
+
+    为什么要有这个函数：这段逻辑此前在 CLI 里被**抄了 4 份**（`run` / `agent --execute` /
+    多 flow / `explore`），第 5 份在 `DemoRuntime.__enter__`。单点化只收敛了**判据函数**
+    （`check_demo_api` 等各一份），没收敛**调用序列**——于是 `_explore` / `_explore_auto`
+    漏掉了 base_url 与 DemoApi 两条，实测：
+
+        atlas run     → rc 2 + 一行「ValueError: 缺少 sit 对应的 DEMO_URL_SIT 配置」
+        atlas explore → rc 1 + 16 行裸 traceback（runtime.py 内联判据穿透 main）
+
+    这正是 #103 想消灭的「失败点漂到不该漂的地方」，也是「compile 绿 ≠ run 绿」的同族
+    第 3 例。收敛成一个序列后，新增第 6 个入口不会再有「抄漏一条」的机会。
+
+    判定顺序（每一步都有理由，改序会翻正常路径）：
+
+    1. `load_legacy_dotenv` —— 必须最先。账号/base_url 可能**只写在旧仓 .env** 里
+       （`ATLAS_SESSION_ACCOUNT` / `URL_*` 在白名单内），早于它判定会误拒正常路径（#115）。
+       只并入白名单键，白名单外的键隔离 + WARN（en-5）。
+    2. `base_url` 存在性 + `validate_base_url` —— 缺环境地址是输入错误，不是执行失败。
+    3. `check_demo_api` —— 坏适配路径必须在开浏览器/真实登录之前拒绝（#103）。
+    4. `check_legacy_required` —— 按需判旧仓目录（ob-5：`--no-login` 且无 legacy 任务
+       时不该要求旧仓存在）。
+    5. `require_account` —— **只在真要登录时**（`no_login=False`）。`--no-login` 时
+       没有会话就没有「拿空账号去登录」这件事，判它会把正常路径翻成错误（#115）。
+
+    抛 `ValueError` / `OSError`（`FileNotFoundError` 是 `OSError` 子类）——调用方统一
+    走「一行 stderr + rc 2」通道，不得让它穿透成 traceback。
+
+    `dotenv_where`：传给 `load_legacy_dotenv` 的 WARN 出处标签。`DemoRuntime.__enter__`
+    传 `"{旧仓名}/.env"`（日志里点名是哪个仓），CLI 侧用缺省值——纯文案，不改判据。
+    """
+    load_legacy_dotenv(config.legacy_project, where=dotenv_where)
+    if not config.base_url:
+        raise ValueError(f"缺少 {config.env} 对应的 {config.env_url_key} 配置")
+    config.validate_base_url(config.base_url)
+    check_demo_api(config)
+    check_legacy_required(config, required=legacy_required)
+    if not no_login:
+        require_account(config, resolve_account(config, account))
+
+
 def resolve_account(config: AtlasConfig, account: str | None = None, *,
                     defaults: dict | None = None) -> str:
     """会话账号**解析单点**：显式 `account` 参数 > 插件 `session_defaults(env).account`
@@ -237,33 +282,21 @@ class DemoRuntime:
 
     def __enter__(self) -> "DemoRuntime":
         legacy = self.config.legacy_project
-        # en-5/ob-5：旧仓 .env 只并入**白名单键**（ATLAS_* 与当前前缀的凭据/URL 键），
-        # 其余键隔离 + WARN 计数——旧实现整份 setdefault 进 os.environ，上一平台的
-        # `ISERVICE_*`/`DEMO_*` 会跨平台残留，后续 os.environ.get 读到串味值（归因漂移）。
-        # 解码/形态判据仍与 load_dotenv 共用 `_read_dotenv_pairs`（#92 单点）。
-        load_legacy_dotenv(legacy, where=f"{legacy.name}/.env")
-        # 空账号闸门必须在开浏览器 / 登录之前（#103 同族，判据与消息在 require_account 单点，
-        # 同一函数也被 CLI 预检调用以投递 rc 2）。`credential("")` 会命中 `ISERVICE_PWD_`
-        # 这类「键在、值为空」的残留键，拿到空密码后照样起 Chromium 走 SSO，失败点漂进旧登录
-        # 代码、消息不提「哪个配置没给」。没指定 --account 且插件/知识库也没给出该环境坐标时，
-        # 这里点名 env 与两条补救路径。位置有意在 `load_dotenv(legacy)` **之后**：账号可能只写在
-        # 旧项目 .env 的 `ATLAS_SESSION_ACCOUNT` 里，早于它判定会误拒正常路径（#115）。
-        if self.should_login:
-            require_account(self.config, self.account)
-        if not self.config.base_url:
-            raise ValueError(f"缺少 {self.config.env} 对应的 {self.config.env_url_key} 配置")
-        self.config.validate_base_url(self.config.base_url)
-        # fail-fast 预检（#103，口径与原因见 check_demo_api）：浏览器启动前就拒绝坏适配路径。
-        # CLI 也在 DemoRuntime 构造前做过同口径检查，这里再走一次保证 examples 直接
-        # `with DemoRuntime()` 同样受保护——is_file 幂等无副作用。
-        check_demo_api(self.config)
-        # #103 同口径补漏（run 轨）：旧项目根/web 子目录缺失也必须浏览器启动前拒绝。
-        # 旧实现只预检 DemoApi 路径——ATLAS_LEGACY_WEB 指错要等下面 _load(login.py)
-        # 才撞裸 FileNotFoundError：真实 Chromium 已起、SIT 登录已烧、消息不点名配置键
-        # （#90 归因漂移）。pytest 轨的 check_exec_dir 早就点名 ATLAS_LEGACY_*；run 轨是漏网面。
-        # ob-5：按需预检——不需要旧仓的 flow（`--no-login` 且无 legacy 任务）不再因缺目录
-        # 假红；显式 ATLAS_SKIP_LEGACY_CHECK=1 可跳过预检（判据与 WARN 在单一消费口）。
-        check_legacy_required(self.config, required=self.legacy_required)
+        # 入口输入预检**唯一序列**（`precheck_session_inputs` 单点，CLI 四入口同款）。
+        # 此处再走一遍是给 direct-use 的调用方兜底（examples/探索轨道直接
+        # `with DemoRuntime()`）：CLI 恰好在 `with` 之前也调了同一个函数，幂等。
+        #
+        # 顺序（`load_legacy_dotenv` 必须最先，理由见该函数 docstring）与本类历史行为
+        # **逐条等价**：旧实现把 base_url/demo_api/legacy 三条写在 require_account 之后，
+        # 收敛后统一为「账号在最后」——差异只在「同时缺 base_url 与账号」时报哪一条，
+        # 两者都是 rc 2 输入错误，无行为后果（且缺 base_url 更基础，先报它对用户更可操作）。
+        # en-5/ob-5：旧仓 .env 只并入白名单键，其余隔离 + WARN（`where` 点名是哪个仓）。
+        precheck_session_inputs(
+            self.config,
+            account=self.account,
+            no_login=not self.should_login,
+            legacy_required=self.legacy_required,
+            dotenv_where=f"{legacy.name}/.env")
         self.session = BrowserSession(self.config).__enter__()
         # __enter__ 抛出时 `with DemoRuntime(...)` 不会调用 __exit__——浏览器已开却中途失败
         # （登录报错、_wait_topbar/switch_to_ou 超时[README 记录 SIT 常见]、attach_demo 缺文件、
