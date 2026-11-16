@@ -3,7 +3,7 @@
 <p align="center">
   <a href="https://github.com/ojbkxc/Atlas"><img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License"></a>
-  <a href="#当前验证边界"><img src="https://img.shields.io/badge/tests-3017%20passed-brightgreen" alt="3017 passed"></a>
+  <a href="#当前验证边界"><img src="https://img.shields.io/badge/tests-3022%20passed-brightgreen" alt="3022 passed"></a>
   <img src="https://img.shields.io/badge/engine-Playwright-45edaa" alt="Playwright">
   <img src="https://img.shields.io/badge/self--healing-human--reviewed-orange" alt="Human-reviewed healing">
 </p>
@@ -617,13 +617,16 @@ PYTHONPATH=src python scripts/boundary_classify.py --diff incoming.diff --to-tow
   **本波改动前（git stash）**与改动后两次运行**行为完全一致**（同 rc、同超时点），即该失败
   **不是本波代码回归**。SIT 网络可达（HTTP 302）、凭据与 `envs.json` 坐标齐备，故成因在
   SSO/凭据面（**未验证，不猜**）。日志与改前/改后对照归档 `reports/guard_wave_20261116/`。
-  **顺带暴露的既有缺陷（本波未修，需人裁）**：登录期失败**不写 `reports/runs.jsonl`**
-  （两次运行均为 0 条 2026-11-16 记录）→ `summary`/`allure`/`report` 全看不到这次运行，
-  无人值守场景等于「跑了但无机器可读证据」。修它要动 `__enter__` 失败路径并新增 run 行，
-  属行为变更面。**因此本波的真实真机产出 = 0 条新的 passed 行**，如实记录，不当作成绩。
+  **同波修掉的既有缺陷**：登录期失败**不写 `reports/runs.jsonl`**（实测：修复前两次运行均为
+  0 条 2026-11-16 记录 → `summary`/`allure`/`report` 全看不到这次运行，无人值守等于「跑了但
+  无机器可读证据」）。现 `cli._record_entry_failure` 在 `__enter__` 抛错时补写一条**与正常行
+  同构**的记录（`status=failed`、`fail_class` 只取 `FailureClass` 既有成员、零伪造步骤）再原样
+  re-raise；真机复验 77→78 条、2026-11-16 由 0→1 条、rc 仍 1、`atlas summary` 的
+  `failed 24→25`/`interaction 1→2` 可见。**本波真实真机产出仍 = 0 条新的 passed 行**
+  （登录卡在 SSO，非代码问题），如实记录，不当作成绩。
 
-- 离线测试：**3017 passed / 0 failed**（Python 3.11；`PYTHONPATH=src python -m pytest -q`，
-  2026-11-16 实测——0 skipped、`--collect-only` 3017（= passed，无隐藏 skip/xfail）；
+- 离线测试：**3022 passed / 0 failed**（Python 3.11；`PYTHONPATH=src python -m pytest -q`，
+  2026-11-16 实测——0 skipped、`--collect-only` 3022（= passed，无隐藏 skip/xfail）；
   较上一收口位 2949（2026-11-16 实测）净 +35 且失败清零，本波 **缺陷修复**（代码分析逐条核出的
   12 项，P0 重放归因 / 打包缺口 / 知识包接线 / runtime 装配 / registry 同源 / 影子层遮蔽 / ruff+CI / 文档漂移）：
   **P0** `ApiEvidence` 重放 handler 每步 append 从不清理 → 第二步失败重放第一步请求（归因错位），

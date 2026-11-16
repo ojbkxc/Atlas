@@ -524,6 +524,57 @@ def _legacy(args, config) -> int:
         return _user_error(exc)
 
 
+def _record_entry_failure(config, flow, exc: BaseException) -> None:
+    """会话**进入**失败时补写一条 runs.jsonl 记录（run 轨无痕族修复，2026-11-16 真机抓出）。
+
+    ## 为什么在这里写而不是让 `dsl.run` 写
+
+    `RunRecorder` 由 `dsl.FlowCompiler.run()` 在**会话已就绪之后**才构造。`__enter__` 抛错
+    （登录超时、SSO 未通过、Cookie 烘焙失败、DemoApi 挂载失败）时：
+    `with` 不调 `__exit__`、`run()` 从未被调用、recorder 从未存在——所以一行记录都没有。
+    真机实测：SIT 登录卡在 SSO → rc 1，`runs.jsonl` 在改动前后两次跑里**都是 0 条新记录**。
+    后果是 `atlas summary` / `allure` / `report` 完全看不到这次运行——无人值守时
+    「跑过」这件事只存在于已被轮转掉的终端日志里（无痕族 #106/#86 的 run 轨形态；
+    gap9 F-33.4 ① 登记的是 pytest 侧同族问题）。
+
+    ## 形态纪律（关键：必须与正常行同构）
+
+    字段集与 `RunRecorder.close()` 一致（`recorder.py:98-107`），`fail_class` 取值域来自
+    `failures.FailureClass`（**不新造词**）——否则读侧（reporting/allure）会把这条行当成
+    外来物：`status` 不认识则计数漏、`fail_class` 不认识则缺陷分布多出一个假类别。
+    故这里只调既有单点：`classify_failure`（唯一分类判据）+ 同一个 `RunRecorder` 类
+    （拿它的 `run_id`/`started_at`/`close` 落盘路径与文件锁，不手写 json）。
+
+    ## 边界（刻意不做的事）
+
+    - **不改 rc**：调用方原样 re-raise，rc 仍由既有腿决定（本例是穿透到顶层 → 1）。
+    - **不洗绿**：环境阻塞写 `env_blocked`（既有 FailureClass 成员），不是 `passed`。
+    - **不吞异常**：本函数自身出错（磁盘满/路径坏）只打一行 WARN，绝不顶掉真因。
+    - **不重复落盘**：`AwaitingHuman` 走 C9 显态腿（dsl 已落 waiting 行时也在此路径之外），
+      调用方在 except 里显式跳过。
+
+    `steps` 为空列表是**如实**的：会话都没起来，没有步骤可记。读侧按 `steps == []` 加
+    `fail_class` 能识别出「入口失败」形态。
+    """
+    from .failures import classify_failure
+    from .recorder import RunRecorder
+
+    try:
+        case = _flow_display_name(flow)
+        recorder = RunRecorder(case, config.env, config.reports_dir / "runs.jsonl",
+                               config.mode)
+        # 零步骤 + 一条 fail_class：不伪造 step，也不留空 fail_class（那会让 summary
+        # 把它计入 unknown 缺陷分布，而它的归因其实是明确的）。
+        recorder.steps.append({"step": "session.__enter__", "op": "setup",
+                               "ok": False,
+                               "fail_class": classify_failure(exc).value})
+        recorder.close(status="failed")
+    except Exception as write_exc:
+        # 落盘失败不得顶掉真因（真因由调用方 re-raise）。一行 WARN，可 grep。
+        print(f"WARN: 入口失败记录写盘失败（{type(write_exc).__name__}: {write_exc}）——"
+              f"本次运行不会出现在 runs.jsonl", file=sys.stderr)
+
+
 def _run(args, config, plugin) -> int:
     """单 flow 执行轨：结构校验 → 输入预检 → DemoRuntime → FlowCompiler.run。
 
@@ -592,15 +643,48 @@ def _run(args, config, plugin) -> int:
         flow = flow.overlay(harvest=True) if isinstance(flow, FlowDocument) \
             else {"harvest": True, **flow}
     try:
-        with DemoRuntime(config, login=not args.no_login, account=args.account, ou=args.ou,
-                         division_code=args.division, language=args.language,
-                         create_quota=args.create_quota,
-                         legacy_required=needs_legacy) as runtime:
+        # 会话进入（登录/开浏览器/Cookie 烘焙）与 flow 执行**分两层捕获**：
+        # `with` 的 `__enter__` 抛错时 Python 不调用 `__exit__`，也不会有任何 RunRecorder
+        # 落盘——真机实测（2026-11-16）：SIT 登录卡在 SSO、顶栏选择器 60s 超时 →
+        # `atlas run` rc 1，而 `reports/runs.jsonl` **一行都没有**（改前改后两次跑均 0 条）。
+        # 后果：`atlas summary` / `atlas allure` / `atlas report` 全看不到这次运行，
+        # 无人值守场景等于「跑了但没有任何机器可读证据」（无痕族 #106/#86 的 run 轨形态，
+        # gap9 F-33.4 ① 登记的是 pytest 侧同族）。
+        #
+        # 修法：进入失败时**自己**落一条与正常行同构的记录（同 RunRecorder.close 的字段集与
+        # fail_class 词汇，见 recorder.py:98-107 / failures.FailureClass），再原样抛出真因。
+        # 不静默、不改 rc（仍是 1）、不把环境阻塞洗成 passed（红线 #7）。
+        session = None
+        try:
+            session = DemoRuntime(config, login=not args.no_login, account=args.account,
+                                  ou=args.ou, division_code=args.division,
+                                  language=args.language, create_quota=args.create_quota,
+                                  legacy_required=needs_legacy).__enter__()
+        except AwaitingHuman:
+            raise                      # 等人不是失败：交给下面的 C9 显态腿（不重复落盘）
+        except BaseException as exc:
+            # 留痕自身绝不允许顶掉真因（真因优先，与 runtime.__enter__ 的清理兜底同纪律）：
+            # `_record_entry_failure` 内部已有 try，但那是「写盘失败」；这里再兜一层是防
+            # 「留痕函数本身因未知原因炸」（例如读 config.reports_dir 时属性异常）。
+            # 用户的下一句话必须永远是「登录为什么挂」。
+            try:
+                _record_entry_failure(config, flow, exc)
+            except Exception:
+                pass
+            raise
+        try:
             # overlay 而不是 {**flow}：字典解包会丢掉 FlowDocument 的源文本形态，
             # md5 编译缓存与 ^ 指针定位随之失效（同一份 flow 白编译第二遍、报错白丢行号）
-            FlowCompiler(runtime.registry(), runtime.provider).run(
+            FlowCompiler(session.registry(), session.provider).run(
                 flow.overlay(engine=config) if isinstance(flow, FlowDocument)
-                else {"engine": config, **flow}, runtime.actor)
+                else {"engine": config, **flow}, session.actor)
+        finally:
+            # 与 `with` 语义等价：无论 run 成功与否都退出会话（浏览器关闭/回收清单落盘）。
+            # 退出自身报错不得顶掉真因——真因优先（与 runtime.__enter__ 兜底同纪律）。
+            try:
+                session.__exit__(None, None, None)
+            except Exception:
+                pass
     except AwaitingHuman as exc:
         # C9 显态：**等人不是失败**——run 轨 rc 3 是「需要人来处置」的信号，
         # 与 agent 审批门的 rc 3 同值（cli agent 分支现盘 :454-457 已实测；口径限定在
