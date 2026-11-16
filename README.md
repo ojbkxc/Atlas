@@ -612,6 +612,16 @@ PYTHONPATH=src python scripts/boundary_classify.py --diff incoming.diff --to-tow
 
 ## 当前验证边界
 
+- **真机验证（2026-11-16 本波实测，未通过）**：SIT 登录卡在 SSO 表单，顶栏
+  `.app-topbar-obj.el-dropdown-selfdefine` 60s 未出现 → `atlas run` rc 1。同一 flow 在
+  **本波改动前（git stash）**与改动后两次运行**行为完全一致**（同 rc、同超时点），即该失败
+  **不是本波代码回归**。SIT 网络可达（HTTP 302）、凭据与 `envs.json` 坐标齐备，故成因在
+  SSO/凭据面（**未验证，不猜**）。日志与改前/改后对照归档 `reports/guard_wave_20261116/`。
+  **顺带暴露的既有缺陷（本波未修，需人裁）**：登录期失败**不写 `reports/runs.jsonl`**
+  （两次运行均为 0 条 2026-11-16 记录）→ `summary`/`allure`/`report` 全看不到这次运行，
+  无人值守场景等于「跑了但无机器可读证据」。修它要动 `__enter__` 失败路径并新增 run 行，
+  属行为变更面。**因此本波的真实真机产出 = 0 条新的 passed 行**，如实记录，不当作成绩。
+
 - 离线测试：**3017 passed / 0 failed**（Python 3.11；`PYTHONPATH=src python -m pytest -q`，
   2026-11-16 实测——0 skipped、`--collect-only` 3017（= passed，无隐藏 skip/xfail）；
   较上一收口位 2949（2026-11-16 实测）净 +35 且失败清零，本波 **缺陷修复**（代码分析逐条核出的
