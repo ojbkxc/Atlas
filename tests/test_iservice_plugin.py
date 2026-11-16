@@ -268,8 +268,10 @@ def test_pitfalls_scoped_to_domain(monkeypatch):
     assert rows, "domain=iservice 无坑点=知识未生效"
     # 未人审的知识不冒充 approved（红线 #10）。
     assert all(r.get("status") == "pending_review" for r in rows)
-    # 引擎按 domain 过滤：demo domain 不该命中 iservice 专属坑点。
-    assert plugin.knowledge().pitfalls("demo") == []
+    # 引擎按 domain 过滤：demo 域不该命中 iservice 专属坑点。通用包行带 `generic` scope，
+    # 对任意域可见（P1-3 接线的预期效果），因此只按 id 前缀断言「不串门」。
+    demo_rows = plugin.knowledge().pitfalls("demo")
+    assert not any(str(r.get("id", "")).startswith("iservice-") for r in demo_rows)
 
 
 def test_knowledge_json_all_parse_and_empty_session():

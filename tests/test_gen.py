@@ -652,10 +652,9 @@ def test_ob3_domain_drives_pitfall_scope_via_registry(tmp_path, monkeypatch):
     # 把 resolve_plugin 换成会炸的哨兵，--plugin iservice 时若 emit_flow 没走插件解析
     # （比如有人把 domain 改回写死），这条就红；走了解析则 resolve_plugin 被真调。
     calls = []
-    import atlas.generator.emit_flow as ef
-    from atlas.plugin_api import register_plugin
-    real_resolve = ef.__dict__.get("resolve_plugin")
-    # emit_flow 里是函数内 import：哨兵要打在 plugin_api 上
+    # emit_flow 的 _resolve_plugin_domain 里是函数内 `from ..plugin_api import
+    # resolve_plugin`：哨兵必须打在 plugin_api 模块上（打在 emit_flow 命名空间上
+    # 是无效的——模块级没有这份绑定，patch 了也不会被任何调用读到）。
     import atlas.plugin_api as papi
     real = papi.resolve_plugin
 

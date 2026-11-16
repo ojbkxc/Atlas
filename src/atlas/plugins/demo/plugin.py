@@ -5,6 +5,7 @@ from .tasks import core_tasks
 from ...contracts import ContractRegistry
 from ...dsl import TaskRegistry
 from ...knowledge import KnowledgeBase, SelectorRegistry
+from ...probes import DataProvider
 
 class DemoPlugin:
     name = "demo"
@@ -25,16 +26,26 @@ class DemoPlugin:
         self.private_root = Path(_priv) if _priv else None
 
     def knowledge(self) -> KnowledgeBase:
+        # 通用知识包走**组合层**（base_roots），不走 fallback 影子层——影子语义会被平台
+        # 自带的同名 pitfalls/components 整份挡住，通用包 82 条跨平台坑点对 demo 域
+        # 永远不可见（P1-3 实测：接线前 pitfalls('demo') 只有包内 30 条）。
+        # 惰性 import：plugin_api 顶层 import 了本插件包，模块级反向 import 会成环
+        # （与 ui_family._table_path 同一处置）。
+        from ...plugin_api import common_knowledge_root
         if self.private_root:
-            return KnowledgeBase(self.private_root, fallback_root=self.knowledge_root)
+            return KnowledgeBase(self.private_root, fallback_root=self.knowledge_root,
+                                 base_roots=common_knowledge_root())
         # #135：未设 ATLAS_KNOWLEDGE_DIR 时返回**只读库**（root=None）——旧实现直接
         # KnowledgeBase(包内根) 让 review --approve/--apply 把业务批准写进 git 资产，
         # 违反 AGENTS 红线 #11「批准永不写包内文件」。读照常回退包内虚构默认，
         # 写路径当场点名要私有目录。
-        return KnowledgeBase(None, fallback_root=self.knowledge_root)
+        return KnowledgeBase(None, fallback_root=self.knowledge_root,
+                             base_roots=common_knowledge_root())
 
     def selectors(self) -> SelectorRegistry:
-        return SelectorRegistry(self.knowledge().load("components"))
+        # 组合层读取：通用组件包（login/table/dialog/…15 个）与平台组件并入，
+        # 同名组件平台胜出。用 load() 会因影子遮蔽丢掉整份通用组件库。
+        return SelectorRegistry(self.knowledge().load_composed("components"))
 
     def contracts(self) -> ContractRegistry:
         """契约走与知识相同的 私有→包内 逐文件回退。真实项目用 ATLAS_KNOWLEDGE_DIR 覆盖
@@ -76,3 +87,13 @@ class DemoPlugin:
         for task in self.tasks(legacy_pages_path):
             # 必须把默认参数一并带过去，否则 registry 构造出的新实例会丢 page_key 等必需参数。
             registry.register(task.name, lambda task=task, **kwargs: task.clone(**kwargs))
+
+    def make_provider(self, config, api, division_code) -> DataProvider:
+        """数据探针装配（runtime 按插件取 provider 的协议成员，与 iservice 同形）。
+
+        内部委托现有 `make_demo_provider`，行为与旧 `runtime.__enter__` 直接调用逐字节
+        等价（SalesOrder + Customer 两个探针）；惰性 import 保持插件内无新增模块级耦合。
+        换业务只换本方法，不改 runtime（红线 11）。
+        """
+        from .probes import make_demo_provider
+        return make_demo_provider(config, api, division_code)

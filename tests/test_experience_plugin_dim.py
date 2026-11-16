@@ -12,7 +12,6 @@ import json
 
 import pytest
 
-from atlas import experience
 from atlas.experience import ExperienceJournal
 
 

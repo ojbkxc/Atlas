@@ -20,8 +20,18 @@ atlas = "atlas.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
+# 知识 JSON 是插件资产（契约/坑点/组件/会话默认），不是代码——漏声明则装完 wheel
+# `IservicePlugin.contracts()` 抛「契约文件缺失」、DemoRuntime 裸 KeyError: 'ou'。
 "atlas.plugins.demo" = ["knowledge/*.json", "knowledge/contracts/*.json"]
+"atlas.plugins.iservice" = ["knowledge/*.json", "knowledge/contracts/*.json"]
+# 通用知识包（82 条跨平台坑点/组件族/接入清单）：被 plugin_api.common_knowledge_root()
+# 指向、两个内置插件经 base_roots 消费；漏打包等于装完即「通用包不可见」。
+"atlas.plugins._common" = ["knowledge/*.json"]
 
 [tool.pytest.ini_options]
 addopts = "-p no:playwright -p no:randomly"
 testpaths = ["tests"]
+# 裸 `pytest`（不带 `python -m`）不把 cwd 放进 sys.path，`from scripts.xxx import` 在
+# 4 个测试文件收集期 ImportError。显式声明两处根：src（atlas 包，未安装时也能跑）与
+# "."（仓库根，scripts/ 顶层模块）。
+pythonpath = ["src", "."]

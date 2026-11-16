@@ -640,7 +640,7 @@ env 名、业务字段）留在平台包。本文 §1–§15 讲的是「流程�
 | 文件 | 内容 | 判据 |
 |---|---|---|
 | `components.json` | 15 条组件铁律（弹层多副本、触发器≠动作按钮、固定列重复渲染、分页 `li.active`…） | selector 只用 `.el-*` 等**通用 CSS**；平台自定义 class（非 `.el-*` 形态）不进通用包 |
-| `pitfalls.json` | 47 条机制坑点（症状→根因→处置） | `scope` 只用**机制标签**（`element-ui`/`vue2`/`api`/`state-machine`/`authz`/`export`/`delegation`/`data-hygiene`/`cleanup` 等，词表见台账 §5），不含平台名；`status` 一律 `pending_review` |
+| `pitfalls.json` | 82 条机制坑点（症状→根因→处置） | `scope` 只用**机制标签**（`element-ui`/`vue2`/`api`/`state-machine`/`authz`/`export`/`delegation`/`data-hygiene`/`cleanup` 等，词表见台账 §5），不含平台名；`status` 一律 `pending_review` |
 | `domains.json` | 新平台接入检查清单 `checklist` | 六类通用检查项：`network_and_proxy` / `login_and_captcha` / `api_surface_and_params` / `data_hygiene` / `capability_boundaries` / `restorability` |
 
 ### 16.2 什么算「通用」（提炼判据）
@@ -711,7 +711,7 @@ KnowledgeBase(root=私有目录,
 | 登录/验证码/登录态共享配方 | **本文 §11**；账号与代理坐标走 env（`SNA_USERNAME` / `SNA_PASSWORD` / `SNA_SELLER_PROXY`），不入库 |
 | 权限强制力（认证≠授权）四层判据 | **本文 §12**；该平台的受限角色与端点清单进平台包 `domains.json` |
 | **通用组件铁律**（Element UI 族，跨平台复用） | `_common/knowledge/components.json`（15 条；只用 `.el-*` 通用 CSS） |
-| **通用机制坑点**（症状→根因→处置，跨平台复用） | `_common/knowledge/pitfalls.json`（47 条；`scope` 只用机制标签、`status` 一律 `pending_review`） |
+| **通用机制坑点**（症状→根因→处置，跨平台复用） | `_common/knowledge/pitfalls.json`（82 条；`scope` 只用机制标签、`status` 一律 `pending_review`） |
 | **新平台接入检查清单**（通用） | `_common/knowledge/domains.json` 的 `checklist`（6 类，见 §16.1） |
 | 平台特有的选择器/坑点 | `plugins/<业务>/knowledge/components.json` / `pitfalls.json` |
 | 接口契约与逐端点注释 | `plugins/<业务>/knowledge/contracts/` |

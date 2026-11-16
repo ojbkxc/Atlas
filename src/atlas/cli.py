@@ -372,19 +372,14 @@ def ensure_utf8_streams() -> None:
                 pass
 
 def _full_registry() -> TaskRegistry:
-    """compile 校验需要完整 registry（含 runtime 侧通用 Task），与 DemoRuntime.registry() 一致。"""
-    registry = TaskRegistry()
-    resolve_plugin().register_tasks(registry)
-    from .plugins.demo.legacy_case import LegacyCaseTask
-    from .runtime import DemoApiOperation, LegacyStepTask
-    from .tasks import AssertApi, CallEndpoint, UiAction
-    registry.register("api_call", lambda **kwargs: CallEndpoint(**kwargs))
-    registry.register("ui_action", lambda **kwargs: UiAction(**kwargs))
-    registry.register("demo_api", lambda **kwargs: DemoApiOperation(**kwargs))
-    registry.register("assert_api", lambda **kwargs: AssertApi(**kwargs))
-    registry.register("legacy_step", lambda **kwargs: LegacyStepTask(**kwargs))
-    registry.register("legacy_case", lambda **kwargs: LegacyCaseTask(**kwargs))
-    return registry
+    """compile 校验需要完整 registry（含 runtime 侧通用 Task），与 DemoRuntime.registry() 一致。
+
+    装配逻辑收敛 `runtime.build_registry()` 单点（#92）：预检侧与执行侧各写一份会让
+    「compile 绿 ⇒ run 绿」失效——P2-2 把 `demo_api` 改成按插件注册后，这里若仍无条件
+    注册，iservice 下含 `demo_api` 的 flow 过得了 compile、执行期才撞「未注册的 Task」。
+    """
+    from .runtime import build_registry
+    return build_registry()
 
 def _read_text_safe(path: Path) -> str | None:
     """读诊断用文本资产；present-but-unreadable（非 UTF-8/权限/IO）返回 None，由调用方判为

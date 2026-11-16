@@ -36,13 +36,12 @@ os.replace，经 `atomic_io.atomic_write_bytes` 单点——收口收敛后不�
 from __future__ import annotations
 import hashlib
 import json
-import os
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .atomic_io import atomic_write_bytes, read_text_retry
+from .atomic_io import atomic_write_bytes
 
 # Allure 结果集目录名（与 `atlas allure` 默认输出、devops-sync 的读取子路径同值）。
 # 单点定义：消费方 import 这里，不各自手抄字面量（#92 改一漏一）。

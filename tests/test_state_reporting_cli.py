@@ -161,11 +161,15 @@ def test_cli_contracts_validate_reports_unparseable_file(tmp_path, monkeypatch, 
 
 
 def test_cli_knowledge_queries_pitfalls(tmp_path, capsys):
-    """atlas knowledge 输出坑点知识库。"""
+    """atlas knowledge 输出坑点知识库（平台自有 + 通用包组合层，P1-3 接线后）。"""
     assert main(["--root", str(tmp_path), "knowledge"]) == 0
     rows = json.loads(capsys.readouterr().out)
     assert len(rows) >= 30
-    assert all(r.get("status") == "approved" for r in rows)
+    # 平台自带 30 条全部 approved（通用包 82 条是 pending_review，不能一并要求 approved）。
+    assert all(r.get("status") == "approved"
+               for r in rows if not str(r.get("id", "")).startswith("gen-"))
+    # 组合层生效：通用包 82 条 gen-* 对 demo 域可见。
+    assert sum(1 for r in rows if str(r.get("id", "")).startswith("gen-")) == 82
 
 
 def test_cli_agent_propose_plans_without_executing(tmp_path, capsys):
@@ -205,7 +209,8 @@ def test_cli_doctor_reports_environment(tmp_path, capsys):
     out = json.loads(capsys.readouterr().out)
     assert "python" in out and "env" in out
     assert "legacy_pages" in out and "demo_api" in out
-    assert out["knowledge_pitfalls"] == 30
+    # P1-3：pitfalls 现为 平台 30 + 通用包 82（组合层并入）= 112；不再写死旧值 30。
+    assert out["knowledge_pitfalls"] == 112
 
 
 def test_cli_legacy_dry_run_outputs_command(tmp_path, monkeypatch, capsys):

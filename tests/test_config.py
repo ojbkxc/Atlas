@@ -328,13 +328,17 @@ def _entry_cfg(monkeypatch, monkeypatch_kb=None):
     return AtlasConfig.from_root(None, env="sit")
 
 
-def test_entrypoint_default_ignored(monkeypatch):
-    """未设 ATLAS_ENTRYPOINT：base_url 仍读单键（默认路径逐字节不变）。"""
-    import os
+def test_entrypoint_default_ignored(monkeypatch, tmp_path):
+    """未设 ATLAS_ENTRYPOINT：base_url 仍读单键（默认路径逐字节不变）。
+
+    root 必须用 tmp_path：from_root(None) 以 cwd（仓库根）为 root 会 load_dotenv
+    把本机 `.env` 的 `ATLAS_ENV_PREFIX` 等键 setdefault 回进程，env_url_key 随之
+    变成真实前缀键（如 ISERVICE_URL_SIT），预设的 DEMO_URL_SIT 被静默忽略。
+    """
     from atlas.config import AtlasConfig
     monkeypatch.delenv("ATLAS_ENTRYPOINT", raising=False)
     monkeypatch.setenv("DEMO_URL_SIT", "https://single.example/")
-    assert AtlasConfig.from_root(None).base_url == "https://single.example"
+    assert AtlasConfig.from_root(tmp_path).base_url == "https://single.example"
 
 
 def test_entrypoint_reads_envs_json_entrypoints(monkeypatch):

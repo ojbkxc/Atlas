@@ -1,4 +1,5 @@
 from __future__ import annotations
+import contextlib
 import os
 import sys
 import threading
@@ -180,6 +181,12 @@ class ExecutionEngine:
         # 且 handler 本体 fail-safe——任何异常（网络/非 JSON/超时）都跳过、返回 None，
         # 由 ApiEvidence.classify 落到下一个 handler 或最终 None（回落 classify_failure）。
         # 定性器绝不能先于被定性对象死（#89 同红线）。
+        # **每步单槽替换**（先清后注册）：旧实现每步 append 且从不清理，classify 按注册顺序
+        # 首个命中——第二步失败会先重放第一步的接口（`/a` 成功 → interaction），真实环境 5xx
+        # 被归因错位；长 flow 里 handler 无界增长、跨 flow 串味。清空放在注册之前且不依赖
+        # Task 是否可重放：非 API/写任务/UI 任务也会清掉上一步留下的槽，跨 flow 同理
+        # （新 flow 第一步即清），无需改 runtime.start_flow。
+        self._reset_step_replay()
         self._register_readonly_replay(actor, task)
         context = self.recorder.step(task.name, task.metadata.channel.value) if self.recorder else _null_step()
         # 降级留痕游标：_perform 的 auto 降级原因只落在 ctx["_auto_degraded_to_ui"]，
@@ -230,7 +237,6 @@ class ExecutionEngine:
                     record["fail_class"] = FailureClass.ENV_BLOCKED.value
             outcome = StepResult(task.name, True) if not skipped else StepResult(
                 task.name, False, FailureClass.ENV_BLOCKED.value)
-            # 被环境跳过的步骤不是通过：明确记 env_blocked，不伪装成 PASSED
             if self.session:
                 self._record_shot(record, self.session.capture(task.name, True))
         except BaseException as exc:
@@ -378,6 +384,22 @@ class ExecutionEngine:
         self.results.append(outcome)
         return outcome
 
+    def _reset_step_replay(self) -> None:
+        """清掉上一步留下的只读重放器（每步边界调用，单槽替换语义）。
+
+        容忍任意 evidence 形态：`ApiEvidence` 标准实现有 `clear_replay`；测试/插件替身
+        可能只有 `classify`（如 `test_engine_waiting_does_not_touch_evidence_classifier`
+        的 BoomEvidence）或干脆是 None。**任何异常都吞掉**——本方法在 execute 的失败路径
+        之前跑，抛错会把原用例异常顶掉（#89 同红线）。
+        """
+        if self.evidence is None:
+            return
+        clear = getattr(self.evidence, "clear_replay", None)
+        if callable(clear):
+            # 坏替身不得顶掉原用例异常（#89）——与 handler 本体的 fail-safe 同口径。
+            with contextlib.suppress(Exception):
+                clear()
+
     def _register_readonly_replay(self, actor: Actor, task: Task) -> None:
         """en-11：为「显式只读 + API 通道」的 Task 注册一个只读 GET 重放 handler。
 
@@ -439,7 +461,13 @@ class ExecutionEngine:
                     "data": response.get("data"),
                     "error": response.get("error", "")}
 
-        self.evidence.register(_replay)
+        # 单槽替换（`set_replay`）优先；替身只有旧 `register` 时回落追加（兼容既有测试
+        # 替身，标准实现走单槽——不累积）。
+        setter = getattr(self.evidence, "set_replay", None)
+        if callable(setter):
+            setter(_replay)
+        else:
+            self.evidence.register(_replay)
 
     def _record_shot(self, record: Any, shot: Any) -> None:
         """#139：capture() 的截图路径并入 step 记录——旧实现三处调用全丢弃返回值，

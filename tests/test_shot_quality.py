@@ -175,14 +175,20 @@ def test_batch_leaves_no_tmp_files(tmp_path):
 
 
 def test_atomic_write_bytes_cleanup_on_failure(tmp_path, monkeypatch):
-    """原子写失败路径：replace 抛错 → tmp 残档尽力清理、异常原样传播（真因优先）。"""
+    """原子写失败路径：replace 抛错 → tmp 残档尽力清理、异常原样传播（真因优先）。
+
+    哨兵打在 `atomic_io.os` 上，不是 `allure_report.os`：`_atomic_write_bytes` 是薄委托，
+    真正的 `os.replace` 调用点在 `atomic_io.atomic_write_bytes` 内（pf-6 #92 收口后
+    allure_report 只 import 了 `atomic_write_bytes`，模块命名空间里没有 `os` 绑定）。
+    """
     from atlas import allure_report as ar
+    from atlas import atomic_io
     path = tmp_path / "x.bin"
 
     def boom(*args, **kwargs):
         raise OSError("disk on fire")
 
-    monkeypatch.setattr(ar.os, "replace", boom)
+    monkeypatch.setattr(atomic_io.os, "replace", boom)
     with pytest.raises(OSError, match="disk on fire"):
         ar._atomic_write_bytes(path, b"data")
     assert not (tmp_path / "x.bin.tmp").exists()

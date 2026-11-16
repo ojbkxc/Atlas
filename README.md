@@ -62,7 +62,7 @@ python -m playwright install chromium && pytest -q
   给出两条补救路径（不静默给你一个装不上的骨架）。
 - `atlas doctor` 在未接旧项目时会 **rc 1**（`legacy_pages`/`demo_api` 为 False）——这是预期而非装坏，
   接法见 [CLAUDE.md 常见问题](./CLAUDE.md)「怎么接回公司真实项目」（README 本身不设 FAQ 段）。
-- 想看 Atlas 自身的全量离线测试：`PYTHONPATH=src python -m pytest -q`（几分钟，不联网、不用凭据）。
+- 想看 Atlas 自身的全量离线测试：`pytest -q`（仓库根；pyproject `[tool.pytest.ini_options]` 已声明 `pythonpath = ["src", "."]`，裸 pytest 可收集/跑绿）；未安装或旧 pytest 不认该配置时用等价的 `PYTHONPATH=src python -m pytest -q`（几分钟，不联网、不用凭据）。
 
 ## 已实现
 
@@ -79,7 +79,7 @@ python -m playwright install chromium && pytest -q
 - **真实项目对接映射**：`ATLAS_ENV_PREFIX`/`ATLAS_LEGACY_WEB`/`ATLAS_DEMO_API_*`/`ATLAS_APP_HEADER_*` 一组开关把仓库自带的虚构 demo 映射到真实旧项目，引擎零业务字面量。
 - **探测式供给**：`find_only` / `find_or_create`，优先复用数据；生产禁写、自动建单必须带「非人工创建」、create 配额。
 - **失败实证与分类**：`env_blocked/session/interaction/contract/data/assertion/interrupted/unknown/waiting`；支持精确 API 重放辅助判别。其中 `env_blocked`/`interrupted`/`waiting` 是**操作/环境终态家族**（判据单点 `failures.OPERATIONAL` + `is_operational()`）：三者都不进 failed 缺陷分布，也都不静默变绿——Allure 一律 `skipped` + 独立 label + 保留原文 message，`atlas summary` 的 `fail_classes` 里照常可见「等人」 occurred 几次。
-- **知识与自愈**：30 条首批 Demo 结构化坑点；知识命中、修复提案、知识写回与自愈均要求人审，绝不放宽断言。
+- **知识与自愈**：30 条首批 Demo 结构化坑点 + 通用包 82 条跨平台机制坑点（`src/atlas/plugins/_common/knowledge`，经 `base_roots` 组合层并入；demo/iservice 两个内置插件均已接线——`pitfalls('demo')` 30→112、`pitfalls('iservice')` 16→98，`selectors().names()` 7→22 / 14→28）；知识命中、修复提案、知识写回与自愈均要求人审，绝不放宽断言。
 - **契约分级**：核心字段强校验、高频通用规则弱校验、最小响应校验；不按 数百条接口盲目生成强 schema。`atlas contracts` 展示与运行时校验共用同一私有→包内回退来源；契约定义在构造期钉死形态（required 类型值/路径键写坏当场点名，配合逐文件回退——手改坏的私有契约 JSON 按「文件损坏」降级包内默认，不再让一个手误连坐整条断言链）；`atlas contracts --validate` 只读结构自校验，点名空 path/name「在清单里冒充覆盖率、运行时却静默跳过、永不生效」的契约与无法解析的契约文件（不发真实请求，有问题 rc=2）。
 - **外部资产适配**：原 `DemoApi` 接口语义、`toolbox` 感知/重放、runlog 风格 JSONL 记录。
 - **真实运行装配**：`DemoRuntime` 一次登录、复用旧项目 `.env`、Cookie 共享、白名单 DemoApi、契约与探针统一注入。
@@ -174,7 +174,7 @@ pytest -q
 
 ```bash
 PYTHONPATH=src python -m atlas doctor       # Windows bash；PowerShell 用 $env:PYTHONPATH="src"
-PYTHONPATH=src python -m pytest -q
+PYTHONPATH=src python -m pytest -q          # 等价备用形态；仓库根裸 pytest -q 也可（pyproject 已声明 pythonpath）
 ```
 
 ## 原样运行同事的 17 条用例
@@ -642,7 +642,9 @@ PYTHONPATH=src python scripts/boundary_classify.py --diff incoming.diff --to-tow
   更早的 2446（2026-11-13 实测，Python 3.13 环境、当时 0 failed / 0 skipped）→ 2535 净 +89：
   本波「通用知识包组合层」+14（`KnowledgeBase.base_roots` / `load_composed` 并入通用包、
   pitfalls 可见性判据 `domain in scope or "generic" in scope`，tests/test_evidence_and_knowledge.py +12；
-  插件与 config_add 骨架三层接线（私有 > 平台 > 通用），tests/test_config_add.py +2）
+  插件与 config_add 骨架三层接线（私有 > 平台 > 通用），tests/test_config_add.py +2；
+  **P1-3 补记**：两个内置插件的 `knowledge()` 此前未接 `base_roots`（当时只有 config_add 骨架与
+  `selectors()` 走 `load_composed`），现已接——`pitfalls('demo')` 30→112、`pitfalls('iservice')` 16→98）
   + 2446 收口后存量补测 +75（缺陷修复波「测试盲区」，此前未落数）；
   9 failed 全为既有环境失败（基线即存在、非本波引入、零新增失败）：`flows/iservice` 目录不在本克隆
   致迁移哨兵两条 scope 无文件可注入 + fast 垫片/产物探针环境失败（emit_compat ×3、
@@ -671,7 +673,8 @@ PYTHONPATH=src python scripts/boundary_classify.py --diff incoming.diff --to-tow
   （#136/#137 轮实测时环境已接入真实 `.env`：`base_url_source=legacy.env`、`demo_api=true`、
   `knowledge_pitfalls=104`，doctor 因此 rc0——虚构默认下 rc1 的旧前提仅适用于裸仓库。
   **口径更新（2026-11-13）**：私有库现为 **119 条**（`isvc-*` 104 + `mach-*` 15），
-  `atlas doctor` 的 `knowledge_pitfalls` 读 119。
+  `atlas doctor` 的 `knowledge_pitfalls` 读 119；**裸仓库（无 `ATLAS_KNOWLEDGE_DIR`）现读 112**
+  （demo 包内 30 + 通用包 82，P1-3 接线后实测）。
   634→637 为 #140 自身补的 3 条感知器官错误形态回归测；637→668 中 #141 自身补 3 条
   Cookie 烘焙/保活回归测，其余 +28 为并发队友自有增量，如实归因。
   720→772 为 LiteFlow 吸收改造新增的 52 条离线回归测——原子编译缓存/^指针报错/

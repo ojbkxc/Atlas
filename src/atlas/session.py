@@ -205,12 +205,32 @@ class BrowserSession:
         return self.snapshot(step + "_FAIL")
 
 class ApiEvidence:
-    """显式注册失败重放器，避免猜测接口造成额外副作用。"""
+    """显式注册失败重放器，避免猜测接口造成额外副作用。
+
+    两种注册语义（对外行为各自独立）：
+    - `register()`：**追加**到 handler 链（业务方显式多源重放的既有契约，逐字节不变）；
+    - `set_replay()` / `clear_replay()`：**单槽替换**的「当前步重放器」——engine 每步
+      执行前替换、失败时只用本步接口的实时证据。旧实现 engine 每步 `register()` 追加且
+      从不清理，`classify` 按注册顺序取第一个非 None：两步 API flow 中第二步失败会先
+      重放第一步的接口（`/a` 成功 → 归 interaction），把真实的环境 5xx 判成交互故障
+      （归因错位）；长 flow 里 handler 无界增长，跨 flow 还串味。单槽与追加链分离，
+      「每步只用当前步」不依赖调用方纪律。
+    """
     def __init__(self):
         self._handlers = []
+        # 当前步的只读重放器（engine 每步替换；None=本步无可重放接口）。
+        self._step_replay = None
 
     def register(self, handler) -> None:
         self._handlers.append(handler)
+
+    def set_replay(self, handler) -> None:
+        """替换「当前步」的重放器（单槽，不累积）；engine 每步调用一次。"""
+        self._step_replay = handler
+
+    def clear_replay(self) -> None:
+        """清空当前步重放槽（step/flow 边界调用）；不动 `register()` 的追加链。"""
+        self._step_replay = None
 
     def classify(self, exc: BaseException) -> str | None:
         """重放是尽力而为的诊断：handler() 重放的正是刚失败的接口（会话早断/网关挂），
@@ -220,9 +240,14 @@ class ApiEvidence:
         定性器绝不能先于被定性对象死（#89 同红线）：在 engine 的 except 块里抛错会把
         原用例异常顶掉（During handling 链），且 results 不追加、经验草稿不留痕、
         现场取证不执行——整条失败证据链被一个坏重放器清空。
-        只捕 Exception：KeyboardInterrupt 等中断信号照常传播（与 ensure_session #69 同口径）。"""
+        只捕 Exception：KeyboardInterrupt 等中断信号照常传播（与 ensure_session #69 同口径）。
+
+        顺序：当前步重放器优先（它对应刚失败的接口），其后才是 `register()` 追加链。
+        槽为空时与旧实现逐字节等价（只遍历追加链）。"""
         from .failures import api_evidence
-        for handler in self._handlers:
+        handlers = ([self._step_replay] if self._step_replay is not None else [])
+        handlers.extend(self._handlers)
+        for handler in handlers:
             try:
                 replay = handler()
                 if replay is None:

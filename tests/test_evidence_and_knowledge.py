@@ -249,16 +249,25 @@ def test_core_contract_number_field_rejects_boolean():
 
 
 def test_selector_registry_loads_all_components_with_selectors():
-    """知识库的组件注册表必须完整：每个组件都有可定位的选择器。"""
+    """平台自有组件必须全部可定位；通用包组件按组合层并入（P1-3 接线后）。
+
+    通用包里 `add_button`/`input_binding` 是**有意只带知识说明、不带选择器**的条目
+    （组件族差异太大，写死 selector 就是猜），所以 `missing()` 允许出现它们——
+    但 demo 自己的组件一个都不许缺。
+    """
     registry = DemoPlugin().selectors()
     assert len(registry.names()) >= 5
-    # missing() 列出缺选择器的组件；知识库应保证全部可定位
-    assert registry.missing() == []
+    own = DemoPlugin().knowledge().load("components")["components"]
+    assert set(own) <= set(registry.names())
+    assert not (set(own) & set(registry.missing())), "平台自有组件缺选择器"
+    # 组合层生效：通用组件（login/table）对 demo 可见（影子层会整份挡住）。
+    assert {"login", "table"} <= set(registry.names())
 
 
 def test_selector_registry_get_and_find():
     registry = DemoPlugin().selectors()
-    component = registry.names()[0]
+    # 取第一个**有选择器**的组件（通用包里的 add_button 有意为空表）。
+    component = next(name for name in registry.names() if registry.find(name).get("selectors"))
     spec = registry.find(component)
     assert "selectors" in spec
     # get 取具体元素选择器

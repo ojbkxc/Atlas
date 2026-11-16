@@ -290,9 +290,11 @@ class TestAwaitPoll:
                            "assert": ["ok == True"]}}, Actor())
 
     def test_await_timeout_via_engine_lands_waiting_status(self, tmp_path):
-        """经 engine 跑：runs.jsonl 终态 status=waiting（C9 显态家族单点，非 failed）。"""
-        from atlas.engine import ExecutionEngine
-        from atlas.recorder import RunRecorder
+        """经 engine 跑：runs.jsonl 终态 status=waiting（C9 显态家族单点，非 failed）。
+
+        engine/recorder 由 FlowCompiler.run 按 flow["engine"] 自建，落到
+        `config.reports_dir / "runs.jsonl"`——测试侧不再手工构造（造了也不被执行）。
+        """
         import json
         reg = _registry(_value_task(ok=False))
         actor = Actor()
@@ -302,8 +304,6 @@ class TestAwaitPoll:
                                 "step_retry": 0, "step_retry_interval_ms": 0,
                                 "root": tmp_path})()
         runs_path = tmp_path / "runs.jsonl"
-        recorder = RunRecorder("await", "test", runs_path, "run")
-        engine = ExecutionEngine(config, recorder=recorder, case_id="await")
         flow = {"engine": config, "steps": [{"task": "set"}],
                 "await": {"kind": "poll", "timeout_ms": 80, "interval_ms": 20,
                           "assert": ["ok == True"]}}

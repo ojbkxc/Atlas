@@ -6,8 +6,9 @@ Ability 都不注册，旧行为逐字节不变。
 """
 from __future__ import annotations
 
+import pytest
+
 from atlas import Actor, Channel, FunctionalTask, TaskMetadata
-from atlas.abilities import CallApi
 from atlas.engine import ExecutionEngine
 from atlas.failures import FailureClass
 
@@ -33,6 +34,21 @@ class _FakeApi:
             raise self._exc
         return {"ok": self._response.ok, "status": self._response.status,
                 "data": self._response.data, "error": ""}
+
+
+class _PathApi:
+    """按路径回放不同响应的替身：记录每次 get() 的 path（重放归因断言用）。
+
+    每个 path 的值是 (status, ok, data)；未登记的路径回落 200/ok。
+    """
+    def __init__(self, responses: dict[str, tuple[int, bool, object]] | None = None):
+        self.calls: list[str] = []
+        self._responses = responses or {}
+
+    def get(self, path, **kwargs):
+        self.calls.append(path)
+        status, ok, data = self._responses.get(path, (200, True, {"resultCode": "0"}))
+        return {"ok": ok, "status": status, "data": data, "error": ""}
 
 
 class _NullRecorder:
@@ -210,3 +226,85 @@ class TestReadonlyReplayHandler:
         eng.execute(actor, task)
         assert api.calls == [], "成功路径不触发重放"
         assert eng.results[0].ok is True
+
+
+def _ok_api_read_task(op, name="read_ok"):
+    return FunctionalTask(
+        TaskMetadata("demo", name, read_only=True, channel=Channel.API,
+                     api_operation=op),
+        lambda a: None, name)
+
+
+def _fail_api_read_task(op, name="read_fail"):
+    def _perform(actor):
+        raise RuntimeError("业务失败：读超时")
+    return FunctionalTask(
+        TaskMetadata("demo", name, read_only=True, channel=Channel.API,
+                     api_operation=op),
+        _perform, name)
+
+
+class TestPerStepReplayIsolation:
+    """P0 回归：失败归因只用「当前步」的重放结果（旧实现 handler 累积、首个命中）。"""
+
+    def _actor(self, api):
+        from atlas.session import ApiEvidence
+        actor = Actor()
+        actor.can(api)
+        actor.evidence = ApiEvidence()
+        return actor
+
+    def test_second_step_failure_replays_second_step_only(self):
+        """两步 API flow：第一步 /a 成功、第二步 /b 抛错且重放 500。
+
+        旧实现：/a 的 handler 先注册，第二步失败时先重放 /a（200）→ 归 interaction。
+        修复后：只用本步 /b 的重放（500）→ env_blocked，且请求只有 /b。
+        """
+        api = _PathApi({"/a": (200, True, {"resultCode": "0"}),
+                        "/b": (500, False, {"err": "bad gateway"})})
+        actor = self._actor(api)
+        eng = _engine(actor)
+        eng.execute(actor, _ok_api_read_task("/a", "read_a"))
+        with pytest.raises(RuntimeError):
+            eng.execute(actor, _fail_api_read_task("/b", "read_b"))
+        # 重放只针对当前步的 /b（不是第一步的 /a）
+        assert api.calls == ["/b"], f"重放应只请求 /b，实际 {api.calls}"
+        assert eng.results[-1].failure_class == FailureClass.ENV_BLOCKED.value, \
+            f"重放 /b 得 500 应归 env_blocked，实际 {eng.results[-1].failure_class}"
+
+    def test_handler_does_not_accumulate_across_steps(self):
+        """多步执行后 handler 槽不随步数增长（防累积回归）。"""
+        api = _PathApi({"/step1": (200, True, {}), "/step2": (200, True, {}),
+                        "/step3": (200, True, {}), "/step4": (200, True, {}),
+                        "/step5": (200, True, {}), "/boom": (500, False, {})})
+        actor = self._actor(api)
+        eng = _engine(actor)
+        for i in range(1, 6):
+            eng.execute(actor, _ok_api_read_task(f"/step{i}", f"step{i}"))
+        # 追加链保持为空（engine 走单槽替换，不再 append）；槽恒为一个可调用
+        assert actor.evidence._handlers == [], \
+            f"追加链不应累积，实际 {len(actor.evidence._handlers)} 个"
+        assert callable(actor.evidence._step_replay)
+        with pytest.raises(RuntimeError):
+            eng.execute(actor, _fail_api_read_task("/boom", "boom"))
+        # 失败步只重放一次（不是 5 步累积的多次重放）
+        assert api.calls[-1] == "/boom"
+        assert api.calls.count("/boom") == 1
+
+    def test_second_flow_failure_does_not_replay_first_flow_request(self):
+        """两 flow 串行（同一 engine/evidence）：flow2 失败不重放 flow1 的请求。
+
+        旧实现 flow1 的 handler 残留在链里，flow2 失败时按注册顺序先重放 flow1 的接口。
+        修复后每步起点先清槽，flow2 失败只重放本 flow 当前步的 /c。
+        """
+        api = _PathApi({"/a": (200, True, {}), "/c": (500, False, {"err": "gateway"})})
+        actor = self._actor(api)
+        eng = _engine(actor)
+        # flow1：只有 /a，成功
+        eng.execute(actor, _ok_api_read_task("/a", "flow1_read_a"))
+        # flow2：/c 失败——不得回放 flow1 的 /a
+        with pytest.raises(RuntimeError):
+            eng.execute(actor, _fail_api_read_task("/c", "flow2_read_c"))
+        assert "/a" not in api.calls[1:], f"flow2 失败不得重放 flow1 的 /a，实际 {api.calls}"
+        assert api.calls[-1] == "/c"
+        assert eng.results[-1].failure_class == FailureClass.ENV_BLOCKED.value

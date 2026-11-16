@@ -40,7 +40,9 @@
 
 ## 2. 判据规模
 
-- 起点 2805 passed → 收口 2949 passed（**+144 测**），collect-only 2966；
+- 起点 → 收口 **+144 测**（本波增量）；**绝对 passed/collect 数不落死数**——以当日
+  `PYTHONPATH=src python -m pytest -q` 与 `PYTHONPATH=src python -m pytest --collect-only -q`
+  双证为准，计数四处（README 徽章/README「当前验证边界」/AGENTS §2/CLAUDE FAQ）由 lead 收口；
   其中收口二笔（`66b9339`）补 en-5 CLI 封口 + ob-5 按需预检/跳过开关，+9 测；
 - 全量判据 = `9 failed 逐名一致（既有环境基线）+ 零新增`，见 §5；
 - 新增测分布：`test_plugin_api_en1.py`(9) / `test_experience_plugin_dim.py`(3) /
@@ -88,10 +90,15 @@
 
 ## 5. 验证边界（如实）
 
-- 离线全量：`9 failed / 2949 passed / 8 skipped`（collect-only 2966），9 条逐名与既有基线一致
+- 离线全量：`9 failed` + 其余 passed、8 skipped——**绝对数不落死数**，以当日
+  `PYTHONPATH=src python -m pytest -q` 与 `PYTHONPATH=src python -m pytest --collect-only -q`
+  为准（计数四处由 lead 收口）；9 条逐名与既有基线一致
   （`test_emit_compat×3` / `test_gen::test_with_pytest_no_allure_rc2` /
   `test_init_scaffold::test_allure_e2e_offline` / `test_legacy_compat_xcheck×2` /
   `test_migration_sentinels×2`——环境性既有失败，本波未修）。
+  **环境口径**：该 9 failed 是**另一台环境**的基线（缺 `flows/iservice` 目录、fast 垫片/产物探针
+  依赖差异，详见 README「当前验证边界」）——目录与依赖齐备的克隆上未必复现，「逐名一致」只对
+  同环境成立。
 - **真机面只有 pf-3 一项**（零凭据本地页）；en-4 多入口、en-7 代理、en-13 登录协议
   预检、en-11 重放接线均只有离线判据，真实平台行为未取证（各条目测试已钉形态与
   失败路径，不冒充「真机已验证」）。
@@ -115,7 +122,8 @@
    RuntimeError，`getattr` 接不住 → 双兜底）。
 6. **共享工作树的变异抽查会污染并行全量**：lead 的全量在一次运行里出现 10 failed——
    唯一新增红是 `legacy_required_for` 真值表，失败形态恰等于「函数恒return True」这把
-   变异刀；并行窗口内 verify 正在同一树做变异取证。重跑即恢复 9 failed / 2949 passed。
+   变异刀；并行窗口内 verify 正在同一树做变异取证。重跑即恢复 9 failed / 全绿
+   （passed 数以当日实跑为准，不落死数）。
    纪律：变异前备份 + sha256；改完立即还原；全量期间冻结 `src/`；两次全量串行；
    看到「恰好一条新红且形态等于某把刀」先查并行，不先改代码（本次 lead 核对后确认
    是污染，未误改实现）。

@@ -10,7 +10,6 @@ from .contracts import ContractRegistry
 from .credential_gate import sanitize_url
 from .dsl import TaskRegistry
 from .plugin_api import resolve_plugin
-from .plugins.demo import make_demo_provider
 from .plugins.demo.legacy_case import LegacyCaseTask
 from .probes import DataProvider
 from .session import BrowserSession
@@ -154,6 +153,54 @@ def require_account(config: AtlasConfig, account: str | None) -> None:
         )
 
 
+def _session_default(defaults, key: str, plugin_name: str):
+    """插件 `session_defaults` 的必需键取值单点：缺键/坏形态点名插件与键名。
+
+    插件协议（`atlas config add` 生成的骨架同形）以
+    `account / ou / division_code / language` 四键承载会话默认值；本函数只服务
+    **调用方没显式给值、必须回落到插件默认值**的键（显式参数由上游 `or` 短路，
+    不再向插件索取——#115：别把正常路径翻成错误）。
+
+    旧实现 `defaults["ou"]` 直取：第三方插件只实现最小形态 `{"account": ...}` 时抛
+    裸 `KeyError: 'ou'`，消息不含插件名，排障者只会怀疑框架（同模块 `resolve_account`
+    对非映射 defaults 反而有 isinstance 守卫——两套宽严是本次收敛的动机）。现在失败点
+    点名「哪个插件的 session_defaults 少了哪个键」，非映射形态同样点名类型。
+    """
+    if not isinstance(defaults, dict):
+        raise RuntimeError(
+            f"插件 {plugin_name} 的 session_defaults 返回 {type(defaults).__name__} 而非映射，"
+            f"无法取会话默认值 {key!r}")
+    if key not in defaults:
+        raise RuntimeError(f"插件 {plugin_name} 的 session_defaults 缺少 {key!r}")
+    return defaults[key]
+
+
+def build_registry() -> TaskRegistry:
+    """Task registry 装配**单点**：执行侧（`DemoRuntime.registry()`）与结构预检侧
+    （`cli._full_registry()`，compile/run/export-pytest/schedule 的 validate_flow）共用。
+
+    两处各写一份的旧做法曾让「compile 绿 ⇒ run 绿」这条承诺失效：P2-2 把
+    `demo_api` 改成按插件注册（白名单为空的插件不该看到该任务）后，预检侧仍无条件
+    注册，于是 iservice 下含 `demo_api` 的 flow 过得了 `atlas compile`、却要在真实
+    执行期才撞「未注册的 Task」（#92「判据两把尺」在装配面的形态）。
+    """
+    registry = TaskRegistry()
+    plugin = resolve_plugin()
+    plugin.register_tasks(registry)
+    registry.register("api_call", lambda **kwargs: CallEndpoint(**kwargs))
+    registry.register("ui_action", lambda **kwargs: UiAction(**kwargs))
+    # P2-2：`demo_api` 任务委托 `actor.demo_api`，可调用操作白名单是**插件资产**
+    # （`allowed_api_operations`，红线 11）。白名单为空 = 该插件没有任何可用 API
+    # 操作（iservice 如实留空），注册此任务只会把编译期「未注册的 Task」错误推迟成
+    # 运行时 PermissionError——故按插件注册，iservice 装配路径不再看到 demo 任务。
+    if plugin.allowed_api_operations:
+        registry.register("demo_api", lambda **kwargs: DemoApiOperation(**kwargs))
+    registry.register("assert_api", lambda **kwargs: AssertApi(**kwargs))
+    registry.register("legacy_step", lambda **kwargs: LegacyStepTask(**kwargs))
+    registry.register("legacy_case", lambda **kwargs: LegacyCaseTask(**kwargs))
+    return registry
+
+
 class DemoRuntime:
     """一次登录、一个 Actor、一套任务/契约/探针；不复制原项目代码。"""
     def __init__(self, config: AtlasConfig, *, login: bool = True, account: str | None = None,
@@ -168,11 +215,17 @@ class DemoRuntime:
         # 最后 ATLAS_SESSION_* 覆盖）。传 env 是为了让 `--env uat-eu` 自动带出该环境的账号/OU
         # ——旧实现不传，账号恒空串，真实跑时 `credential("")` 命中 `ISERVICE_PWD_` 空值键，
         # 白烧一次登录才在 SSO 页面报错（#103 归因漂移同族）。
-        defaults = resolve_plugin().session_defaults(env=config.env)
+        plugin = resolve_plugin()
+        # 插件名用于缺键报错归因；协议成员 `name` 缺失时回落类名（不因一个展示名把
+        # 装配翻成 AttributeError——与 resolve_account 的宽容面同一口径）。
+        plugin_name = getattr(plugin, "name", "") or type(plugin).__name__
+        defaults = plugin.session_defaults(env=config.env)
         account = resolve_account(config, account, defaults=defaults)
-        ou = ou or defaults["ou"]
-        division_code = division_code or defaults["division_code"]
-        language = language or defaults["language"]
+        # 缺键只在**真正要回落**时判错（显式 --ou/--division/--language 给的路径不碰插件键，
+        # #115 不翻正常路径）；错误消息带插件名与键名（旧实现裸 KeyError: 'ou'）。
+        ou = ou or _session_default(defaults, "ou", plugin_name)
+        division_code = division_code or _session_default(defaults, "division_code", plugin_name)
+        language = language or _session_default(defaults, "language", plugin_name)
         self.config, self.account, self.ou, self.division_code = config, account, ou, division_code
         self.should_login, self.create_quota = login, create_quota
         # 选择器优先写英文文案；语言不统一会让菜单/字段定位随机失败。
@@ -245,10 +298,14 @@ class DemoRuntime:
             # #121 面B：白名单是 Demo 业务资产，定义收敛 DemoPlugin.allowed_api_operations
             # 单一真相（旧实现硬编码在引擎装配行——换业务要改 runtime.py，违反 AGENTS 红线 11；
             # 插件消费者 tasks.py 读 api.atlas_allowed_operations 的语义不变）。
-            self.demo_api.atlas_allowed_operations = resolve_plugin().allowed_api_operations
-            self.provider = make_demo_provider(self.config, self.demo_api, self.division_code)
-            self.provider.quota.limit = self.create_quota
             plugin = resolve_plugin()
+            self.demo_api.atlas_allowed_operations = plugin.allowed_api_operations
+            # P2-1：provider 从**插件**取（协议成员 `make_provider(config, api, division_code)`，
+            # config_add 生成的骨架与 iservice 同形）。旧实现无条件 `make_demo_provider`——
+            # ATLAS_PLUGIN=iservice 时数据供给仍是 demo 的 SalesOrder/Customer 探针，
+            # 业务插件的 make_provider 成了没人调用的死方法（换业务只换插件断在这里）。
+            self.provider = plugin.make_provider(self.config, self.demo_api, self.division_code)
+            self.provider.quota.limit = self.create_quota
             self.actor.knowledge = plugin.knowledge()
             self.actor.contracts = self.contracts()
             # 自愈、经验与 API 实证在运行时统一装配，避免 DSL 里出现“模块存在但没接”。
@@ -273,15 +330,7 @@ class DemoRuntime:
             raise
 
     def registry(self) -> TaskRegistry:
-        registry = TaskRegistry()
-        resolve_plugin().register_tasks(registry)
-        registry.register("api_call", lambda **kwargs: CallEndpoint(**kwargs))
-        registry.register("ui_action", lambda **kwargs: UiAction(**kwargs))
-        registry.register("demo_api", lambda **kwargs: DemoApiOperation(**kwargs))
-        registry.register("assert_api", lambda **kwargs: AssertApi(**kwargs))
-        registry.register("legacy_step", lambda **kwargs: LegacyStepTask(**kwargs))
-        registry.register("legacy_case", lambda **kwargs: LegacyCaseTask(**kwargs))
-        return registry
+        return build_registry()
 
     def contracts(self) -> ContractRegistry:
         """契约解析统一委托 DemoPlugin.contracts()（私有→包内逐文件回退），与 atlas CLI 的

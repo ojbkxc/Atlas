@@ -44,13 +44,23 @@ class IservicePlugin:
         self.private_root = Path(_priv) if _priv else None
 
     def knowledge(self) -> KnowledgeBase:
+        # 通用知识包走**组合层**（base_roots）：影子语义会被本包自带的同名 pitfalls/
+        # components 整份挡住，82 条跨平台坑点对 iservice 域不可见（P1-3 实测：接线前
+        # pitfalls('iservice') 只有包内 16 条）。与 config_add 生成的骨架同款三层：
+        # 私有目录（写）> 平台包内知识（影子回退）> 通用知识包（组合层并入）。
+        # 惰性 import：plugin_api 顶层 import 了 demo 插件包，模块级反向 import 会成环。
+        from ...plugin_api import common_knowledge_root
         if self.private_root:
-            return KnowledgeBase(self.private_root, fallback_root=self.knowledge_root)
+            return KnowledgeBase(self.private_root, fallback_root=self.knowledge_root,
+                                 base_roots=common_knowledge_root())
         # 未设 ATLAS_KNOWLEDGE_DIR＝只读库：批准永不写包内文件（红线 #11），写路径当场点名。
-        return KnowledgeBase(None, fallback_root=self.knowledge_root)
+        return KnowledgeBase(None, fallback_root=self.knowledge_root,
+                             base_roots=common_knowledge_root())
 
     def selectors(self) -> SelectorRegistry:
-        return SelectorRegistry(self.knowledge().load("components"))
+        # 组合层读取：通用组件包（login/table/dialog/…）与 iservice 组件并入，
+        # 同名组件平台胜出（平台专有的 ou_switch/sales_order_header 等不被通用包覆盖）。
+        return SelectorRegistry(self.knowledge().load_composed("components"))
 
     def contracts(self) -> ContractRegistry:
         """契约走与知识相同的 私有→包内 逐文件回退（契约是断言层，静默空表会掩盖缺陷，违红线 #7）。"""
