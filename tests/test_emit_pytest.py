@@ -1272,3 +1272,13 @@ def test_pages_structured_locator_notes_same_judgment():
         "save": {"role": "button", "name": "保存"}}}}}
     src = emit_pages_module(comps)
     assert "勿只改其一" in src
+
+
+def test_default_components_uses_composed_layer_not_shadow():
+    """`_default_components()` 必须走组合层：影子层被平台 components.json 整份遮蔽，
+    通用组件（login/table/dialog/…）对生成器不可见 → F-10 声明位闸会把用通用组件的
+    合法 flow 误判成「类名不存在」（P1-3 接线后实测影子 7 条 vs 组合 22 条）。"""
+    from atlas.generator.emit_pytest import _default_components
+    comps = _default_components().get("components") or {}
+    assert {"login", "table", "dialog", "pagination"} <= set(comps), \
+        f"通用组件未进生成器视野（影子层遮蔽回归？）：{sorted(comps)}"

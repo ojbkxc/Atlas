@@ -3,7 +3,7 @@
 <p align="center">
   <a href="https://github.com/ojbkxc/Atlas"><img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License"></a>
-  <a href="#当前验证边界"><img src="https://img.shields.io/badge/tests-2949%20passed-brightgreen" alt="2949 passed"></a>
+  <a href="#当前验证边界"><img src="https://img.shields.io/badge/tests-2984%20passed-brightgreen" alt="2984 passed"></a>
   <img src="https://img.shields.io/badge/engine-Playwright-45edaa" alt="Playwright">
   <img src="https://img.shields.io/badge/self--healing-human--reviewed-orange" alt="Human-reviewed healing">
 </p>
@@ -612,9 +612,24 @@ PYTHONPATH=src python scripts/boundary_classify.py --diff incoming.diff --to-tow
 
 ## 当前验证边界
 
-- 离线测试：**2949 passed / 9 failed（既有环境失败）**（Python 3.11；`PYTHONPATH=src py -3.11 -m pytest -q`，
-  2026-11-16 实测——8 skipped、`--collect-only` 2966（= 2949+9+8）；
-  较上一收口位 2805（2026-11-15 实测）净 +144，本波 **wave5 backlog 收口**（gap14 待办 + ae-6 剩余留白，逐条处置见 `docs/gaps/wave5-backlog.md`）：
+- 离线测试：**2984 passed / 0 failed**（Python 3.11；`PYTHONPATH=src python -m pytest -q`，
+  2026-11-16 实测——0 skipped、`--collect-only` 2984（= passed，无隐藏 skip/xfail）；
+  较上一收口位 2949（2026-11-16 实测）净 +35 且失败清零，本波 **缺陷修复**（代码分析逐条核出的
+  12 项，P0 重放归因 / 打包缺口 / 知识包接线 / runtime 装配 / registry 同源 / 影子层遮蔽 / ruff+CI / 文档漂移）：
+  **P0** `ApiEvidence` 重放 handler 每步 append 从不清理 → 第二步失败重放第一步请求（归因错位），
+  改单槽 `_step_replay` 每步替换 + 3 条回归测（含跨 flow 不串味）+ **打包** wheel 补 iservice 契约与
+  `_common` 包（96→108 文件，装后 `contracts()` 不再抛「契约文件缺失」）+ **知识包** 两内置插件
+  `base_roots`/`load_composed` 接线（pitfalls demo 30→112、iservice 16→98，selectors 22/28）+
+  **runtime** 按插件取 provider/注册（iservice 不再走 demo 探针）、`session_defaults` 缺键点名插件与键 +
+  **registry 同源** `runtime.build_registry()` 单点（compile 绿 ⇒ run 绿，含双向锁步测）+ **影子层遮蔽**
+  两处组件读取改 `load_composed`（`emit_pytest._default_components` 与 `review_code` knowledge 模式——
+  否则 15 个通用组件对生成器/评审不可见，F-10 声明位闸与 SAFE-*/MAINT-* 误判合法用例；
+  `pitfall_review.py` 的 `load("pitfalls")` 保持影子层：它是读私有→翻 status→整份写回私有库，
+  用组合层会把通用条目复制进私有库污染资产）+ **ruff** 8 处清零
+  并接入 CI 双 job + **裸 pytest** 收集 4 文件 ImportError 修复（`pythonpath=["src","."]`）+
+  **测试卫生** 哨兵打错命名空间两处（`test_gen` 打 `plugin_api`、`test_shot_quality` 打 `atomic_io.os`）+
+  唯一失败用例（`from_root(None)` 回灌本机 `.env`，改 `tmp_path` 隔离）+ screenplay 门面 `__all__` 核对测；
+  上一收口位 2805（2026-11-15 实测）→ 2949 净 +144，wave5 **backlog 收口**（gap14 待办 + ae-6 剩余留白，逐条处置见 `docs/gaps/wave5-backlog.md`）：
   **en-1/en-3** 插件回落显式 WARN + `ATLAS_REQUIRE_PLUGIN=1` / 草稿 identity 掺平台维度 +
   **en-2/ob-4** 知识条目平台维度与通用包族标签 + **en-4/en-5/en-7/en-13** envs 多入口 / 旧仓 .env 白名单隔离（runtime/legacy + CLI 四处预检）/
   浏览器代理 opt-in / 登录协议装配期预检 + **ob-5** 旧仓预检按需化（compile 期判定 + `ATLAS_SKIP_LEGACY_CHECK` 显式跳过）+ **en-8** runs.jsonl 平台分流 opt-in（含 allure 读侧聚合）+

@@ -467,3 +467,25 @@ def test_uf8_playbook_section2_family_tags_aligned():
     assert "resolve_family" in sec2, "§2.10 必须点名唯一取值口 resolve_family"
     # 族表真实键与文档提及的族名对齐
     assert "element-ui" in sec2
+
+
+def test_knowledge_mode_registry_sees_generic_components(tmp_path):
+    """review --mode knowledge 的组件注册表必须走组合层（行为面，非数据面前提）。
+
+    通用组件 table 的选择器 `.el-table` 不在 demo 包内任何组件的选择器值里——影子层
+    `load` 会被 demo 的 components.json 整份遮蔽，于是 MAINT-002（硬编码选择器未注册）
+    会对「用了通用组件的合法用例」误报；组合层 `load_composed` 才让它通过。
+    正向：`.el-table` 不被报；反向对照：未知选择器照常报（证明闸在位、不是整体失效）。
+    """
+    from atlas.review_code import review_code
+    sel = tmp_path / "test_sel.py"
+    sel.write_text(
+        'def test_x(page):\n'
+        '    page.click(".el-table")\n'
+        '    page.click(".totally-made-up-selector")\n',
+        encoding="utf-8")
+    r = review_code([str(sel)], mode="knowledge", format="json")
+    flagged = {f["line"] for res in r["results"] for f in res["findings"]
+               if f["rule_id"] == "MAINT-002"}
+    assert 2 not in flagged, "通用组件选择器 .el-table 被误报（影子层遮蔽回归？）"
+    assert 3 in flagged, "未知选择器未报——MAINT-002 闸失效，正向断言不成立"

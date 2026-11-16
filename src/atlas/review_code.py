@@ -1257,7 +1257,10 @@ def review_code(paths: list[str | Path], *, mode: str = "static",
             plugin = resolve_plugin()
             kb = plugin.knowledge()
             from .knowledge import SelectorRegistry
-            components = kb.load("components")
+            # 组合层（私有 > 平台 > 通用）：影子层 `load` 会被平台自带的 components.json
+            # 整份遮蔽，15 个通用组件对评审规则不可见 → SAFE-*/MAINT-* 的选择器核对
+            # 会对「用了通用组件的合法用例」误报（实测影子 7 条 vs 组合 22 条）。
+            components = kb.load_composed("components")
             registry = SelectorRegistry(components)
         except Exception:
             registry = None  # 知识库不可用时降级为 static

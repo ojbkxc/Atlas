@@ -1185,10 +1185,16 @@ def emit_pytest_from_flow(flow: dict, *, base_url: str = "",
 
 
 def _default_components() -> dict:
-    """惰性取组件库（走 plugin 缝，不在本模块硬编码业务字面量，红线 #11）。失败回 {}。"""
+    """惰性取组件库（走 plugin 缝，不在本模块硬编码业务字面量，红线 #11）。失败回 {}。
+
+    必须走 `load_composed`（组合层）而非 `load`（影子层）：影子层会被平台包自带的
+    `components.json` **整份遮蔽**通用组件库——15 个跨平台组件（login/table/dialog/
+    pagination/…）对生成器不可见，产物页对象库缺这些类，`--fast` 声明位闸（F-10）
+    会把「用通用组件的合法 flow」判成「类名不存在」拒绝。实测：影子 7 条 vs 组合 22 条。
+    """
     try:
         from ..plugin_api import resolve_plugin
-        return resolve_plugin().knowledge().load("components")
+        return resolve_plugin().knowledge().load_composed("components")
     except Exception:
         return {}
 
