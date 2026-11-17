@@ -29,7 +29,43 @@ jobs:
         run: |
           python -m pytest -q
           python -m compileall -q src scripts examples
-          python -m atlas doctor || true
+      # `atlas doctor` 在**裸 clone 上本来就该 rc 1**（没有真实旧项目 / DemoApi 路径），
+      # 所以旧写法 `atlas doctor || true` 把「rc 1 是预期的」和「doctor 自己崩了」混成
+      # 同一件事——后者永远不会让 CI 红。这里改成读 JSON 逐项判定：
+      #   必须为 true 的：docker_assets_consistent / boundary_assets_consistent
+      #                    （这两项只看仓库内资产，与真实项目无关，坏了就是真漂移）
+      #   允许为 false 的：legacy_pages / demo_api（裸 clone 没有真实项目，预期 false）
+      # 另：doctor 必须能**产出合法 JSON**（崩掉/裸 traceback = 直接失败）。
+      - name: Doctor snapshot (asset checks must hold on a bare clone)
+        run: |
+          python - <<'PY'
+          import json, subprocess, sys
+          # 必须按**字节**读再显式 utf-8 解码：`text=True` 在 Windows runner 上会用 GBK
+          # 解码 doctor 的 UTF-8 JSON，直接 UnicodeDecodeError（本地实测复现）。
+          # `atlas` 自己已经在 ensure_utf8_streams() 里把 stdout 设成 utf-8，
+          # 但那只管子进程侧；父进程的读取方式同样要对齐。
+          proc = subprocess.run([sys.executable, "-m", "atlas", "doctor", "--format", "json"],
+                                capture_output=True)
+          out = proc.stdout.decode("utf-8", "replace")
+          err = proc.stderr.decode("utf-8", "replace")
+          # doctor 允许 rc 1（裸 clone 缺真实项目路径），但不允许产不出 JSON
+          try:
+              checks = json.loads(out)
+          except json.JSONDecodeError:
+              print("doctor 未产出合法 JSON（诊断入口自己崩了）")
+              print("stdout:", out[-2000:])
+              print("stderr:", err[-2000:])
+              raise SystemExit(1)
+          required = ("docker_assets_consistent", "boundary_assets_consistent")
+          broken = [k for k in required if checks.get(k) is not True]
+          if broken:
+              print(f"仓库内资产检查失败：{broken}")
+              print(json.dumps({k: checks.get(k) for k in required}, ensure_ascii=False))
+              raise SystemExit(1)
+          # 允许 false 的项：只打印，不判失败（裸 clone 的预期形态）
+          print("asset checks ok; clone-dependent:", {
+              k: checks.get(k) for k in ("legacy_pages", "demo_api")})
+          PY
       - name: Headless browser smoke (Linux)
         env:
           ATLAS_BROWSER_CHANNEL: chromium
