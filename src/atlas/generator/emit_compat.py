@@ -264,6 +264,23 @@ def compat_specs_from_flow(flow: dict) -> list:
     不产运行期必炸的半成品（红线 #9）。
     """
     from .emit_pytest import _ident_slug  # 同层自用（惰性方向：emit_pytest 只在函数体内 import 本模块，不成环）
+    # flow 级 assert：兼容产物树**没有任何断言通道**（C.1 只 vendor 两垫片 + 委托旧套件，
+    # 不产 _atlas_support / test_*.py 的断言渲染）。旧行为是**静默丢弃**——`validate_flow`
+    # 只校验 assert 的形态与引用，不知道「这个产物形态用不上它」，于是同一份 flow：
+    #   `atlas run` 会执行断言、`--compat legacy-suite` 出包后断言凭空消失，两处都 rc 0。
+    # 静默丢弃正是本仓反复咬到的形态（断言凭空消失 = 红线 #7 的输入面），故此处**点名拒绝**，
+    # 与同函数对 api_call / page_object 的处理同一立场（「此处拒绝而非造第二套委托」）。
+    #
+    # 边界（刻意不做的事）：不实现「把 assert 翻译成兼容腿的检查」——兼容形态的断言语义
+    # 应由旧套件自己承担（C.2：整条委托旧 run_case_py，断言零改写），在这里补一套平行实现
+    # 等于造第二把尺（#92），且与「产物不 import atlas」的自包含纪律冲突。
+    if flow.get("assert"):
+        raise CompatEmitError(
+            "flow 声明了 assert 块，但 `--compat legacy-suite` 产物**没有断言通道**"
+            "（C.1 产物树只 vendor 两垫片 + 委托旧套件，不产断言渲染层）——"
+            "旧实现会静默丢弃它，于是 `atlas run` 校验、兼容包不校验，两处都 rc 0（红线 #7）。"
+            "请二选一：①把断言写进旧套件对应用例（兼容形态的语义由旧代码承担，C.2）；"
+            "②这份 flow 用 `--compat none` 形态出包（gap9b）——那里有断言渲染层。")
     steps = flow.get("steps") or []
     if not steps:
         raise CompatEmitError("兼容包需要至少一个 step（空 flow 出包=空产物假成功）")

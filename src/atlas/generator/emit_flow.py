@@ -13,6 +13,14 @@ class FlowEmitError(ValueError):
     """生成 flow 时的结构问题（如 save_as 冲突，--strict 下 rc 3）。"""
 
 
+# `BodySpec.kind` 的**唯一取值域**（与 `model.BodySpec` 的 docstring 逐项对应）。
+# 为什么要在这里再写一遍：`emit_flow._build_step` 的分流链只认其中四个，
+# 未知值会被静默丢弃（见 _build_step 里的取值域闸注释）。两份清单由
+# `tests/test_body_kind_gate.py` 锁步——**新增 kind 必须同时改 model 文档与这里**，
+# 否则闸门会把它当成未知值拒绝（这是有意的：宁可生成期红，不可产物少一段请求体）。
+BODY_KINDS = frozenset({"json", "form", "text", "unsupported", "none"})
+
+
 def _save_as_name(index: int, ep: Endpoint, template: str = "resp_{n}_{slug}") -> str:
     """save_as 全局唯一（compose_for_goal 同键多生产者硬报错，§1.5）。"""
     slug = slugify(ep.summary or ep.path, fallback="op")
@@ -88,6 +96,22 @@ def _build_step(index: int, ep: Endpoint, global_headers: dict,
     # body 分流
     body = ep.body
     body_params = {p.name: p.example for p in ep.params if p.where == "body"}
+    # 取值域闸（2026-11-17 结构审计）：`BodySpec.kind` 的文档取值域是 5 个
+    # （model.py:32-36：json / form / text / unsupported / none），但下面这条链只认前四个。
+    # 实测：塞一个未知 kind（如 "bogus_kind"）→ **既不产 body、也不报错、也不进 manual**
+    # ——请求体凭空消失，生成的 flow 看起来完全正常（同一份文档 `atlas gen` 出包 rc 0）。
+    # 这是「静默丢弃」形态的又一例（同族：`AssertSpec` 未知 kind、compat 腿的 flow assert、
+    # 影子层遮蔽）。故在**分流之前**点名拒绝，而不是在链尾补 else 猜个默认行为。
+    #
+    # `none` 是合法值：语义就是「无请求体」，不产 body 键是对的，故显式放行。
+    # 判据从 `model.BodySpec` 的 docstring 取值域抄一次不算漂移——它由
+    # `tests/test_body_kind_gate.py` 与 model 的文档逐项锁步（新增 kind 必须同时改两处）。
+    if body.kind not in BODY_KINDS:
+        raise FlowEmitError(
+            f"{ep.method} {ep.path}: 请求体 kind={body.kind!r} 不在取值域 "
+            f"{sorted(BODY_KINDS)}——旧实现会**静默丢弃整个请求体**（不产 body、不报错、"
+            f"不进 manual_assertions），生成出来的 flow 看起来完整但少了一段。"
+            f"请在 model.BodySpec 与 emit_flow 的分流链里同时落地新 kind，或改用既有值。")
     if body.kind == "json":
         if body.example_obj is None:
             obj = dict(body_params)  # 空映射 + 参数表字段
