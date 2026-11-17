@@ -33,6 +33,33 @@ REQUIRE_PLUGIN_ENV_KEY = "ATLAS_REQUIRE_PLUGIN"
 # 回落 WARN「同一进程只打一次」的进程级旗标（测试经 monkeypatch 重置，见 test_plugin_api）。
 _FALLBACK_WARN_PRINTED = False
 
+def demo_fixture_account() -> str:
+    """demo 插件的**虚构账号**——从数据源读，不在代码里写死（业务字面量单一来源）。
+
+    为什么不是模块级常量：`tests/test_engine_and_dsl.py::test_demo_session_defaults_are_single_source`
+    规定 demo 的业务会话字面量（账号/OU/分区号）**只能**住在 `plugins/demo/knowledge/session.json`；
+    任何 `.py` 里再写一遍都算漂移（改了数据源而代码没跟，闸门就会去拦一个已不存在的账号名）。
+    所以这里是**函数**而不是常量——连本注释都不写那些字面量，否则一样会被那条测扫到。
+
+    读失败（知识库不可用/改坏了）返回空串：闸门随之退化为「不拦」——
+    **读不到就不拦**是可接受的方向（少拦一次不改变任何执行语义；误拦会挡住正常路径，#115）。
+    """
+    try:
+        value = DemoPlugin().session_defaults().get("account")
+    except Exception:
+        return ""
+    return value if isinstance(value, str) else ""
+
+
+def plugin_is_demo_fallback() -> bool:
+    """当前插件是否是**回落**到 demo（不是显式 `ATLAS_PLUGIN=demo`）。
+
+    与 `_warn_fallback_once()` 同一判据（`ATLAS_PLUGIN` 未设/空白），两处消费同一份事实：
+    WARN 用它决定要不要提示，登录闸门用它决定要不要拦。**显式 demo 不算回落**——那是
+    人的决定（样例/dry-run 场景），拦它等于把正常路径翻成错误（#115）。
+    """
+    return not os.environ.get("ATLAS_PLUGIN", "").strip()
+
 
 def _reset_fallback_warn() -> None:
     """测试钩子：重置「同一进程只打一次」的 WARN 旗标（不属生产路径）。"""
@@ -46,12 +73,27 @@ def _warn_fallback_once() -> None:
     resolve_plugin 在知识读侧身份解析（en-2 plugin_name / en-3 草稿 identity）中被
     反复调用，逐次打印会把 stderr 变成瀑布；「静默回落」要揭示的是进程级事实
     （这个进程在拿虚构 demo 知识跑），打一次即达成目的。
+
+    **2026-11-16 真机追加（措辞升级为点名后果）**：原措辞只说了「fallback」，读者
+    不一定知道后果。真机实测踩到：真实项目未设 `ATLAS_PLUGIN` → 回落 demo →
+    `session_defaults()` 给出数据源里那个虚构账号 / 空密码 → 拿它去 SSO 登录 →
+    被拒 → 停在登录表单 → 45s 后报「未见登录指示器」→ `atlas run` rc 1。
+    **排障者看到的是一条登录超时，看不到「你在用虚构账号」。** 所以这里把后果写进
+    同一行（仍是一条，不破坏「只打一次」的初衷）：点明会话坐标来自 demo，跑真环境
+    前必须设 `ATLAS_PLUGIN`。
     """
     global _FALLBACK_WARN_PRINTED
     if _FALLBACK_WARN_PRINTED:
         return
     _FALLBACK_WARN_PRINTED = True
-    print("WARN: plugin=demo (fallback; set ATLAS_PLUGIN=<domain>)", file=sys.stderr)
+    # 账号值**在运行期从数据源读**再插进消息：既让读者看到具体后果（虚构账号名一眼可辨），
+    # 又不把业务字面量写进 .py（单一来源纪律，见
+    # tests/test_engine_and_dsl.py::test_demo_session_defaults_are_single_source）。
+    account = demo_fixture_account() or "<demo 数据源的虚构账号>"
+    print(f"WARN: plugin=demo (fallback; set ATLAS_PLUGIN=<domain>) —— "
+          f"会话坐标/知识/任务全来自虚构 demo（账号 {account!r}、密码为空）："
+          f"对真实环境跑会以登录失败收场，且报错不提「用的是 demo 账号」",
+          file=sys.stderr)
 
 
 # 通用知识包目录（业务中立、跨插件共享）的路径**单一来源**：平台插件把三级知识根按

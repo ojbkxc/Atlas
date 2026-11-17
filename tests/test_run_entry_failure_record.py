@@ -79,6 +79,9 @@ def test_entry_failure_writes_a_run_record(tmp_path, monkeypatch, capsys):
         def __enter__(self):
             raise TimeoutError("Page.wait_for_selector: Timeout 60000ms exceeded")
 
+        def __exit__(self, *a):
+            return False
+
     monkeypatch.setattr(cli, "DemoRuntime", _Boom)
     runs = root / "reports" / "runs.jsonl"
 
@@ -114,6 +117,9 @@ def test_entry_failure_record_has_the_same_shape_as_a_normal_row(tmp_path, monke
         def __enter__(self):
             raise PermissionError("DETACHED: 登录被拒")
 
+        def __exit__(self, *a):
+            return False
+
     monkeypatch.setattr(cli, "DemoRuntime", _Boom)
     with pytest.raises(PermissionError):
         cli.main(["--root", str(root), "run", str(flow)])
@@ -141,6 +147,9 @@ def test_entry_failure_does_not_change_rc_or_swallow_the_exception(tmp_path, mon
         def __enter__(self):
             raise TimeoutError("SSO 未通过")
 
+        def __exit__(self, *a):
+            return False
+
     monkeypatch.setattr(cli, "DemoRuntime", _Boom)
     with pytest.raises(TimeoutError, match="SSO 未通过"):
         cli.main(["--root", str(root), "run", str(flow)])
@@ -162,6 +171,9 @@ def test_awaiting_human_in_enter_does_not_double_write(tmp_path, monkeypatch):
         def __enter__(self):
             raise AwaitingHuman("等待审批人在 OA 里点通过")
 
+        def __exit__(self, *a):
+            return False
+
     monkeypatch.setattr(cli, "DemoRuntime", _Human)
     rc = cli.main(["--root", str(root), "run", str(flow)])
     assert rc == 3, "等人在 run 轨是 rc 3（既有口径），不能被留痕逻辑改掉"
@@ -181,6 +193,9 @@ def test_write_failure_does_not_replace_the_real_cause(tmp_path, monkeypatch, ca
         def __init__(self, *a, **kw): pass
         def __enter__(self):
             raise TimeoutError("真因：登录超时")
+
+        def __exit__(self, *a):
+            return False
 
     monkeypatch.setattr(cli, "DemoRuntime", _Boom)
 

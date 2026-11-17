@@ -3,7 +3,7 @@
 <p align="center">
   <a href="https://github.com/ojbkxc/Atlas"><img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License"></a>
-  <a href="#当前验证边界"><img src="https://img.shields.io/badge/tests-3022%20passed-brightgreen" alt="3022 passed"></a>
+  <a href="#当前验证边界"><img src="https://img.shields.io/badge/tests-3034%20passed-brightgreen" alt="3034 passed"></a>
   <img src="https://img.shields.io/badge/engine-Playwright-45edaa" alt="Playwright">
   <img src="https://img.shields.io/badge/self--healing-human--reviewed-orange" alt="Human-reviewed healing">
 </p>
@@ -612,21 +612,24 @@ PYTHONPATH=src python scripts/boundary_classify.py --diff incoming.diff --to-tow
 
 ## 当前验证边界
 
-- **真机验证（2026-11-16 本波实测，未通过）**：SIT 登录卡在 SSO 表单，顶栏
-  `.app-topbar-obj.el-dropdown-selfdefine` 60s 未出现 → `atlas run` rc 1。同一 flow 在
-  **本波改动前（git stash）**与改动后两次运行**行为完全一致**（同 rc、同超时点），即该失败
-  **不是本波代码回归**。SIT 网络可达（HTTP 302）、凭据与 `envs.json` 坐标齐备，故成因在
-  SSO/凭据面（**未验证，不猜**）。日志与改前/改后对照归档 `reports/guard_wave_20261116/`。
-  **同波修掉的既有缺陷**：登录期失败**不写 `reports/runs.jsonl`**（实测：修复前两次运行均为
-  0 条 2026-11-16 记录 → `summary`/`allure`/`report` 全看不到这次运行，无人值守等于「跑了但
-  无机器可读证据」）。现 `cli._record_entry_failure` 在 `__enter__` 抛错时补写一条**与正常行
-  同构**的记录（`status=failed`、`fail_class` 只取 `FailureClass` 既有成员、零伪造步骤）再原样
-  re-raise；真机复验 77→78 条、2026-11-16 由 0→1 条、rc 仍 1、`atlas summary` 的
-  `failed 24→25`/`interaction 1→2` 可见。**本波真实真机产出仍 = 0 条新的 passed 行**
-  （登录卡在 SSO，非代码问题），如实记录，不当作成绩。
+- **真机验证（2026-11-16 实测，11/11 只读通过）**：SIT 环境的 `sp_order` 只读套件全部 passed
+  （default-query / pagination / filter-partner-code / filter-order-types / filter-status /
+  filter-order-no / filter-wo-no / filter-creation-date / pd-list-midb / data-consistency /
+  empty-state），记录在 `reports/runs.jsonl`。**前几轮失败的真实根因**（不是 SSO、不是网络）：
+  未设 `ATLAS_PLUGIN` → 回落 demo 插件 → 拿数据源里的虚构账号 + **空密码**去登录真实 SIT →
+  被拒 → 停在登录表单 → 45s 超时 → rc 1，而报错里没有一个字提 demo。诊断路径与排除过程见
+  `reports/guard_wave_20261116/SUMMARY.md`。
+  **顺带修掉两个既有缺陷**：①上述「用虚构账号连真实环境」现由 `runtime.require_real_account_not_demo`
+  在预检单点拦下（rc 2 + 一行，含具体账号/后果/两条补救路径，零登录尝试）；判据只拦
+  「必然失败」那一格——demo 回落 ∧ 虚构账号 ∧ 空密码 ∧ **真实主机**，占位域
+  （`example.com`/`localhost`/回环/RFC1918）放过，否则整个离线套件会被误拦。②入口失败
+  （`__enter__` 抛错）此前**不写 runs.jsonl**，现补一条与正常行同构的记录再 re-raise，
+  真机复验可见。**真机连跑会触发 SSO 节流**（5 分钟 11 次登录时第 5 个起连续 rc 1，间隔后
+  恢复）——已实测确认是环境侧，非代码问题。
+  **仍未做**：写操作 flow / legacy 桥接轨 / `explore --auto` 真机；R2/R3/R5/R7 仍待授权。
 
-- 离线测试：**3022 passed / 0 failed**（Python 3.11；`PYTHONPATH=src python -m pytest -q`，
-  2026-11-16 实测——0 skipped、`--collect-only` 3022（= passed，无隐藏 skip/xfail）；
+- 离线测试：**3034 passed / 0 failed**（Python 3.11；`PYTHONPATH=src python -m pytest -q`，
+  2026-11-16 实测——0 skipped、`--collect-only` 3034（= passed，无隐藏 skip/xfail）；
   较上一收口位 2949（2026-11-16 实测）净 +35 且失败清零，本波 **缺陷修复**（代码分析逐条核出的
   12 项，P0 重放归因 / 打包缺口 / 知识包接线 / runtime 装配 / registry 同源 / 影子层遮蔽 / ruff+CI / 文档漂移）：
   **P0** `ApiEvidence` 重放 handler 每步 append 从不清理 → 第二步失败重放第一步请求（归因错位），

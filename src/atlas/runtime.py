@@ -155,7 +155,119 @@ def precheck_session_inputs(config: AtlasConfig, *, account: str | None = None,
     check_demo_api(config)
     check_legacy_required(config, required=legacy_required)
     if not no_login:
-        require_account(config, resolve_account(config, account))
+        account = resolve_account(config, account)
+        require_real_account_not_demo(config, account)
+        require_account(config, account)
+
+
+def _looks_like_real_host(url: str) -> bool:
+    """URL 指向的是**真实主机**吗？（RFC 6761/2606 保留域判据，用于上面的闸门）
+
+    判为「非真实」的形态（都不是真实环境，拿 demo 账号去打也不会真登录）：
+
+    - 空/无主机名（含 `validate_base_url` 之前就被判过的坏形态）；
+    - 回环：`localhost` / `127.0.0.0/8` / `::1` / `[::1]`；
+    - RFC 2606 保留后缀：`example.com` / `example.net` / `example.org` 及其子域，
+      以及任何 `.example` / `.test` / `.invalid` / `.localhost` 后缀；
+    - mDNS 局域网名：`.local` 后缀；
+    - RFC 1918 私有网段（`10.` / `192.168.` / `172.16-31.`）—— 内网测试环境就算真
+      要登录，用的也不会是 demo 账号（有内网环境的人必然知道设插件）。
+
+    判据只用于**这一个闸门**，不外溢成「URL 合法性校验」（那是 `validate_base_url`
+    的职责，两者判据不同：这里只回答「值不值得为它拦一次登录」）。
+    """
+    from urllib.parse import urlparse
+
+    host = (urlparse(url).hostname or "").strip().lower()
+    if not host:
+        return False
+    if host in {"localhost", "::1"} or host.startswith("127."):
+        return False
+    if host.endswith((".example", ".test", ".invalid", ".localhost", ".local")):
+        return False
+    # `example.com` / `.net` / `.org` **及其任意子域**（`sit.example.com`、
+    # `app.example.com` 都是 RFC 2606 为文档保留的，不可能是真实业务系统）。
+    # 只判裸域会漏掉测试与样例里最常见的 `<env>.example.com` 形态。
+    if any(host == base or host.endswith("." + base)
+           for base in ("example.com", "example.net", "example.org")):
+        return False
+    if host.startswith("10.") or host.startswith("192.168."):
+        return False
+    if host.startswith("172."):
+        try:
+            if 16 <= int(host.split(".")[1]) <= 31:
+                return False
+        except (IndexError, ValueError):
+            pass
+    return True
+
+
+def require_real_account_not_demo(config: AtlasConfig, account: str | None) -> None:
+    """**回落到 demo 插件时，禁止拿虚构账号去连真实环境**（真机踩出，2026-11-16）。
+
+    ## 踩到的形态（实测，不是推理）
+
+    真实项目（iservice / SIT）未设 `ATLAS_PLUGIN` → `resolve_plugin()` 回落 demo 插件 →
+    `session_defaults()` 给出数据源里那个虚构账号、`credential()` 拿到**空密码** →
+    拿它去 SSO 登录真实环境 → 被拒 → 停在登录表单 → 45s 后报「未见登录指示器」→
+    `atlas run` rc 1。
+
+    **排障者看到的是一条登录超时，完全看不到「你在用虚构账号」。** 这一条我浪费了
+    20 分钟才定位——先怀疑 SSO 改版、再怀疑验证码，最后把 `resolve_account()` 打出来
+    才发现账号是 demo 数据源里那个虚构值。
+
+    同进程的 `_warn_fallback_once()` 只打一行 WARN（en-1），然后**继续跑**。警告在
+    几十行 stderr 里极易被忽略，而后果是「一次真实的登录尝试 + 一条误导性的超时」。
+
+    ## 判据（保守，只拦「必然失败」的那一格）
+
+    同时满足四条才拒绝：
+
+    1. 当前插件是 demo 回落（`plugin_is_demo_fallback()`）——显式 `ATLAS_PLUGIN=demo`
+       不拦（那是用户明知故为，dry-run/样例场景合法）；
+    2. 解析出的账号等于 demo 数据源里的虚构账号（`demo_fixture_account()` 读到的值）；
+    3. 该账号的密码为空；
+    4. 目标主机是**真实主机**（不是 RFC 6761/2606 保留域）。
+
+    第 3 条是「必然失败」的硬证据：有密码说明用户用 `ATLAS_SESSION_ACCOUNT` /
+    `ISERVICE_PWD_*` 显式接管了坐标，那就让他跑（**不把正常路径翻成错误**，#115）。
+
+    第 4 条同样是「必然失败」的判据而不是为测试放水：`example.com` / `localhost` /
+    回环 / `.local` 这些**本来就不可能登录成功**，拿 demo 账号去打它们不会产生
+    「一次真实的登录尝试」，所以本闸要防的代价并不存在（而且离线套件正是靠这些占位域
+    验证 rc/终态口径）。真正要防的是「拿虚构账号去打**真实业务系统**」。
+
+    ## 不做的事
+
+    - **不拦 `--env` 的 prod 判定**：prod 另有写闸，这里只判「虚构坐标」。
+    - **不改 `resolve_plugin()` 的回落语义**：那是 en-1 的既有契约（回落 + WARN），
+      改它会波及所有只读知识消费方（doctor/`atlas knowledge` 等不该因没设插件而挂）。
+      本闸只加在**登录入口**这一条路径上——需要真实会话的地方。
+    - **不给绕过开关**：已有 `ATLAS_REQUIRE_PLUGIN=1` 是「更早、更强」的同类闸门；
+      本闸是它的兜底（默认就该拦），加开关等于把默认退回到「静默用虚构账号」。
+    """
+    from .plugin_api import demo_fixture_account, plugin_is_demo_fallback
+
+    if not plugin_is_demo_fallback():
+        return
+    fixture_account = demo_fixture_account()
+    if not fixture_account:
+        return                      # 读不到虚构账号 → 不拦（见 demo_fixture_account 注释）
+    if str(account or "") != fixture_account:
+        return
+    _, password = config.credential(account)
+    if password:
+        return
+    if not _looks_like_real_host(config.base_url):
+        return
+    raise ValueError(
+        f"插件回落到 demo（未设 ATLAS_PLUGIN），会话账号是**虚构的** {fixture_account!r} "
+        f"且密码为空——用它登录 {config.env!r} 环境必然失败，且报错只会显示「登录超时」，"
+        f"不会提「用的是 demo 账号」。"
+        f"补救：① 设 ATLAS_PLUGIN=<平台域名>（如 iservice）；"
+        f"或 ② 显式给账号与密码（--account <账号> + 环境变量 "
+        f"{config.env_url_key.rsplit('URL_', 1)[0]}PWD_<账号>）。"
+        f"确实要用样例坐标跑离线场景，设 ATLAS_PLUGIN=demo 显式声明。")
 
 
 def resolve_account(config: AtlasConfig, account: str | None = None, *,

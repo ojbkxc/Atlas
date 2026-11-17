@@ -1,6 +1,7 @@
 """命令行只暴露确定性动作；不向第三方 AI 自动上传项目数据。"""
 from __future__ import annotations
 import argparse
+import contextlib
 import json
 import os
 import subprocess
@@ -654,37 +655,34 @@ def _run(args, config, plugin) -> int:
         # 修法：进入失败时**自己**落一条与正常行同构的记录（同 RunRecorder.close 的字段集与
         # fail_class 词汇，见 recorder.py:98-107 / failures.FailureClass），再原样抛出真因。
         # 不静默、不改 rc（仍是 1）、不把环境阻塞洗成 passed（红线 #7）。
-        session = None
-        try:
-            session = DemoRuntime(config, login=not args.no_login, account=args.account,
-                                  ou=args.ou, division_code=args.division,
-                                  language=args.language, create_quota=args.create_quota,
-                                  legacy_required=needs_legacy).__enter__()
-        except AwaitingHuman:
-            raise                      # 等人不是失败：交给下面的 C9 显态腿（不重复落盘）
-        except BaseException as exc:
-            # 留痕自身绝不允许顶掉真因（真因优先，与 runtime.__enter__ 的清理兜底同纪律）：
-            # `_record_entry_failure` 内部已有 try，但那是「写盘失败」；这里再兜一层是防
-            # 「留痕函数本身因未知原因炸」（例如读 config.reports_dir 时属性异常）。
-            # 用户的下一句话必须永远是「登录为什么挂」。
+        # 用 `ExitStack.enter_context` 而不是裸 `with`：`__enter__` 抛错时它和 `with` 一样
+        # **不会**调用 `__exit__`（所以失败路径不会泄漏会话），但异常能被外层 try 接住，
+        # 从而可以补写留痕再原样抛出。语义与 `with DemoRuntime(...) as runtime` 逐字等价
+        # （成功路径照常 exit、失败路径不 exit），只是把「进入」这一步暴露给了调用方。
+        with contextlib.ExitStack() as stack:
             try:
-                _record_entry_failure(config, flow, exc)
-            except Exception:
-                pass
-            raise
-        try:
+                session = stack.enter_context(
+                    DemoRuntime(config, login=not args.no_login, account=args.account,
+                                ou=args.ou, division_code=args.division,
+                                language=args.language, create_quota=args.create_quota,
+                                legacy_required=needs_legacy))
+            except AwaitingHuman:
+                raise                  # 等人不是失败：交给下面的 C9 显态腿（不重复落盘）
+            except BaseException as exc:
+                # 留痕自身绝不允许顶掉真因（真因优先，与 runtime.__enter__ 的清理兜底同纪律）：
+                # `_record_entry_failure` 内部已有 try，但那是「写盘失败」；这里再兜一层是防
+                # 「留痕函数本身因未知原因炸」（例如读 config.reports_dir 时属性异常）。
+                # 用户的下一句话必须永远是「登录为什么挂」。
+                try:
+                    _record_entry_failure(config, flow, exc)
+                except Exception:
+                    pass
+                raise
             # overlay 而不是 {**flow}：字典解包会丢掉 FlowDocument 的源文本形态，
             # md5 编译缓存与 ^ 指针定位随之失效（同一份 flow 白编译第二遍、报错白丢行号）
             FlowCompiler(session.registry(), session.provider).run(
                 flow.overlay(engine=config) if isinstance(flow, FlowDocument)
                 else {"engine": config, **flow}, session.actor)
-        finally:
-            # 与 `with` 语义等价：无论 run 成功与否都退出会话（浏览器关闭/回收清单落盘）。
-            # 退出自身报错不得顶掉真因——真因优先（与 runtime.__enter__ 兜底同纪律）。
-            try:
-                session.__exit__(None, None, None)
-            except Exception:
-                pass
     except AwaitingHuman as exc:
         # C9 显态：**等人不是失败**——run 轨 rc 3 是「需要人来处置」的信号，
         # 与 agent 审批门的 rc 3 同值（cli agent 分支现盘 :454-457 已实测；口径限定在

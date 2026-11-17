@@ -34,6 +34,31 @@ def test_fallback_warns_once(capsys):
     assert "WARN:" in err
 
 
+def test_fallback_warning_names_the_concrete_consequence(capsys):
+    """回落 WARN 必须点名**后果**，不只是「发生了回落」（2026-11-16 真机教训）。
+
+    真机踩点：真实项目未设 `ATLAS_PLUGIN` → 回落 demo → `session_defaults()` 给出数据源里
+    那个虚构账号 + 空密码 → 拿它去 SSO 登录 → 被拒 → 停在登录表单 → 45s 后报
+    「未见登录指示器」→ `atlas run` rc 1。
+
+    **排障者看到的是「登录超时」，看不到「你在用 demo 的虚构账号」**——那行 WARN 当时
+    被淹没在一堆其他 WARN 里，而且措辞只说 fallback。这条测试钉住：同一行（仍只打一次）
+    必须把后果写出来，否则下一个人还会照同样的路踩。
+    """
+    from atlas.plugin_api import demo_fixture_account
+    expected = demo_fixture_account()   # 从数据源取，不在测试里写死业务字面量
+    resolve_plugin()
+    err = capsys.readouterr().err
+    line = next(ln for ln in err.splitlines() if "plugin=demo (fallback" in ln)
+    assert expected and expected in line, (
+        f"警告必须点名虚构账号的具体值（否则读者不知道后果是什么）：{line!r}")
+    assert "登录" in line or "login" in line.lower(), (
+        f"警告必须点明「对真实环境会以登录失败收场」这个具体后果：{line!r}")
+    assert "ATLAS_PLUGIN" in line, f"警告必须给出补救动作：{line!r}"
+    # 仍是一行（不破坏「只打一次、不打瀑布」的初衷）
+    assert err.count("plugin=demo (fallback") == 1
+
+
 def test_explicit_demo_does_not_warn(capsys, monkeypatch):
     monkeypatch.setenv("ATLAS_PLUGIN", "demo")
     assert resolve_plugin().name == "demo"
