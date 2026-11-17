@@ -1119,6 +1119,36 @@ def pytest_runtest_makereport(item, call):
             entries = []
             item._fast_excinfos = entries
         entries.append((call.when, call.excinfo.value))
+    # setup 期就挂、且 `_fast_runlog` **从未进过场** → 没有任何人在收尾时写行。
+    # 这是 2026-11-17 实测的真空：`sole_page` 是 module 作用域，**比函数作用域的
+    # `_fast_runlog` 更早建立**；它抛 EnvBlocked（缺 playwright / 缺浏览器 / attach 选页
+    # 失败）时 `_fast_runlog` 压根没进 setup，收尾一刀没走 → runs.jsonl 文件都不存在。
+    # （函数级 fixture 抛是另一回事：autouse 先于显式请求，所以那种会留行。）
+    if (call.when == "setup" and call.excinfo is not None
+            and not getattr(item, "_fast_runlog_entered", False)):
+        _write_setup_failure_row(item, call.excinfo.value)
+
+
+def _write_setup_failure_row(item, exc) -> None:
+    """模块级 fixture 先挂时补一行——否则该用例在 runs.jsonl 里**完全缺席**。
+
+    为什么必须补：`atlas summary` / `atlas allure` / `atlas report` 全靠 runs.jsonl 判
+    「这条跑没跑、怎么挂的」。缺席会被读成「不存在」（无痕族 #106/#86）；无人值守时
+    「跑过且挂了」就只活在会被轮转掉的终端日志里。gap9 F-33.4 ① 登记的就是这一格。
+
+    纪律（三条，都别松）：
+    - 状态词由 `_runlog_status_reason` **同一把定性刀**产出（不按异常文本猜，F-5/红线 #7）；
+    - 落盘失败只 WARN，绝不顶用例结论（真因是 fixture 那个异常）；
+    - 只在 `_fast_runlog` 未进场时写，避免与正常收尾重复落行。
+    """
+    case = f"{item.path.stem}::{item.originalname or item.name}"
+    env = os.environ.get("ATLAS_FAST_ENV", "").strip() or "local"
+    status, reason = _runlog_status_reason([("setup", exc)])
+    try:
+        writer = RunWriter(case, env, path=RUNS_PATH)
+        writer.close(status, reason=reason)
+    except OSError as write_exc:
+        print(f"WARN: setup 期失败行落盘失败（不顶用例结论）: {type(write_exc).__name__}")
 
 
 # ---------------------------------------------------------------------------
@@ -1410,6 +1440,9 @@ def _fast_runlog(request):
     （trace.zip 可能含网络载荷/fill 输入值——生产默认关、落 gitignore 内、勿外发）。"""
     case = f"{request.node.path.stem}::{request.node.originalname or request.node.name}"
     env = os.environ.get("ATLAS_FAST_ENV", "").strip() or "local"
+    # 进场标记：makereport 据此判断「本用例的行是不是已经有人负责写」。
+    # 置位后 setup 再失败也由本 fixture 的收尾统一落行（避免 makereport 重复写）。
+    request.node._fast_runlog_entered = True
     writer = RunWriter(case, env, path=RUNS_PATH)
     tracing = start_tracing(current_page()) if trace_enabled(os.environ) else False
     yield writer
