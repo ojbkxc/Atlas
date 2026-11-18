@@ -275,7 +275,7 @@ def resolve_account(config: AtlasConfig, account: str | None = None, *,
     """会话账号**解析单点**：显式 `account` 参数 > 插件 `session_defaults(env).account`
     （其内部已含 私有 `session.json` → `envs.json` 环境坐标 → `ATLAS_SESSION_*` 三层）。
 
-    消费方 = `DemoRuntime.__init__` 与 CLI 预检（`_precheck_session_inputs`），不留第二份
+    消费方 = `DemoRuntime.__init__` 与 CLI 预检（`precheck_session_inputs`），不留第二份
     「参数 or 默认值」的写法（#92）。"""
     if account:
         return account

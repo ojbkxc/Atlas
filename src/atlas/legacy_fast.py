@@ -638,7 +638,7 @@ def _poll_js(page, js: str, budget_ms: int, clk) -> bool:
 
     **兼作「睡满」的载体**：tick 之间调用 `page.evaluate`，同时喂 Playwright 同步 API
     的消息泵。整块 `time.sleep` 不泵消息，真机实测会让随后的 `Locator.evaluate` 超时
-    （同配置间歇复现）——所以 never/超时补睡都走本函数传 `_RULE_FALSE_JS`。
+    （同配置间歇复现）——所以 never/超时补睡都走本函数（传一段恒 false 的 JS，让 evaluate 只当消息泵）。
     """
     t0 = clk.now_ms()
     while True:

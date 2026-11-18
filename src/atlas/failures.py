@@ -282,7 +282,7 @@ def reconcile_diff(left: object, right: object, *, fields: list[str] | None = No
     路径不可解析记为 `<missing>` 并算不等），只对列出的字段做值级 diff，不做模糊匹配。
 
     返回 `{"equal": bool, "mismatches": [{"path", "left", "right"}]}`；调用方（dsl
-    `_assert_reconcile`）拿 mismatches 拼 AssertionError 消息（两侧值全带，方便人比对）。
+    `_ReconcileAssert.run`）拿 mismatches 拼异常消息（两侧值全带，方便人比对）。
     值展示用 repr 截 200 字符（防大响应淹没消息）——**展示截断，判据不截断**。
     """
     mismatches: list[dict] = []
