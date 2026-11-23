@@ -6,7 +6,7 @@ from typing import Any
 from ..credential_gate import gate_flow_headers
 from .model import Endpoint
 from .dsl_utils import (slugify, collect_path_query, form_pairs_to_string,
-                        body_to_yaml_value)
+                        body_to_yaml_value, identifier_slug)
 
 
 class FlowEmitError(ValueError):
@@ -21,10 +21,36 @@ class FlowEmitError(ValueError):
 BODY_KINDS = frozenset({"json", "form", "text", "unsupported", "none"})
 
 
+_SAVE_AS_IDENT = re.compile(r"^[A-Za-z_]\w*$")
+
+
 def _save_as_name(index: int, ep: Endpoint, template: str = "resp_{n}_{slug}") -> str:
-    """save_as 全局唯一（compose_for_goal 同键多生产者硬报错，§1.5）。"""
-    slug = slugify(ep.summary or ep.path, fallback="op")
-    return template.format(n=index, slug=slug)
+    """save_as 全局唯一（compose_for_goal 同键多生产者硬报错，§1.5）。
+
+    `{slug}` 取**标识符形态**（`identifier_slug`）：`save_as` 是 ctx 键、也是 flow 级断言
+    左操作数（`<save_as>.ok == true`）。旧实现用 `slugify` 保留 `-`，于是
+    `resp_1_get-web-example-order.ok == true` 这种断言在导出器里被 `_FLOW_OK_RE`（`\\w+`）
+    认不出，**降级成 TODO**——Atlas 自己发的断言，自己的另一半读不懂（见
+    `tests/test_generated_assert_roundtrip.py`）。解析侧同时兼容历史 hyphen 键，两端都不丢。
+
+    `--naming` 模板是**用户输入**：坏模板（未知占位符 `{oops}` / 位置参数 `{0}` / 产出非标识符）
+    旧实现直接 `KeyError`/`IndexError` 裸 traceback + rc 1——「输入错误」被漂成「程序崩了」
+    （#103 同族）。此处点名成 `FlowEmitError`（ValueError 家族 → CLI 一行 stderr + rc 2）。
+    """
+    slug = identifier_slug(ep.summary or ep.path, fallback="op")
+    try:
+        name = template.format(n=index, slug=slug)
+    except (KeyError, IndexError, ValueError) as exc:
+        raise FlowEmitError(
+            f"--naming 模板无法套用：{template!r}（{type(exc).__name__}: {exc}）——"
+            f"只支持 {{n}}（步骤序号）与 {{slug}}（摘要/路径归一）两个占位符，"
+            f"例如 resp_{{n}}_{{slug}}") from exc
+    if not _SAVE_AS_IDENT.match(name):
+        raise FlowEmitError(
+            f"--naming 生成的数据落点不是合法标识符：{name!r}（模板 {template!r}）——"
+            f"save_as 既是 ctx 键、也是 flow 级断言左操作数（<save_as>.ok == true），"
+            f"只许字母/数字/下划线且不以数字开头；示例 resp_{{n}}_{{slug}}")
+    return name
 
 
 def _resolve_plugin_domain(plugin: str) -> str:
