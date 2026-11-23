@@ -59,8 +59,12 @@ def main() -> int:
     path = out / "save_requests.json"
     path.write_text(json.dumps(captured, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"captured {len(captured)} requests -> {path}")
+    # 采集回显也要过净化刀（判据单点 credential_gate）：抓到的 path 里可能带 `?token=…`，
+    # 直接打到终端 = 进回滚缓冲/CI 日志/截图（红线 #1 的终端面，与 header 闸同一立场）。
+    # 写盘那份**故意保留原样**：本脚本的用途就是把真实报文交给人审去建模板。
+    from atlas.credential_gate import sanitize_url
     for item in captured:
-        print(" ", item["path"][:110], "body_len=", len(item["body"] or ""))
+        print(" ", sanitize_url(item["path"])[:110], "body_len=", len(item["body"] or ""))
     return 0
 
 

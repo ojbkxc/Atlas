@@ -18,7 +18,7 @@ import yaml
 # 判据唯一实现在引擎侧 credential_gate（C4/M13）：脚本不自己复制敏感词名单，
 # 否则两份名单必然漂移（一份拦得住一份拦不住，比不拦更坏）。导入约定同
 # scripts/capture_save_request.py（`from atlas.x import …`，PYTHONPATH=src 或已安装）。
-from atlas.credential_gate import gate_flow_headers, mask_placeholder_value
+from atlas.credential_gate import gate_flow_headers, mask_placeholder_value, sanitize_text, sanitize_url
 
 
 def extract_samplers(jmx_path: Path) -> list[dict]:
@@ -146,6 +146,34 @@ def unresolved_placeholders(flow: dict) -> list[tuple[int, str, str]]:
     return found
 
 
+def apply_credential_gate(flow: dict) -> list[str]:
+    """**URL/文本面**凭据闸（判据在 `atlas.credential_gate`，脚本不复制名单——#92）。
+
+    为什么必须有（2026-11-23 实测）：`HTTPSampler.path` 原样进 YAML 时，
+    `/web/x?access_token=TOK123` 与 `https://ops:S3cretPwd@example.com/api` 会**逐字**
+    落到产物与 `-o` 文件里（header 闸只覆盖 HeaderManager，管不到 path）。产物是要提交到
+    新仓库的，等于把凭据搬了家（红线 #1）。口径与 `atlas gen` 同一把刀：path 走
+    `sanitize_url`（query 逐键 redact + userinfo 整段 redact），intent（来自 sampler 名）
+    走 `sanitize_text`。
+
+    返回值只报**步骤号与字段**，绝不回报原值（同 header 闸「映射只报键名不报值」）。
+    """
+    notes: list[str] = []
+    for index, step in enumerate(flow.get("steps") or [], 1):
+        if not isinstance(step, dict):
+            continue
+        for field, clean_fn in (("path", sanitize_url), ("intent", sanitize_text)):
+            raw = step.get(field)
+            if not isinstance(raw, str) or not raw:
+                continue
+            clean = clean_fn(raw)
+            if clean == raw:
+                continue
+            step[field] = clean
+            notes.append(f"step{index}.{field}")
+    return notes
+
+
 def to_atlas_dsl(samplers: list[dict], *, flow_id: str = "jmeter-import") -> dict:
     """把 samplers 转成 Atlas DSL 的 api_call steps。"""
     steps = []
@@ -193,6 +221,9 @@ def main() -> int:
     # 闸在**产出侧**、`yaml.dump` 之前（M14：确认位必须在产出侧）——dump 出来的文本与
     # stdout 内容从此不含字面凭据，而不是「拦了但某条路径漏打」。
     gated = apply_header_gate(flow)
+    # URL/文本面同样在 dump 之前闸（同一确认位）：path 里的 `?access_token=…`、userinfo
+    # `user:pass@` 与 sampler 名里的凭据此前会逐字进 YAML/-o 文件（header 闸管不到它们）。
+    redacted = apply_credential_gate(flow)
     yaml_text = yaml.dump(flow, allow_unicode=True, sort_keys=False)
 
     hdr_n = sum(1 for s in flow["steps"] if s.get("headers"))
@@ -214,6 +245,11 @@ def main() -> int:
         if len(gated) > 20:
             print(f"  另有 {len(gated) - 20} 处同类占位（同一 (键,值) 复用同一 env 键）",
                   file=sys.stderr)
+
+    if redacted:
+        print(f"WARN: {len(redacted)} 处 path/intent 含字面凭据，已在写盘前占位为 <redacted>"
+              f"（只报位置不报值）：{', '.join(redacted[:20])}"
+              + ("…" if len(redacted) > 20 else ""), file=sys.stderr)
 
     if args.output:
         args.output.write_text(yaml_text, encoding="utf-8")
