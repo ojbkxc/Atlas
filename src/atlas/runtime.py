@@ -516,12 +516,12 @@ class DemoRuntime:
         for attempt in range(2):
             try:
                 page.reload(wait_until="domcontentloaded", timeout=60000)
-            except Exception:
+            except Exception:  # 重载失败由下方 wait_for_selector 重判（本轮不进等待即为失败证据）
                 pass
             try:
                 page.wait_for_selector(indicator, state="visible", timeout=30000)
                 return
-            except Exception:
+            except Exception:  # 本轮没等到 → 下一轮重载再看（两轮都失败由下方统一报真因）
                 continue
         # C4② 之一：SSO 回调/登录跳转的 URL query 常带 ticket/code/state——框架自己把
         # page.url 写进异常文本，就是确定发生的泄漏面（该异常会进 runs.jsonl/草稿/终端）。

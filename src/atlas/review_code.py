@@ -29,7 +29,7 @@ from urllib.parse import urlsplit
 
 import yaml
 
-from .atomic_io import read_text_retry
+from .atomic_io import read_jsonl_text
 
 # ── 维度权重（默认，可经 reviewcode.json 覆盖）────────────────────────────
 DEFAULT_WEIGHTS = {
@@ -86,6 +86,14 @@ RULES: dict[str, tuple[str, str, str, str, str]] = {
     "GREEN-001": ("假绿/吞异常", "assertion", "critical",
                    "吞异常：except 后直接 pass，异常被静默忽略",
                    "记录或重新抛出异常，绝不静默吞掉"),
+    # GREEN-001 的**已声明理由**档（2026-11-23）：同行/上一行写了为什么可以吞（如
+    # 「关闭失败不得顶掉原始异常」）时不再算 critical——本仓纪律是「吞异常必须有理由」，
+    # 而理由在注释里；旧实现一律 critical，`atlas review-code src` 于是把 27 处**有理由的
+    # 收尾吞异常**判成 critical，整份报告 grade F、真实信号被噪声淹没。仍然**记一条**（low、
+    # 带「需人审确认理由成立」），不放行也不消失。
+    "GREEN-001-DECLARED": ("假绿/吞异常", "assertion", "low",
+                           "吞异常但已写理由（注释在 except/上一行/pass 行）——需人审确认理由成立",
+                           "确认理由成立；否则改为记录日志或重新抛出，绝不静默吞掉"),
     "GREEN-002": ("假绿/吞异常", "assertion", "critical",
                    "断言被 try 包住后继续：try: assert ... except: continue/pass",
                    "移除 try/except 包裹断言，让断言失败正常传播"),
@@ -105,6 +113,12 @@ RULES: dict[str, tuple[str, str, str, str, str]] = {
     "SAFE-001": ("生产安全", "safety", "critical",
                    "硬编码凭据/URL：明文密码/token/真实 URL 字面量",
                    "凭据走环境变量或 .env，URL 走 ATLAS_* 配置"),
+    # SAFE-001 的**注释档**（2026-11-23）：凭据形态出现在注释里不可执行，但仍可能把真值留在
+    # 仓库里，所以**记一条 low** 而不是丢掉；同时不再让说明性注释把整份报告压成 grade F
+    # （实测 6/16 个 critical 全是「注释里描述凭据形态」与「README 里的 `<密码>` 占位」）。
+    "SAFE-001-COMMENT": ("生产安全", "safety", "low",
+                         "注释里出现凭据/URL 形态（不可执行；确认不是把真值留在注释里）",
+                         "注释里改用 `<redacted>`/`<密码>` 占位，真值只放 .env"),
     "SAFE-002": ("生产安全", "safety", "critical",
                    "生产写步骤：DSL 写 task 配 prod 环境",
                    "生产环境禁止写操作，测试应在非生产环境执行"),
@@ -207,6 +221,20 @@ def _safe001_urls_exempt(line: str) -> bool:
     urls = _URL_PATTERN.findall(line)
     return bool(urls) and all(_url_host_reserved(u) for u in urls)
 
+
+# `<密码>` / `${VAR}` 这类**填写说明**占位：先整段抹掉再判 SAFE-001。
+# 为什么（2026-11-23 实测）：产物 README 的运维指引写成
+# `export ATLAS_FAST_PASSWORD='<密码>'`、`export ATLAS_BASE_URL='https://<host>'`，
+# 旧实现把这两行判成**硬编码凭据 critical**（占位符比阈值长，正则照样命中）——文档教用户
+# 接 env 的那一行自己吃 critical，噪声盖住真信号。抹段而不是「见 `<` 就整行跳过」：
+# 同一行里若还有真值（`password='hunter2'`）必须继续命中原判据。
+_PLACEHOLDER_SEGMENT = re.compile(r"<[^<>\n]{1,60}>|\$\{[^}\n]{1,60}\}")
+
+
+def _strip_placeholder_segments(line: str) -> str:
+    """抹掉 `<…>`/`${…}` 占位段（判 SAFE-001 用；`<ph>` 这种也要消失，否则仍越 3 字符阈）。"""
+    return _PLACEHOLDER_SEGMENT.sub("", line)
+
 # 选择器模式（MAINT-002）：CSS/XPath 选择器字面量
 # uf-7（wave5）：类选择器从 `.app-main/.el-table/.el-button` **精确样例清单**改为族中立
 # `\.[\w-]+`——精确清单只认写死的三个名字，`.el-table__fixed-right`/`.el-loading-mask`
@@ -222,8 +250,52 @@ _SELECTOR_PATTERN = re.compile(
 _HARDCODED_DATA_PATTERN = re.compile(
     r"['\"]((?:SO|SO-|CUST|PT|DEMO)[-_]?\d{4,})['\"]", re.IGNORECASE)
 
-# 注释掉的断言（ASSERT-006）
+# 注释掉的断言（ASSERT-006）——**只在「该行确实注释掉了断言代码」时算**：
+# `# assert ...` 的本体是断言语句被注释（假绿面：验证看起来做过）。规则文档/讲解注释
+# （`# assert True, assert 1 是恒真断言`）同样以 `# assert` 开头，却不是被注释掉的断言——
+# 旧实现按行首正则全判 high，实测 review_code.py 自身 13 条 findings 里 8 条是这种
+# **文档噪声**（每个规则的 rationale 注释都以 `# assert …` 开头）。
+# 判据：`# assert` 后**跟代码形态**（标识符/字面量/调用，且不是「…是…」这类讲解句）才算。
 _COMMENTED_ASSERT = re.compile(r"#\s*assert\b")
+# 讲解型注释的典型特征——命中其一即按「文档讲解」处理（不是被注释掉的断言代码）：
+# ① 含中文讲解词（是/均/这类/都是/就是/说明/形如/写法/口径/或）；
+# ② **多个 assert 并列**（`# assert A, assert B`）：真被注释的断言一行只有一条，
+#    讲解句为了枚举形态才把多条 assert 连写（旧实现按行首正则全判 high，
+#    review_code.py 自身 13 条 findings 里 8 条是这种文档噪声）；
+# ③ 冒号后带**解释段**（`# assert len(x) > 0: len() is the call…`——`:` 后跟讲解，
+#    真被注释的断言代码不会在尾部加冒号解释）；
+# ④ 夹在 AST 术语/伪代码里（`Compare(left=…)` / `pytest.approx(...)` 省略号形态）。
+_DOC_COMMENT_HINT = re.compile(r"(是|均|这类|都是|就是|说明|示例|形如|写法|口径|或|is the|are the|wrapping|the call)")
+
+
+def _is_commented_assert_code(line: str) -> bool:
+    """区分「断言被注释」与「注释里讲解断言」——ASSERT-006 的文档噪声档判据。"""
+    m = _COMMENTED_ASSERT.search(line)
+    if not m:
+        return False
+    tail = line[m.end():].strip()
+    if not tail:
+        return False
+    # 讲解尾巴（「…是恒真断言」「…说明」）→ 不是被注释的断言代码
+    if _DOC_COMMENT_HINT.search(tail):
+        return False
+    # 多条 assert 连写（`# assert A, assert B` / `# assert A / assert B`）是枚举讲解；
+    # `A == B or assert C` 的 or 连接同理（真断言一行只有一条，讲解才需要枚举形态）
+    if tail.count("assert") >= 2 or line.count("assert") >= 3:
+        return False
+    if " assert " in tail and re.search(r"\bor\b|\bnot\b|不", tail):
+        return False
+    # 冒号后带解释段（`# assert len(x) > 0: len() is the call…`）：讲解写法——
+    # 真被注释的断言代码不会在 `:` 后再接一整段英文解释
+    if ":" in tail:
+        after_colon = tail.split(":", 1)[1].strip()
+        if after_colon and len(after_colon.split()) >= 3:
+            return False
+    # AST/伪代码术语（`Compare(left=...)`、`pytest.approx(...)` 省略号）：讲解写法
+    if "..." in tail or "Compare(" in tail or "pytest.approx(" in tail:
+        return False
+    # 断言代码形态：表达式开头（标识符/引号/数字/括号），排除中文开头（讲解句常以中文开头）
+    return bool(re.match(r"^[A-Za-z_\"'(\d-]", tail))
 
 # 类型忽略/noqa（GREEN-004）
 _MASK_PATTERN = re.compile(r"#\s*type:\s*ignore|#\s*noqa")
@@ -348,10 +420,14 @@ def score_findings(findings: list[dict], config: dict) -> dict:
 class _PytestAstScanner(ast.NodeVisitor):
     """遍历 pytest 文件 AST，收集 finding。"""
 
-    def __init__(self, file: str, source_lines: list[str], config: dict):
+    def __init__(self, file: str, source_lines: list[str], config: dict,
+                 *, is_test: bool = True):
         self.file = file
         self.source_lines = source_lines
         self.config = config
+        # 是否测试代码（判据在 `_is_test_module`）：只影响「测试纪律类」规则（MAINT-001 硬 sleep）。
+        # 默认 True = 不知道时按测试口径报（fail-visible：宁可多报一条，也不静默放过测试里的硬等待）。
+        self.is_test = is_test
         self.findings: list[dict] = []
         self._assert_count = 0
 
@@ -393,13 +469,13 @@ class _PytestAstScanner(ast.NodeVisitor):
                 isinstance(c, ast.Constant) and c.value is True for c in test.comparators):
                 self._add("ASSERT-002", node.lineno, snippet)
                 return
-        # assert isinstance(x, T)
+        # assert isinstance(x, T)  # 形态示例（讲解，非被注释的断言代码）
         if isinstance(test, ast.Call):
             func = test.func
             if isinstance(func, ast.Name) and func.id == "isinstance":
                 self._add("ASSERT-002", node.lineno, snippet)
                 return
-            # assert len(x) > 0
+            # assert len(x) > 0  # 形态示例（讲解，非被注释的断言代码）
             if isinstance(func, ast.Name) and func.id == "len":
                 if test.args and isinstance(test.args[0], ast.Compare):
                     self._add("ASSERT-002", node.lineno, snippet)
@@ -444,14 +520,35 @@ class _PytestAstScanner(ast.NodeVisitor):
                 if (isinstance(func, ast.Attribute) and func.attr == "approx") or \
                    (isinstance(func, ast.Name) and func.id == "approx"):
                     self._add("ASSERT-007", node.lineno, snippet)
-        # assert abs(a-b) < 0.01
+        # assert abs(a-b) < 0.01  # 形态示例（讲解，非被注释的断言代码）
         if isinstance(test, ast.Compare) and isinstance(test.left, ast.Call):
             left_func = test.left.func
             if isinstance(left_func, ast.Name) and left_func.id == "abs":
                 self._add("ASSERT-007", node.lineno, snippet)
 
+    def _declared_swallow_reason(self, node) -> bool:
+        """吞异常处是否**写了理由**（同行 / 上一行 / body 首行注释，≥6 个非空字符）。
+
+        判据刻意保守：只认注释文本长度，不去猜理由「成不成立」——成立与否是人审的事，
+        机器只负责把「有理由」与「裸吞」分开（否则 27 处收尾吞异常把整份报告压成 F，
+        真缺陷反而看不出来）。理由文本不进 finding（避免把业务注释抄进报告）。
+        """
+        candidates = []
+        for line_no in (node.lineno - 1, node.lineno - 2):
+            if 0 <= line_no < len(self.source_lines):
+                candidates.append(self.source_lines[line_no])
+        for stmt in node.body:
+            line_no = getattr(stmt, "lineno", None)
+            if line_no and 0 <= line_no - 1 < len(self.source_lines):
+                candidates.append(self.source_lines[line_no - 1])
+        for text in candidates:
+            comment = text.split("#", 1)[1].strip() if "#" in text else ""
+            if len(comment) >= 6:
+                return True
+        return False
+
     def visit_ExceptHandler(self, node):
-        """GREEN-001: except: pass / except Exception: pass。"""
+        """GREEN-001: except: pass / except Exception: pass（写了理由的降为已声明档）。"""
         snippet = self.source_lines[node.lineno - 1].strip() if node.lineno <= len(self.source_lines) else ""
         # Check if body is just Pass or Continue
         if node.body and len(node.body) <= 2:
@@ -463,7 +560,9 @@ class _PytestAstScanner(ast.NodeVisitor):
                 # Bare except or except Exception with pass
                 if node.type is None or (isinstance(node.type, ast.Name) and
                                           node.type.id in ("Exception", "BaseException")):
-                    self._add("GREEN-001", node.lineno, snippet)
+                    rule = ("GREEN-001-DECLARED" if self._declared_swallow_reason(node)
+                            else "GREEN-001")
+                    self._add(rule, node.lineno, snippet)
         self.generic_visit(node)
 
     def visit_Try(self, node):
@@ -491,16 +590,18 @@ class _PytestAstScanner(ast.NodeVisitor):
         # pytest.skip(...) → GREEN-003 (if in test context)
         if isinstance(func, ast.Attribute):
             attr = func.attr
-            # time.sleep
+            # time.sleep → MAINT-001 **仅测试代码**（引擎的轮询实现本体不该被要求「改用 waits.py」）
             if attr == "sleep" and isinstance(func.value, ast.Name) and func.value.id == "time":
-                self._add("MAINT-001", node.lineno, snippet)
+                if self.is_test:
+                    self._add("MAINT-001", node.lineno, snippet)
             # pytest.skip / pytest.xfail
             if attr == "skip" and isinstance(func.value, ast.Name) and func.value.id == "pytest":
                 self._add("GREEN-003", node.lineno, snippet)
         elif isinstance(func, ast.Name):
             if func.id == "sleep":
-                # bare sleep(...) call
-                self._add("MAINT-001", node.lineno, snippet)
+                # bare sleep(...) call（同样只在测试代码里算硬等待）
+                if self.is_test:
+                    self._add("MAINT-001", node.lineno, snippet)
         self.generic_visit(node)
 
     def visit_FunctionDef(self, node):
@@ -526,14 +627,41 @@ class _PytestAstScanner(ast.NodeVisitor):
         self.generic_visit(node)
 
 
+def _docstring_lines(tree: ast.AST) -> set[int]:
+    """模块/类/函数 **docstring** 占用的行号集合（1-based，含多行区间）。
+
+    为什么要单列（2026-11-23 实测）：`config.py` 的模块 docstring 里写「代理形态
+    `http://user:pass@host:port`」，行级扫描把它当代码判成 SAFE-001 **critical**。
+    docstring 与注释同属**文档面**：不可执行、且这里出现的正是「教用户怎么填」的说明，
+    应与注释同档（`SAFE-001-COMMENT`，low、留痕），不能让说明文字压掉真信号。
+    """
+    lines: set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        body = getattr(node, "body", [])
+        if not body:
+            continue
+        first = body[0]
+        if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant) \
+                and isinstance(first.value.value, str):
+            start = getattr(first, "lineno", None)
+            end = getattr(first, "end_lineno", start)
+            if start:
+                lines.update(range(start, (end or start) + 1))
+    return lines
+
+
 def _scan_pytest_line_level(file: str, source: str, config: dict,
-                            findings: list[dict]) -> None:
+                            findings: list[dict], *,
+                            doc_lines: set[int] | None = None) -> None:
     """行级扫描：注释掉的断言、type: ignore/noqa、硬编码凭据/选择器/数据。"""
     lines = source.splitlines()
     for i, line in enumerate(lines, 1):
         stripped = line.strip()
-        # ASSERT-006: 注释掉的断言
-        if _COMMENTED_ASSERT.search(line):
+        # ASSERT-006: 注释掉的断言（讲解型注释不算——`# assert x is None` 若是规则文档
+        # 的一部分，判 high 会把评审器自己的 rationale 全部打成噪声）
+        if _COMMENTED_ASSERT.search(line) and _is_commented_assert_code(line):
             if _rule_enabled("ASSERT-006", config):
                 findings.append(_make_finding("ASSERT-006", file, i, stripped, config))
         # GREEN-004: type: ignore / noqa
@@ -543,13 +671,17 @@ def _scan_pytest_line_level(file: str, source: str, config: dict,
         # SAFE-001: 硬编码凭据/URL
         # 顺序敏感：字面秘密赋值恒判；只有「仅 URL 命中且 host 全为保留域」才放行
         # （豁免只此一面，见 _safe001_urls_exempt 注释）。
-        credential_hit = any(p.search(line) for p in _CREDENTIAL_PATTERNS)
-        if credential_hit:
-            if _rule_enabled("SAFE-001", config):
-                findings.append(_make_finding("SAFE-001", file, i, stripped, config))
-        elif _URL_PATTERN.search(line) and not _safe001_urls_exempt(line):
-            if _rule_enabled("SAFE-001", config):
-                findings.append(_make_finding("SAFE-001", file, i, stripped, config))
+        # 两处 2026-11-23 收紧（都是**减噪声不减判据**）：
+        # ①`<…>`/`${…}` 填写说明占位先抹段（产物 README 的 `'<密码>'` 不是硬编码）；
+        # ②注释行降 `SAFE-001-COMMENT`（low）：不可执行，但仍留痕（别把真值留注释里）。
+        probe_line = _strip_placeholder_segments(line)
+        is_comment = stripped.startswith("#") or i in (doc_lines or set())
+        credential_hit = any(p.search(probe_line) for p in _CREDENTIAL_PATTERNS)
+        url_hit = bool(_URL_PATTERN.search(probe_line)) and not _safe001_urls_exempt(probe_line)
+        if credential_hit or url_hit:
+            rule = "SAFE-001-COMMENT" if is_comment else "SAFE-001"
+            if _rule_enabled(rule, config):
+                findings.append(_make_finding(rule, file, i, stripped, config))
         # MAINT-002: 硬编码选择器（不在注册表中检测在 knowledge 模式做，这里只标记字面量）
         # MAINT-003: 写死数据
         if _HARDCODED_DATA_PATTERN.search(line):
@@ -578,12 +710,14 @@ def scan_pytest_file(path: Path, config: dict,
                                           "syntax error", config))
         return findings
 
-    scanner = _PytestAstScanner(file_str, source.splitlines(), config)
+    scanner = _PytestAstScanner(file_str, source.splitlines(), config,
+                                is_test=_is_test_module(path))
     scanner.visit(tree)
     findings.extend(scanner.findings)
 
-    # 行级扫描
-    _scan_pytest_line_level(file_str, source, config, findings)
+    # 行级扫描（docstring 行号一并给：文档面与注释同档，见 `_docstring_lines`）
+    _scan_pytest_line_level(file_str, source, config, findings,
+                            doc_lines=_docstring_lines(tree))
 
     # knowledge 模式：检查硬编码选择器是否在注册表
     if registry is not None:
@@ -617,7 +751,7 @@ def _selector_in_registry(selector: str, registry: Any) -> bool:
             selectors = spec.get("selectors", {})
             if isinstance(selectors, dict) and selector in selectors.values():
                 return True
-    except Exception:
+    except Exception:  # 注册表读坏=判不了，按「未注册」返回 False（本函数只服务 MAINT-002 提示）
         pass
     return False
 
@@ -781,6 +915,22 @@ def scan_contract_file(path: Path, config: dict) -> list[dict]:
 
 # ── 目标识别与扫描分发 ────────────────────────────────────────────────────
 
+def _is_test_module(path: Path) -> bool:
+    """该 .py 是不是**测试代码**（`MAINT-001` 的适用面）。
+
+    为什么要分开（2026-11-23 实测）：`MAINT-001`（硬 sleep，high）的建议是「改用 waits.py 语义
+    等待」——那是**测试代码**该遵守的纪律。但 `detect_kind` 把所有 `.py` 都当 `pytest` 扫，于是
+    引擎自己的轮询实现被判 high：`atomic_io` 的 `time.sleep(_READ_RETRY_DELAY_S)`（读重试退避）、
+    `dsl` 的 `time.sleep(interval_ms / 1000.0)`（`await: poll` 的间隔）、`explore` 的命令轮询、
+    `legacy_fast` 的等待垫片——这几个正是**语义等待的实现本体**，报「请改用 waits.py」等于要求
+    引擎不要实现等待（自指噪声，与 ASSERT-006 那波同类）。
+    判据取三条并列（文件名前缀/后缀/路径段），**不**用「含 test 子串」（`contrast.py` 会误中）。
+    """
+    if path.stem.startswith("test_") or path.stem.endswith("_test"):
+        return True
+    return any(part == "tests" for part in path.parts)
+
+
 def detect_kind(path: Path) -> str:
     """按扩展名/内容识别目标类型。"""
     suffix = path.suffix.lower()
@@ -840,7 +990,7 @@ def _extract_assert_info(source: str) -> list[str]:
             if isinstance(node, ast.Assert):
                 try:
                     asserts.append(ast.unparse(node.test))
-                except Exception:
+                except Exception:  # 单个断言 unparse 不了就跳过（源码里已有 SyntaxError 兜底，逐条降级）
                     pass
     except SyntaxError:
         pass
@@ -899,12 +1049,10 @@ def cross_check_runs(runs_path: Path, findings: list[dict],
         return extra_findings
 
     # cc-2 读侧配套：runs.jsonl 写锁区间=文件头 1 字节，Windows 并发读撞锁 PermissionError
-    # （瞬态）由 read_text_retry 重试即过；判据与 atomic_io 同一把尺（#92）：只重试
+    # （瞬态）由 read_jsonl_text 内部重试即过；判据与 atomic_io 同一把尺（#92）：只重试
     # PermissionError，UnicodeDecodeError 直接回落 replace，其余异常原样传播。
-    try:
-        raw = read_text_retry(runs_path, encoding="utf-8")
-    except UnicodeDecodeError:
-        raw = read_text_retry(runs_path, encoding="utf-8", errors="replace")
+    # BOM 口径同单点：带 BOM 的 runs.jsonl 首行 past 会被 json.loads 拒成残行而静默丢失。
+    raw = read_jsonl_text(runs_path)
 
     failed_assertion_cases = set()
     for line in raw.splitlines():
@@ -1338,7 +1486,10 @@ def review_code(paths: list[str | Path], *, mode: str = "static",
     avg_score = round(total_score / len(file_results)) if file_results else 100
     # 取最低等级（最差）
     _GRADE_RANK = {"A": 0, "B": 1, "C": 2, "D": 3, "F": 4}
-    max_grade = "F"
+    # 起点必须是**最好**的等级：旧实现从这里 `max_grade = "F"` 起步，而 F 的 rank 已经是最大值
+    # 4，`>` 比较永远不成立 → 聚合 grade **恒等于 F**（实测 `critical_findings=0`、`avg_score=99`
+    # 的报告照样写 `grade: F`）。聚合等级是给人看的第一行结论，恒 F 等于把结论删掉。
+    max_grade = "A"
     for fr in file_results:
         g = fr["score"]["grade"]
         if _GRADE_RANK.get(g, 4) > _GRADE_RANK.get(max_grade, 4):

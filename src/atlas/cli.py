@@ -675,7 +675,7 @@ def _run(args, config, plugin) -> int:
                 # 用户的下一句话必须永远是「登录为什么挂」。
                 try:
                     _record_entry_failure(config, flow, exc)
-                except Exception:
+                except Exception:  # 留痕自身崩不得顶掉真因（用户下一句必须问「登录为什么挂」）
                     pass
                 raise
             # overlay 而不是 {**flow}：字典解包会丢掉 FlowDocument 的源文本形态，

@@ -113,11 +113,11 @@ class BrowserSession:
                 if obj:
                     try:
                         obj.close()
-                    except Exception:
+                    except Exception:  # 收尾失败不得顶掉原始入口异常（真因优先，见下方 raise）
                         pass
             try:
                 self._pw.stop()
-            except Exception:
+            except Exception:  # 同上：浏览器进程停不掉也不改写入侵失败的真因
                 pass
             raise
         return self
@@ -255,6 +255,6 @@ class ApiEvidence:
                 if not isinstance(replay, dict):
                     continue
                 return api_evidence(exc, replay).value
-            except Exception:
+            except Exception:  # 单条重放器坏掉就跳过试下一条（定性器不得先于被定性对象死，见 docstring）
                 continue
         return None

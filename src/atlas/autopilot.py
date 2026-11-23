@@ -30,6 +30,7 @@ Save/Submit/Confirm 类停）。请求/响应观察只**读**页面事件（取�
 from __future__ import annotations
 
 import json
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -213,8 +214,10 @@ def _wire_events(page, ctx: ExploreContext) -> None:
     try:
         page.on("request", lambda req: _on_request(ctx, req))
         page.on("response", lambda resp: _on_response(ctx, resp))
-    except Exception:
-        pass
+    except Exception as exc:  # 证据挂载失败不终止探索，但**必须留痕**——否则跑完才发现「一条
+        # 请求证据都没有」而日志里看不出原因（旧实现 pass，纯静默）
+        print(f"WARN: 探索证据挂载失败（后续步骤将没有请求/响应快照）："
+              f"{type(exc).__name__}: {sanitize_text(exc)}", file=sys.stderr)
 
 
 def _on_request(ctx: ExploreContext, req) -> None:
@@ -773,5 +776,7 @@ def _record_decision(agent, goal: str, action: str, risk: RiskLevel,
     try:
         agent._record(Decision(goal, [action], risk.value, approved, reason=reason,
                                executed=[action] if approved else []))
-    except Exception:
-        pass
+    except Exception as exc:  # 决策留痕失败不得顶掉动作结果，但**必须留痕**（旧实现 pass：
+        # reports/agent_decisions.jsonl 少一行而终端一个字没有，事后无法解释「为什么走了这条」）
+        print(f"WARN: 决策留痕失败（agent_decisions.jsonl 少了这一条）："
+              f"{type(exc).__name__}: {sanitize_text(exc)}", file=sys.stderr)
