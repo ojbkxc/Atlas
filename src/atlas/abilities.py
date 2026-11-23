@@ -65,6 +65,17 @@ class CallApi(Ability):
         self._keepalive_interval = 0  # 0 = 不主动轮询，只在响应触发时保活
         self._last_keepalive = time.time()
 
+    def reset_timing(self) -> None:
+        """归零「上一条请求」的耗时采样（**每步归零**的单一入口，由 engine 在 perform 前调）。
+
+        为什么需要：``last_timing_ms`` 是**粘性**值——只有真发请求时才更新。旧 engine 直接把它
+        抄进 runs.jsonl 的 `api_ms`，于是「API 通道但本步没发请求」的步骤（`assert_api` 读 ctx、
+        自定义 `_perform_api` 走自己的传输）会**继承上一步的接口耗时**：`api_ms` 记的是别人家
+        的数，`atlas summary`/`report` 的接口耗时归因随之错位（与 P0「重放 handler 跨步残留」
+        同族：跨步粘性状态）。守卫 `tests/test_step_api_timing_attribution.py`。
+        """
+        self.last_timing_ms = 0.0
+
     def set_keepalive(self, callback, interval: float = 300.0) -> None:
         """注册保活回调：检测到会话失效或间隔到期时重新烘焙 Cookie。
 

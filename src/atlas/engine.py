@@ -218,6 +218,13 @@ class ExecutionEngine:
                         if isinstance(record, dict):
                             record["prod_write_allowed"] = True
                     self.config.validate_write(str(actor.ctx.get("remark", "非人工创建")))
+                # 每步把「上一条请求耗时」归零，再让 perform 去更新它——`last_timing_ms` 是
+                # **粘性**值（只有真发请求才写），旧实现直接抄进 `api_ms`：API 通道但本步没发
+                # 请求的步骤（assert_api 读 ctx / 自定义 _perform_api 走自己传输）会继承上一步
+                # 的接口耗时，runs.jsonl 里的 `api_ms` 记成别人家的数（跨步粘性状态，与 P0
+                # 「重放 handler 跨步残留」同族）。归零入口单点在 CallApi.reset_timing。
+                if task.metadata.channel in {Channel.API, Channel.AUTO} and CallApi in actor.abilities:
+                    actor.api.reset_timing()
                 result = self._perform(actor, task)
                 degraded_cursor = self._flush_degradations(actor, record, degraded_cursor)
                 routes_cursor = self._flush_routes(actor, record, routes_cursor)
