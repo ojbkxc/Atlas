@@ -17,6 +17,14 @@
 | [docs/api-pitfalls.md](api-pitfalls.md) | 接口失败现场判读手册：症状 → 根因 → Atlas 处置位置 | 运维 + 贡献 |
 | [docs/functional-testing-playbook.md](functional-testing-playbook.md) | 跨平台功能测试作业手册：流程 + 跨平台不变的判据（误报教训固化） | 贡献（换平台施工） |
 | [docs/element-ui-generic-knowledge.md](element-ui-generic-knowledge.md) | Element UI 通用知识包分类台账：逐条通用性判定与去向 | 贡献（知识提炼） |
+| [docs/lessons-artifact-side.md](lessons-artifact-side.md) | 产物侧缺陷族排查手册：13 波「离线全绿但产物坏」的症状→族→判据与修法模式 | 贡献 + 判据（写产物前必读） |
+| [docs/first-bug.md](first-bug.md) | 骨架 → 第一个 bug 的最短路径（每步命令 + 预期 rc） | 上手（第二步） |
+| [docs/migration-from-ui-auto-test.md](migration-from-ui-auto-test.md) | UI AUTO TEST → Atlas 移植方案（总览与决策） | 迁移 |
+| [docs/legacy-adapter-setup.md](legacy-adapter-setup.md) | LegacyAdapter 接管旧 UI AUTO TEST（L1 接入） | 迁移 |
+| [docs/knowledge-migration.md](knowledge-migration.md) | L2 知识库移植：映射表与未迁移清单 | 迁移 |
+| [docs/case-migration-mapping.md](case-migration-mapping.md) | L4 用例移植：字段映射、逐条对照与未映射项 | 迁移 |
+| [docs/migration-verification.md](migration-verification.md) | 迁移独立验收报告（含未通过项，不伪装通过） | 迁移 + 验收 |
+| [docs/dual-entry-flows.md](dual-entry-flows.md) | 双入口跨入口业务流口径固化（两条 flow + 共享 plan_ctx） | 贡献 |
 | [docs/gaps/*.md](gaps/) | 各波次 gap 设计 / 落地记录（命题、方案、判据与边界） | 贡献 |
 | [docs/gaps/impl_pi/*.md](gaps/impl_pi/) | pi 吸收波施工级设计（总纲 → 对抗评审 → 分主题设计 → 终验） | 贡献 |
 | [docs/gaps/research_pi/*.md](gaps/research_pi/) | 吸收前的盘点与调研（现状对照 / 机制盘点 / 模式提炼） | 贡献（背景） |

@@ -21,6 +21,10 @@ Atlas 是**可移植 pytest 脚本包的生成器 + 验证器**，不是某个�
 ## 1. Never（硬性禁止）
 
 1. **禁止硬编码凭据或真实 `.env` 入库**。沿用 `DEMO_*` 键名，密码只能从环境读取。
+   **输入文档里的字面凭据同样禁止落盘**（2026-11-23 补：`atlas gen` 在 `parse_source` 之后、
+   任何产出之前抹掉 `path`/`base`/`summary` 里的 userinfo 与敏感 query 值，判据单点
+   `credential_gate.sanitize_url`/`sanitize_text`，抹了什么进 `manual_assertions`；
+   `tests/test_generator_secret_redaction.py`）。
    **唯一显式例外 = 产物失败腿 trace 双确认**：默认关（`ATLAS_FAST_TRACE` 未设=零开销）；
    仅设 `ATLAS_FAST_TRACE=1` **不足以**开启，须再设 `ATLAS_FAST_TRACE_ACCEPT_SECRETS=1`
    （=承认 trace.zip 会带网络载荷与 fill 输入值，**含真实密码**）。缺第二键时 trace **不开**、只打
@@ -68,7 +72,7 @@ PYTHONPATH=src python -m compileall -q src
 PYTHONPATH=src python -m atlas doctor
 ```
 
-- 当前基线：**3070 passed**（1448 → 1603「补 4 能力」→ 1777 pi-absorb W5/W6（C12 写不盲重试 +48、C9 `waiting` 显态 +99）→ 1797 后续波次 +20：C12-E 判据级拒绝、agent 轨两条腿、dispatch 子进程 rc 表、env_blocked reason 写侧、flow timeout 单列、export_runlog dead-read → 1959 gap9 快脚本产出波 +162 → **2149 gap11 旧仓兼容快包波 +190**：`legacy_fast` 有界语义等待垫片（readyState/min_ms/锚点三档 + 预算制回退）、`fastplugin` 注入（等待垫片 + 截图抑制 + 逐调用 stats）、`--compat legacy-suite` 兼容产物（零 import atlas / vendored 字节锁步 / 旧仓 fixture 面恰等 7 项）、跨切面判据 59 格、旧仓路径双形态（PROJECT+相对 WEB / 绝对 WEB）；同期删减审计 ruff 24→0 → **2171 默认档修复波 +22**：#30/#31 `--fast`/`--compat` 空转修复、#33 忙→静判断据 + fail-safe 睡满、#34 配对判据格、#35 产物 README 正误、#36 等待腿撤出 `--fast` 默认（截图抑制保留）→ **2180 调用点规则 +9**：`ATLAS_FAST_SITE_RULES` 按等待点语义条件放行（js/url/mask_gone/mask_cycle/never 五类、超时睡满、黑名单点禁提前），规则档仍为显式 opt-in → **2216 gap12 自主探索波 +36**：`llm.py` OpenAI 兼容客户端（env 门逐键点名、错误绝不吞成空串、注入 transport 离线可测）+ `autopilot.py` 自主循环（白名单动作 / `classify_risk` 风险门 / 生产闸早于开浏览器 / checkpoint+compile 沉淀 / 决策留痕）+ `explore --auto/--goal/--max-steps/--max-seconds` CLI 入口 → **2404 重构波「产物优先可移植包」+188**：定位改为 pytest 包生成器 + 验证器（2.2 产物 UI 腿可执行化、2.3 分片、2.4 trace 归档、2.5 浏览器矩阵、2.6 iservice 第二业务插件 + 插件缝、松绑、#13/#16/#17 三条红线修复）+ 本波 4 项清理净 +1 → **2428 迁移坑点审核与 URL 净化波 +24**：`scripts/pitfall_review.py` 迁移坑点导入审核塔 + 人工逐条就地启用（+17）+ `credential_gate._sanitize_fragment` URL fragment 分形态（路由型保留/非路由型整抹）+ explore 三个 URL 落点（checkpoint 落盘 / `_observe` 出境 / `compile_trace` 读侧）接线（+4）+ 新脚本入 X 哨兵网（+2）+ 上一笔 `cffd717` 未落数的 1 条漂移 → **2446 多环境接线与开箱可装波 +18**：`envs.json` 账号/OU 环境坐标接进会话默认链（+6）+ 空账号闸门经 CLI 三入口（run / agent --execute / explore）预检投递 rc 2（`resolve_account`/`require_account` 单点）+ `--env` choices 收敛到 `config.ENV_URL_KEYS` 单一真相（+4）+ `atlas init` 默认钉 Atlas 源码根使骨架开箱可装 + README「拿到先跑这三步」+ 随仓样例 `examples/api_sample.md` + docs↔样例漂移守卫（+8）→ **2535 通用知识包组合层波 +14**：`KnowledgeBase` 新增 `base_roots`（组合层）——`load_composed` 在影子层 `load()` 结果上按 key/条目并入通用知识包（顶层 dict 按 key、pitfalls 行按 `id` 去重、components 按组件名，靠前者赢），`pitfalls(domain)` 可见性判据 = `domain in scope or "generic" in scope`（通用包每行 scope 带数据层 `generic` 标记、对任意平台域可见；平台专有行不带、对别的域不可见），helper 单一来源 `plugin_api.common_knowledge_root()` 指 `src/atlas/plugins/_common/knowledge`（通用包 components 15 条 / pitfalls 82 条（2535 时 47 条，`ad988a9` 增补 gen-048~082 共 35 条）/ 接入清单 6 类，提炼依据 `docs/element-ui-generic-knowledge.md`），插件与 `config_add` 骨架三层接线（私有 > 平台 > 通用；`selectors()` 走 `load_composed`，tests/test_config_add.py +2；P1-3 实测 demo/iservice 两个内置插件已接 `base_roots`：`pitfalls('demo')` 30→112、`pitfalls('iservice')` 16→98，`selectors().names()` 7→22 / 14→28）；另 2446 收口后至本波起点间存量补测 +75（缺陷修复波「测试盲区」，此前未落数）→ **2593 wave3 AI 自主测试闭环波 +58**（`explore --auto` 判据四类 assert / 证据落 runs.jsonl / 坑点自动提炼进塔 / ob-1 骨架 env 契约）→ **2618 wave4 原子 IO 波 +25**（`atomic_io` 统一原子写 + 唯一安全追加器，12 文件接线）→ **2633 wave4 P1 批次 +15**（审核塔事务锁 / 读侧 `read_text_retry` / lazy import requests / `save_plan_ctx` 锁内合并 / `historyId` 来源维度 opt-in / trace 断行守卫）→ **2671 wave4 A 轴族可移植面 +38**（`ui_family` 族表 / uf-1 族前缀 DOM 存在性判据 / uf-2 运行时点名 / uf-3 族声明与 `save_component_selector` 顶层键保留）→ **2797 wave4 B/C 轴收尾波 +126**（ae-1~ae-4 CLI 统一渲染层 / ae-5 allure 结果集摘要 / ae-6 产物可读性评审 / ae-7 读者导航 / pf-4 waits tick 常量化 / pf-5 多 flow 一次登录 / pf-6 取证截图降质 opt-in / pf-9 allure-analyze 增量读 / pf-11 catch-up 槽位公式化 / ob-2 骨架 envs.json 补键；含 `atomic_write_bytes` 收口单点）→ **2805 wave4 ae-6 产物 README 改造 +8**（横幅去嵌套加粗 / 运行命令 `pytest -q` / 快慢两形态未接线语义分叉 / 仓库相对路径死链加诚实注记 / 双入口名 / env 旋钮按 `emit_fast.ENV_KEYS` 全量渲染 / 本包文件清单；样例 intent「requests 直调」失真文案一并修）→ **2949 wave5 backlog 收口波 +144**（gap14 待办 + ae-6 剩余留白逐条处置，表见 `docs/gaps/wave5-backlog.md`：en-1/en-3 插件回落 WARN+REQUIRE_PLUGIN / 草稿 identity 平台维度、en-2/ob-4 知识平台维度+族标签、en-4/5/7/13 envs 多入口 / .env 白名单（runtime/legacy+CLI 四处）/ 代理 / 登录协议预检、ob-5 旧仓预检按需化+跳过开关、en-8 runs 分流+读侧聚合、en-10/11/12/15 await/重放/raises/对账、en-9/en-14 双入口文档/exports root-anchored、ob-3/6/7/8 生成器 domain/产物 README/doctor 清单/首 bug 文档、uf-5~8 遮罩单点/样例族中立/playbook 族标签、ae-6 四产物可读性补齐、pf-3 语义等待真机取证、complex-flow 脚手架；ob-5 的 API 半面按实留白待插件 seam）；
+- 当前基线：**3169 passed**（1448 → 1603「补 4 能力」→ 1777 pi-absorb W5/W6（C12 写不盲重试 +48、C9 `waiting` 显态 +99）→ 1797 后续波次 +20：C12-E 判据级拒绝、agent 轨两条腿、dispatch 子进程 rc 表、env_blocked reason 写侧、flow timeout 单列、export_runlog dead-read → 1959 gap9 快脚本产出波 +162 → **2149 gap11 旧仓兼容快包波 +190**：`legacy_fast` 有界语义等待垫片（readyState/min_ms/锚点三档 + 预算制回退）、`fastplugin` 注入（等待垫片 + 截图抑制 + 逐调用 stats）、`--compat legacy-suite` 兼容产物（零 import atlas / vendored 字节锁步 / 旧仓 fixture 面恰等 7 项）、跨切面判据 59 格、旧仓路径双形态（PROJECT+相对 WEB / 绝对 WEB）；同期删减审计 ruff 24→0 → **2171 默认档修复波 +22**：#30/#31 `--fast`/`--compat` 空转修复、#33 忙→静判断据 + fail-safe 睡满、#34 配对判据格、#35 产物 README 正误、#36 等待腿撤出 `--fast` 默认（截图抑制保留）→ **2180 调用点规则 +9**：`ATLAS_FAST_SITE_RULES` 按等待点语义条件放行（js/url/mask_gone/mask_cycle/never 五类、超时睡满、黑名单点禁提前），规则档仍为显式 opt-in → **2216 gap12 自主探索波 +36**：`llm.py` OpenAI 兼容客户端（env 门逐键点名、错误绝不吞成空串、注入 transport 离线可测）+ `autopilot.py` 自主循环（白名单动作 / `classify_risk` 风险门 / 生产闸早于开浏览器 / checkpoint+compile 沉淀 / 决策留痕）+ `explore --auto/--goal/--max-steps/--max-seconds` CLI 入口 → **2404 重构波「产物优先可移植包」+188**：定位改为 pytest 包生成器 + 验证器（2.2 产物 UI 腿可执行化、2.3 分片、2.4 trace 归档、2.5 浏览器矩阵、2.6 iservice 第二业务插件 + 插件缝、松绑、#13/#16/#17 三条红线修复）+ 本波 4 项清理净 +1 → **2428 迁移坑点审核与 URL 净化波 +24**：`scripts/pitfall_review.py` 迁移坑点导入审核塔 + 人工逐条就地启用（+17）+ `credential_gate._sanitize_fragment` URL fragment 分形态（路由型保留/非路由型整抹）+ explore 三个 URL 落点（checkpoint 落盘 / `_observe` 出境 / `compile_trace` 读侧）接线（+4）+ 新脚本入 X 哨兵网（+2）+ 上一笔 `cffd717` 未落数的 1 条漂移 → **2446 多环境接线与开箱可装波 +18**：`envs.json` 账号/OU 环境坐标接进会话默认链（+6）+ 空账号闸门经 CLI 三入口（run / agent --execute / explore）预检投递 rc 2（`resolve_account`/`require_account` 单点）+ `--env` choices 收敛到 `config.ENV_URL_KEYS` 单一真相（+4）+ `atlas init` 默认钉 Atlas 源码根使骨架开箱可装 + README「拿到先跑这三步」+ 随仓样例 `examples/api_sample.md` + docs↔样例漂移守卫（+8）→ **2535 通用知识包组合层波 +14**：`KnowledgeBase` 新增 `base_roots`（组合层）——`load_composed` 在影子层 `load()` 结果上按 key/条目并入通用知识包（顶层 dict 按 key、pitfalls 行按 `id` 去重、components 按组件名，靠前者赢），`pitfalls(domain)` 可见性判据 = `domain in scope or "generic" in scope`（通用包每行 scope 带数据层 `generic` 标记、对任意平台域可见；平台专有行不带、对别的域不可见），helper 单一来源 `plugin_api.common_knowledge_root()` 指 `src/atlas/plugins/_common/knowledge`（通用包 components 15 条 / pitfalls 82 条（2535 时 47 条，`ad988a9` 增补 gen-048~082 共 35 条）/ 接入清单 6 类，提炼依据 `docs/element-ui-generic-knowledge.md`），插件与 `config_add` 骨架三层接线（私有 > 平台 > 通用；`selectors()` 走 `load_composed`，tests/test_config_add.py +2；P1-3 实测 demo/iservice 两个内置插件已接 `base_roots`：`pitfalls('demo')` 30→112、`pitfalls('iservice')` 16→98，`selectors().names()` 7→22 / 14→28）；另 2446 收口后至本波起点间存量补测 +75（缺陷修复波「测试盲区」，此前未落数）→ **2593 wave3 AI 自主测试闭环波 +58**（`explore --auto` 判据四类 assert / 证据落 runs.jsonl / 坑点自动提炼进塔 / ob-1 骨架 env 契约）→ **2618 wave4 原子 IO 波 +25**（`atomic_io` 统一原子写 + 唯一安全追加器，12 文件接线）→ **2633 wave4 P1 批次 +15**（审核塔事务锁 / 读侧 `read_text_retry` / lazy import requests / `save_plan_ctx` 锁内合并 / `historyId` 来源维度 opt-in / trace 断行守卫）→ **2671 wave4 A 轴族可移植面 +38**（`ui_family` 族表 / uf-1 族前缀 DOM 存在性判据 / uf-2 运行时点名 / uf-3 族声明与 `save_component_selector` 顶层键保留）→ **2797 wave4 B/C 轴收尾波 +126**（ae-1~ae-4 CLI 统一渲染层 / ae-5 allure 结果集摘要 / ae-6 产物可读性评审 / ae-7 读者导航 / pf-4 waits tick 常量化 / pf-5 多 flow 一次登录 / pf-6 取证截图降质 opt-in / pf-9 allure-analyze 增量读 / pf-11 catch-up 槽位公式化 / ob-2 骨架 envs.json 补键；含 `atomic_write_bytes` 收口单点）→ **2805 wave4 ae-6 产物 README 改造 +8**（横幅去嵌套加粗 / 运行命令 `pytest -q` / 快慢两形态未接线语义分叉 / 仓库相对路径死链加诚实注记 / 双入口名 / env 旋钮按 `emit_fast.ENV_KEYS` 全量渲染 / 本包文件清单；样例 intent「requests 直调」失真文案一并修）→ **2949 wave5 backlog 收口波 +144**（gap14 待办 + ae-6 剩余留白逐条处置，表见 `docs/gaps/wave5-backlog.md`：en-1/en-3 插件回落 WARN+REQUIRE_PLUGIN / 草稿 identity 平台维度、en-2/ob-4 知识平台维度+族标签、en-4/5/7/13 envs 多入口 / .env 白名单（runtime/legacy+CLI 四处）/ 代理 / 登录协议预检、ob-5 旧仓预检按需化+跳过开关、en-8 runs 分流+读侧聚合、en-10/11/12/15 await/重放/raises/对账、en-9/en-14 双入口文档/exports root-anchored、ob-3/6/7/8 生成器 domain/产物 README/doctor 清单/首 bug 文档、uf-5~8 遮罩单点/样例族中立/playbook 族标签、ae-6 四产物可读性补齐、pf-3 语义等待真机取证、complex-flow 脚手架；ob-5 的 API 半面按实留白待插件 seam）；
   → **2984 缺陷修复波 +35**（代码分析逐条核出的 12 项，均带回归测：P0 `ApiEvidence` 重放 handler 每步 append 从不清理 → 第二步失败重放第一步请求、归因错误（`env_blocked` 被读成 `interaction`），改单槽 `_step_replay` 每步替换 + 3 条回归；打包 wheel 补 `atlas.plugins.iservice`/`_common` package-data 与 `_common/__init__.py`（96→108 文件，装后 `contracts()` 不再抛「契约文件缺失」）；两内置插件 `knowledge()` 接 `base_roots`、`selectors()` 改 `load_composed`（pitfalls demo 30→112 / iservice 16→98，selectors 7→22 / 14→28）；runtime 按插件取 provider 与注册（iservice 不再走 demo 探针）、`session_defaults` 缺键点名插件与键；`runtime.build_registry()` 单点收敛使compile 预检与执行侧同源（含双向锁步测与行为面 rc2 证据）；ruff 8 处清零并入 CI 双 job；裸 pytest 4 文件收集失败修 `pythonpath=["src","."]`；哨兵打错命名空间两处（`test_gen` → `plugin_api`、`test_shot_quality` → `atomic_io.os`）；唯一失败用例 `from_root(None)` 回灌本机 `.env` 改 `tmp_path` 隔离；补 screenplay 门面 `__all__` 逐项核对测；影子层遮蔽两处组件读取改 `load_composed`（`emit_pytest._default_components`、`review_code` knowledge 模式——否则 15 个通用组件对生成器/评审不可见，F-10 声明位闸与 SAFE-*/MAINT-* 误判合法用例；`pitfall_review.py` 保持影子层：它是读私有→翻 status→整份写回私有库，用组合层会把通用条目复制进私有库污染资产）；
   → **3012 结构性守卫波 +28**（2026-11-16 第二波：把「写在注释里的纪律」换成会变红的判据，三处均带变异验证）：
   **①知识读层守卫**（`tests/test_knowledge_layer_guard.py`）——`load()` vs `load_composed()` 此前**类型上不可区分**，
@@ -149,7 +153,7 @@ PYTHONPATH=src python -m atlas doctor
   **同时守住字面量单一来源**：`demo_user` 等业务字面量仍只住 `knowledge/session.json`——闸门与
   WARN 消息都改成**运行期**从 `demo_fixture_account()` 取值插入（注释里也不许出现，否则被
   `test_demo_session_defaults_are_single_source` 扫到）。
-  2026-11-16 终极验实跑 **3070 passed / 0 failed / 0 skipped**、collect-only 3070（= passed，无隐藏 skip/xfail），冻结态全量跑前跑后 `git diff` md5 一致（TREE_UNCHANGED）；上一手 2949 passed / 9 failed / 8 skipped 的 9 failed 是**另一台环境**口径（该机缺 `flows/iservice` 等），本机不可复现，非代码差异。不可只跑 py_compile 就宣布完成。
+  2026-11-23 终极验实跑 **3169 passed / 0 failed / 0 skipped**、collect-only 3169（= passed，无隐藏 skip/xfail），冻结态全量跑前跑后 `git diff` md5 一致（TREE_UNCHANGED）；上一手 2949 passed / 9 failed / 8 skipped 的 9 failed 是**另一台环境**口径（该机缺 `flows/iservice` 等），本机不可复现，非代码差异。不可只跑 py_compile 就宣布完成。
   **计数四处（README 顶部徽章、README「当前验证边界」、本条、CLAUDE FAQ）**由 lead 统一收口，
   波次实施者不要各自改数（改一漏一 #92 的文档版）；`docs/gaps/**` 不留计数位，只指回这四处——
   写死在过程文档里的数每波必漂，等于偷偷开第五把尺。
@@ -274,6 +278,334 @@ PYTHONPATH=src python -m atlas doctor
   （名字搬进本仓后必须从 `_EXTERNAL` 删，否则掩盖真检查）；②核心判据（失效引用点名
   文件:行:符号）；③白名单每条必须写理由（防空理由豁免）。
   变异实证：把修好的名字改回失效形态 → 精确点名 `runtime.py:273`；白名单塞空理由 → 红。
+  → **3073 文档模块表补全 +3**（2026-11-18 同一波：地图缺格）
+  `Claude.md` 的模块表是接手者的**第一张地图**，但此前漏了 **14 个模块**
+  （77 个中的 18%），且不乏核心件：`ui_family.py`（族表/唯一取值口）、`llm.py`
+  （autopilot 的决策面）、`generator/emit_compat.py`（vendored 垫片唯一写点）、
+  `cli_render.py`（机读 JSON 唯一出口）、`plugins/iservice/plugin.py`（第二个真实业务域
+  =插件缝的证明）。后果具体：新人想找「族判定在哪」，翻到 `ui_family.py`，回头查地图
+  却没有这一行——只能怀疑自己看错了版本。**地图缺格比地图画错更常见、更难发现。**
+  已补齐 14 行（`__main__` / `cli_render` / `fastplugin` / `generator/{dsl_utils,
+  emit_compat,markdown,model,plaintext}` / `llm` / `plugins/{demo/{legacy_case,plugin},
+  iservice/plugin}` / `screenplay` / `ui_family`），每行写职责 + 判据所在（不写空话）。
+  守卫 `tests/test_doc_module_table.py` 3 条：①覆盖率下限（表 ≥40 行、模块 ≥60）；
+  ②每个模块文件名必须出现在表里——允许两种覆盖形态：独立行 **或** 目录汇总行内嵌名
+  （本仓对 `generator/`/`scheduling/` 用后者：一行概述 + 逐个点名，判据不能只认独立行）；
+  ③反向：表里独立行点的文件必须真存在（死条目比缺条目更误导）。
+  变异实证：删掉 `ui_family.py` 那行 → 精确点名缺它；加一行 `no_such_module.py` → 死条目红。
+  → **3085 产物 docstring 安全性 +12**（2026-11-23：真机抓出的**产物侧**缺陷，不是本仓源码）
+  **现象**：`atlas gen examples/api_sample.md --with-pytest --fast` 出包 rc 0，但产物
+  `atlas_pages.py` 在 `-W error::SyntaxWarning`（CI 常规档）下**直接 SyntaxError**。
+  **根因**：通用知识包 `components.json` 的 notes 里写着正则 `/确\s*定/`，渲染层把它原样插进
+  类 docstring —— `\s` 是**非法转义**：默认档只报「被忽略的 SyntaxWarning」，于是产物
+  「生成成功 / 结构齐全 / 一 import 就炸」；而生成期自检只 `ast.parse` 本仓源码，从不编译
+  自己写出去的文件（与「只生成不执行」#9 同一条缝）。**同族另两处**：用例模块
+  `来源 flow：{flow_id}`、compat 模块 `flow {flow_id}` 与 `{s.intent}` 也是裸插值
+  （`flow_id` 来自文件名/标题，含反斜杠即炸）。
+  **修法两层**：①判据单点 `dsl_utils.docstring_text`（转义反斜杠与双引号，`__doc__` 取值
+  逐字不变，不做内容改写）——emit_pytest 6 处（notes/意图/path/task/element）+ emit_compat
+  3 处（flow_id/intent）插值改走它；②**写盘前严档自检** `dsl_utils.artifact_compile_problems`
+  ——`emit_pytest_package` 与 `emit_compat_package` 在 `mkdir` **之前**按
+  `-W error::SyntaxWarning` 编译全部产物源码，坏产物点名文件拒绝、零残留。为此两条入口都改成
+  「先渲染完再自检、最后写盘」，不再依赖「知识数据恰好干净」。
+  守卫 `tests/test_artifact_docstring_safety.py` 10 条：①真知识包快慢两形态警告洁净（含
+  「数据里确实还带反斜杠」的正向前提）②notes 语义保真（反斜杠/双引号/尾反斜杠，`__doc__`
+  逐字相等）③正向对照（未转义必须报红，否则 `warnings` 过滤器恒真）④用例模块快慢×API/UI
+  四格 ⑤源码面插值必须过 helper + 扫描下限 ⑥单点函数语义 ⑦⑧写盘前闸两入口（monkeypatch
+  转义恒等 → 拒绝且目录不建）⑨单点判据两向对照 ⑩本仓 `src/`+`tests/`+`scripts/` 全量按同一
+  严档编译干净（写这条时当场抓到守卫文件自己的说明文字里有裸反斜杠）⑪⑫`emit_fast` 两份底座模板
+  （`_atlas_fast.py`/`conftest.py`）洁净 + `write_fast_artifacts` 同样在 `mkdir` 之前拒绝坏模板——
+  三处产物写入口（包/compat/快底座）自此同一口径。
+  三处既有 `_assert_compiles`（`test_emit_pytest`/`test_emit_compat`/`test_emit_fast`）同步收紧为
+  「警告当错误」口径——否则整族缺陷在这三份辅助函数下恒绿（它们此前只 `ast.parse`+裸 `compile`）。
+  → **3089 探针身份与快底座护栏 +4**（2026-11-23 同一轮分析：`atlas gen` 写出的**探针产物**）
+  **缺陷**：`probes/<名>.candidate.py` 的类名/entity 名此前在 `generator/__init__.py` 里就地拼
+  `slugify(摘要或文件名, fallback="GeneratedProbe") + "Probe"`，三种形态都不报错：
+  ① 中文标题（本仓主线文档语言）→ 非 ASCII 全被抹掉 → 落兜底 → `GeneratedProbeProbe`
+  （兜底词本身已带后缀）；② 中文里夹的 ASCII 残渣（`订单 \s 查询`）→ 只剩 `s` →
+  `class sProbe(DataProbe)`：既不是业务名也不是兜底名；③ **致命那条**：`slugify` 保留 `-`，
+  英文摘要出的 `get-web-example-customer-codeProbe` **不是合法标识符**，产物里就是
+  `class get-web-example-customer-codeProbe(DataProbe):` —— `atlas gen` rc 0 写出一个**语法错**
+  的 .py，与上一波「生成期不校验自己写出去的文件」是同一条缝。
+  **修法**：判据单点 `emit_probe.probe_entity_name`（摘要 → 文件名 stem → 兜底，取第一个够长的
+  ASCII slug，再经 `dsl_utils.pascal_identifier` 转 Pascal 加 `Probe`）；`emit_pytest` 的
+  `_pascal`/`_ident_slug` 收敛成对 `dsl_utils.pascal_identifier`/`identifier_slug` 的别名
+  （同一把刀，不留第二份实现，调用面与既有契约测不变）。同轮把写盘前严档自检扩到
+  `emit_fast.write_fast_artifacts`（`_atlas_fast.py`/`conftest.py` 在 `mkdir` 之前检查）。
+  守卫 `tests/test_probe_skeleton.py` 4 条：①取值表（英文/中文/残渣/引号/反斜杠/空 → 合法
+  标识符 + 确定性）②骨架严档可编译且 `create()` 恒 `NotImplementedError`（红线 3/12/16）
+  ③源码面单点 + **正向对照**（旧公式产出的名字必须仍是非法标识符，否则守卫前提消失）
+  ④端到端 `generate()` 跑中英两份文档，探针文件可严档编译、类名合法。
+  变异实证：`__init__.py` 改回旧公式 → ③④ 精确红（端到端那条在 `compile()` 处 SyntaxError，
+  正是旧产物形态），恢复后文件 sha256 一致。真机复验：同一条 `gen --with-pytest --fast` 出包，
+  `GetWebExampleCustomerCodeProbe.candidate.py` 类名合法，6 个 `.py` 全部严档编译通过。
+  → **3095 生成↔导出断言闭环 +6**（2026-11-23 同一轮分析：**同一产品的两半对不起来**）
+  **缺陷**：`emit_flow` 给每个 api 步骤写 `save_as: resp_1_get-web-example-customer-code`
+  + flow 级断言 `resp_1_get-web-example-customer-code.ok == true`；而 `emit_pytest` 解析这些
+  断言的正则键位是 `(\w+)`——`\w` 不含 `-`，于是**导出读不懂生成器刚写的断言**：降级成
+  `# TODO(人审): 待接断言（人审）：…`，产物看起来完整、rc 0，那一步实际没有存活断言。
+  （运行时不受影响：DSL 的 `_lookup` 按 `.` 切段索引 ctx，`-` 键能解析；坏的只是「生成链 →
+  导出链」这一跳，所以离线全绿、只有把两条链拼起来才现形。）
+  **修法两端都收**：①根因侧 `emit_flow._save_as_name` 的 `{slug}` 改用
+  `dsl_utils.identifier_slug`——生成的 ctx 键是合法标识符（`resp_1_get_web_example_customer_code`），
+  与 `\w+` 一致；②兼容侧 `_FLOW_OK_RE`/`_FLOW_RC_RE` 键位放宽到 `[A-Za-z_][\w-]*`——用户仓库里
+  **已经生成过**的 hyphen 键 flow 不会因这次改动丢断言。
+  守卫 `tests/test_generated_assert_roundtrip.py` 4 条：①真跑 `generate()` 取 flow 再
+  `emit_pytest_from_flow` → 产物无「待接断言」TODO、每步都有 `assert result.ok` ②`_save_as_name`
+  取值表（空格/连字符/中文/引号/反斜杠 → 恒为合法标识符，模板 `{n}/{slug}` 仍生效）
+  ③手工构造 hyphen 键 flow（模拟存量产物）→ 断言仍解析成真断言 ④**正向对照**：真正认不出的
+  形态（`<save_as>.data.total > 3`）仍必须降级成 TODO（放宽键位 ≠ 什么都认）
+  ⑤坏 `--naming` 模板（`{oops}`/`{0}`/含 `-`/数字开头）→ `FlowEmitError` 点名 `--naming`
+  ⑥CLI 面坏模板 → **rc 2 + 一行 stderr、无 traceback**（输入错误不漂成程序崩溃）。
+  同轮收口 `--naming` 预检：`GenOptions.validate()`（与 `--fast` 组合判据同一把闸）先点名，
+  `emit_flow._save_as_name` 保留末道防线给直调 API 的用户。
+  变异实证：正则改回 `(\w+)` + 命名改回 `slugify` → ①②③ 精确红（④⑤⑥ 保持绿，正是它们该有的
+  行为）；恢复后两份文件 sha256 一致。真机复验：`atlas gen examples/api_sample.md` →
+  `save_as: resp_1_get_web_example_customer_code` 且断言行随之改形；再 `atlas export-pytest`
+  该 flow → 产物**零 TODO**、两步各有 `assert result.ok`；`--naming "{oops}"` → rc 2 一行，
+  `--naming "s{n}_{slug}"` → rc 0 且落点 `s1_get_web_example_customer_code`。
+  → **3100 flow 级断言导出覆盖 +5**（2026-11-23 同一轮分析：**flow 级断言被整块吞掉**）
+  **缺陷**：`assert:` 块支持两形态——文本表达式与 **Task 形态**（`- task: assert_api` +
+  `operation/args/expect`，`dsl` 静态段两种都校验）。旧 `_flow_asserts` 对每条 `str(raw)` 后按
+  `save_as` 归属：Task 形态被 `str()` 成 `"{'task': 'assert_api', …}"` 永不匹配 → **丢弃**；
+  引用非步骤落点的文本断言（`document_no != ""`）或写错键的 → 同样丢弃。后果：
+  `atlas export-pytest` rc 0、产物看起来完整，而 flow 里的 API 断言块（含 `expect`）一个字都不剩
+  ——「断言消失」比「断言失败」更危险（它看起来验证过）。实测 `examples/return_from_so.yaml`
+  导出后 `document_no != ""` 与 `assert_api` 块双双消失。
+  **修法**：判据单点 `emit_pytest.flow_assert_notes`（`_flow_level_assert_notes` 的对外名）把
+  不归属任何步骤的断言收成待接 TODO，由 `render_test_module(..., flow_notes=)` /
+  `_render_test_module_fast(..., flow_notes=)` 挂在**模块头**——挂某一步会随该腿形态一起消失
+  （慢模式 UI 腿是 skip 骨架，不渲染断言注释，试过：`fast=False` 快照当场漂移，故改模块头）。
+  `flow_notes` 缺省 None ⇒ 旧输出逐字节不变（#115 零涟漪）。
+  守卫 `tests/test_flow_assert_export_coverage.py` 5 条：①Task 形态 → TODO 含 task/operation/expect
+  ②非步骤落点/写错键的文本 → TODO ③**正向对照**：能归属的断言不得被误标 TODO ④同一条 flow 级
+  断言只出一次（不随步骤数翻倍）⑤真跑 `examples/return_from_so.yaml` 导出，产物里能搜到
+  `document_no` 与 `assert_api`（改前两者都没有）。
+  变异实证：`flow_assert_notes` 改成恒返回 `[]` → ①②④⑤ 精确红，③保持绿；恢复后 sha256 一致。
+  真机复验：`export-pytest examples/return_from_so.yaml` 产物出现两行
+  `# TODO(人审): 待接断言：document_no != ""` 与 `…flow 级断言块 task=assert_api operation='sale_order_list' expect={…}`。
+  → **3104 api_ms 逐步归因 +4**（2026-11-23 同一轮分析：**跨步粘性状态**）
+  **缺陷**：`CallApi.last_timing_ms` 只有**真发请求**时才更新（粘性值），旧 engine 在每步结束时
+  直接 `record["api_ms"] = actor.api.last_timing_ms`。于是「API 通道但本步没发请求」的步骤
+  （`assert_api` 读 ctx、自定义 `_perform_api` 走自己的传输、写闸拦停后的步骤）会把
+  **上一步的接口耗时**记到自己头上——`runs.jsonl` 声称「这一步接口耗时 120ms」而它一个请求
+  都没发，`atlas summary`/`report` 的耗时视图随之错位且零报错（与 P0「重放 handler 跨步残留」
+  同族：跨步粘性状态）。
+  **修法**：归零单一入口 `CallApi.reset_timing()`（`abilities.py` 里 `last_timing_ms` 赋值点
+  恒为 3：`__init__` 初始化 / `reset_timing` 归零 / `request` 实测更新）+ engine 在
+  `_perform` **之前**调它（`tests/test_step_api_timing_attribution.py` 第③条钉住「engine 不得
+  直接赋值」）。归零只发生在 API/AUTO 通道且 `CallApi` 在位时——无 ability 的路径行为零变化。
+  守卫 4 条：①两步（有请求/无请求）→ 第二步 `api_ms` 必须 0（改前是第一步的耗时）
+  ②有请求那步记到真实耗时（>0）③源码面单点（engine 无直接赋值 + abilities 赋值点恰 3 处，
+  新增第四点即漂移）④**正向对照**：无 `CallApi` ability 时 `api_ms` 仍为 0。
+  变异实证：把归零块换成 `if False:` → ①③ 精确红（①报「没发请求的步骤继承了上一步的
+  接口耗时」），②④ 保持绿；恢复后 sha256 一致。
+  → **3108 生成期字面凭据抹除 +4**（2026-11-23 同一轮分析的**红线 #1 输入面**）
+  **缺陷**：`atlas gen` 的产物是**要交给别人的文件**，但旧实现只闸 headers（C4①）。文档作者在
+  摘要/路径里贴一个带凭据的示例 URL（极常见）时，值会原样进
+  `flows/<id>.yaml` / `contracts/*.json` / `probes/*.py` / `pytest/test_*.py` / `report.json`
+  / 两份 README，**连文件名都带 token**
+  （实测 `flows/get-web-example-customer-code-access_token-tok123.yaml`，同一份包里 7 处命中）。
+  **修法两层**：①`generate()` 在 `parse_source()` 之后、任何产出之前调
+  `_redact_endpoint_secrets`——`path`/`base` 走 `credential_gate.sanitize_url`、`summary` 走
+  `sanitize_text`（判据单点，生成器不留敏感键名单），抹了什么**如实**进 `manual_assertions`
+  （人要能区分「文档本来写的就是 `<redacted>`」与「这里原本有个字面凭据」）；②
+  `sanitize_url` 补 **userinfo（`user:pass@`）整段 redact**——那是经典凭据形态却**没有敏感
+  键名**，逐键 redact 抓不到（实测 `ops:S3cretPwd@example.com` 原样逃逸）。
+  守卫 `tests/test_generator_secret_redaction.py` 4 条：①真跑 `generate()` 出整包，扫**每个**产物
+  文件**与文件名** → 秘文零命中 + `manual_assertions` 点名「已占位」+ flow id 不带 token
+  ②**正向对照**：正常文档不被改写、不产抹除痕迹（业务参数 `?page=1` 必须留着，否则毁可用性）
+  ③`sanitize_url` 自身（userinfo 整段抹、无凭据 URL 逐字节不变、业务 query 键保留）
+  ④源码面：生成器只调 `credential_gate` 两个函数、不自带敏感键名单（AST 去 docstring 后扫）。
+  变异实证：`_redact_endpoint_secrets` 调用换成 `[]` → ①红并逐条点名被污染的文件（含文件名
+  里的 token）；关掉 userinfo 分支 → ③红。两处恢复后 sha256 一致。
+  真机复验：同一份「带凭据的文档」重新出包 → 7 处命中降为 **0**，flow 文件名变成
+  `…-access_token-redacted.yaml`，`report.json` 的 manual 段写明「已占位为 `<redacted>`」。
+  → **3113 JMeter 迁移凭据闸 +5**（2026-11-23 同一轮分析：**另一条外部输入链**）
+  **缺陷**：`scripts/import_jmeter.py` 只给 **HeaderManager** 过闸（C4①），`HTTPSampler.path`
+  没有第二道刀。实测同一个 .jmx 里：
+  `path: /web/example/customer/code?access_token=TOK123` 与
+  `path: https://ops:S3cretPwd@example.com/api/x?page=1` 逐字进了 YAML 与 `-o` 文件，
+  而 stderr 还报「0 处字面凭据头」——迁移器把凭据搬进了新仓库（红线 #1，与上一波
+  `atlas gen` 同族、不同链）。
+  **修法**：`apply_credential_gate(flow)` 在 `yaml.dump` **之前**（同一确认位）对每步
+  `path` 走 `credential_gate.sanitize_url`、`intent`（sampler 名）走 `sanitize_text`；
+  告警只报**位置**（`step1.path`）不报值。顺手收口 `scripts/capture_save_request.py` 的
+  **终端回显**（`item["path"][:110]` 直接打含 token 的 path）→ `sanitize_url`；写盘那份
+  **故意保留原样**（该脚本用途就是把真实报文交人审建模板），并留注记说明两者为何不同。
+  守卫 `tests/test_import_jmeter_secret_gate.py` 5 条：①`-o` 文件秘文零命中 + `<redacted>` +
+  业务 query 保留 ②**正向对照**：正常 path 逐字节不变、无告警 ③告警只报位置（stdout/stderr
+  都不含原值）④源码面：只调 `credential_gate` 两函数、AST 去 docstring 后无敏感键名单
+  ⑤采集脚本回显必须走 `sanitize_url`（并禁回旧形态）。
+  变异实证：`redacted = apply_credential_gate(flow)` 换成 `[]` → ①精确红（秘文重新落盘），
+  其余四条保持绿；恢复后 sha256 一致。真机复验：同一份 leaky .jmx 重新导入 → 命中 2→**0**，
+  YAML 里是 `?access_token=<redacted>` 与 `https://<redacted>@example.com/…`，stderr 一行
+  `WARN: 2 处 path/intent 含字面凭据，已在写盘前占位为 <redacted>（只报位置不报值）：step1.path, step2.path`。
+  → **3118 review-code 吞异常分流 +5**（2026-11-23：**产品自身的噪声缺陷**，不是洗绿）
+  **现象**：`atlas review-code src` 出 `total_findings=47 / critical_findings=27 / avg_score=94 /
+  grade=F`。逐条核对：27 个 critical 里大半是**有理由的收尾吞异常**
+  （`session.__exit__` 关闭失败不得顶掉原始异常、`agent._record` 留痕写失败不得顶掉执行真因、
+  `cli._record_entry_failure` 同理）——本仓纪律正是「吞异常必须有理由」，理由就写在注释里。
+  一律 critical 的后果不是严厉而是**噪声**：grade 恒 F，真正的裸吞（`review_code.py` 自己那两处
+  `except Exception: pass`）反而看不出来。
+  **修法**：新增规则 `GREEN-001-DECLARED`（severity **low**，rationale「已写理由，需人审确认
+  理由成立」）。判据 `_declared_swallow_reason`：同行 / `except` 上一行 / `pass` 行注释里有
+  ≥6 个非空字符才算；理由文本**不进报告**（不把业务注释抄出去）；仍**记一条**并计入
+  `finding_count`（不放行也不消失）。刻意只认「有没有写理由」，**不猜成不成立**（人审的事）。
+  守卫 `tests/test_review_code_declared_swallow.py` 5 条：①裸吞仍 critical 且分数上限 59
+  ②同行注释 → DECLARED / low / 分数 ≥90 且 finding 仍计 1 条 ③上一行注释同样算
+  ④**正向对照**：`# x` 这种敷衍注释不算（防「写俩字就过关」）⑤真处理（记录日志）不产 GREEN-001。
+  变异实证：`_declared_swallow_reason` 里 `len(comment) >= 6` 换成 `if False:` → ②③ 精确红
+  （已声明理由被打回 critical），①④⑤ 保持绿；恢复后 sha256 一致。
+  真机复验：同一棵树重跑 `review-code src` → `critical 27→16`、`avg 94→96`；
+  `session.py`/`agent.py`/`plugins/demo/legacy_case.py` 由 59(F) 升到 99(A)，
+  而 `review_code.py`/`runtime.py`/`cli.py` 里的**裸吞**仍停在 critical（分流不是放宽）。
+  → **3126 review-code SAFE-001 噪声面 +8**（2026-11-23 同族续：**文档面不该按代码面判**）
+  **现象**：`SAFE-001`（硬编码凭据/URL，critical）逐行正则、不分「代码 / 注释 / docstring」。
+  本仓里**教用户怎么填 env** 的那些行因此自己吃 critical：`config.py` 模块 docstring 的
+  ``代理形态 `http://user:pass@host:port` ``、`credential_gate.py` 注释里的
+  ``# `https://user:pass@host/x`：userinfo 是经典凭据形态…``、产物 README 渲染的
+  `export ATLAS_FAST_PASSWORD='<密码>'` / `export ATLAS_BASE_URL='https://<host>'`
+  （`<…>` 占位比 3 字符阈值长，正则照样命中）。16 个 critical 里 6 个是这类噪声。
+  **修法两层**：①`_strip_placeholder_segments` 先抹 `<…>`/`${…}` 段再判（**抹段不是整行跳过**：
+  同一行还有真值时照旧命中，守卫第 6 条钉住）；②注释行与 **docstring 行**降
+  `SAFE-001-COMMENT`（severity **low**、仍记一条进报告）；docstring 行号由
+  `_docstring_lines`（AST 遍历模块/类/函数的首语句 Constant 区间）给，**不靠猜三引号文本**。
+  守卫 `tests/test_review_code_safe001_noise.py` 8 条：注释 URL / docstring URL → low 非 critical；
+  占位密码与占位 URL 默认值 → 不产 finding；**正向对照**：真字面 `password='hunter2'` 与
+  非保留域真 URL 仍 critical；**抹段不豁免同行的真值**；只有注释档 finding 时分数仍 ≥90。
+  变异实证：`is_comment` 恒 False → 3 条红；`probe_line = line` → 2 条红（占位两条）。
+  **一处自曝的测试缺陷（值得留）**：第一条占位测最初写成裸 shell 行
+  `export ATLAS_FAST_PASSWORD='<密码>'`，该行不是合法 Python → 扫描器先撞 `MAINT-006` 语法错、
+  根本没走到行级判据，**改了 mutate 也不红**（空转绿灯）。改成用合法 Python 承载同一形态
+  （`HINT = "export ATLAS_FAST_PASSWORD='<密码>'"`）后才真正区分新旧；
+  这条正好印证「守卫必须能区分新旧，跑绿不算证据」。
+  真机复验：同一棵树重跑 `review-code src` → `critical 16→10`、`avg 96→98`；
+  剩余 10 条**全是 GREEN-001 真裸吞**（autopilot×2 / cli×1 / review_code×2 / runtime×2 /
+  session×3），如实登记、**未**为了让分数好看去补理由注释（那是洗绿换皮）。
+  → **3134 裸吞留痕 + 聚合 grade 修复 +8**（2026-11-23：把上一条登记的 10 处**逐条核完并处置**）
+  **裸吞分类**：10 处里两类——
+  ①**证据链裸吞**（autopilot×2）：`_wire_events` 的 `page.on(...)` 抛错纯 pass——后果是一整趟
+  自主探索跑完**没有任何请求/响应快照**而终端零提示（「为什么证据是空的」事后无迹可循）；
+  `_record_decision` 同族（决策 jsonl 少一行，「为什么走了这条动作」正是这份文件的唯一用途）。
+  两处改为 `except Exception as exc:` + **WARN 一行 + `credential_gate.sanitize_text`**（异常
+  文本可能带 URL/参数，红线 #2 的终端面），不中止流程（证据是旁路面，不能顶掉动作结果）。
+  守卫 `tests/test_autopilot_evidence_warn.py` 4 条（含「WARN 文本必须过净化刀」与
+  「正常路径零输出」正向对照），变异实证：把 WARN 分支改坏 → 2 条精确红。
+  ②**真收尾吞**（cli×1 / runtime×2 / session×3 / review_code×2）：行为**零变化**，只补上「为什么
+  可以吞」的理由注释（归入 `GREEN-001-DECLARED`——「重载失败由下方 wait_for_selector 重判」
+  「收尾失败不得顶掉原始入口异常」「单条重放器坏掉跳过试下一条」）。这是把上一波判据的
+  「需人审确认理由成立」逐条兑现，**不是**为了让分数好看而补字（行为面一个字节没动）。
+  **同轮修复聚合 grade 初始化缺陷**：`max_grade = "F"` 起步而 F 的 rank 已是最大值 4，
+  `>` 比较永不成立 → `summary.grade` **恒为 F**（实测 critical_findings=0、avg_score=99 的报告
+  照样写 `grade: F`——聚合等级是报告第一行结论，恒 F 等于把结论删掉）。改 `"A"` 起步后
+  0-critical 报告给 `grade: C`（最差文件 review_code.py 74 分如实反映，不再恒 F 也不再虚高）。
+  守卫 `tests/test_review_code_summary_grade.py` 4 条（最差文件等级/全净→A/单文件一致/真回退
+  →F），变异实证：改回 `"F"` → 2 条精确红。
+  真机复验：`review-code src` → `critical 10→0`、`avg 99`、`grade F→C`；`review_code.py` 自身
+  74 分（13 条 findings，含历史 SAFE-001-COMMENT/DECLARED 档）如实保留，未调阈值凑 A。
+  → **3140 ASSERT-006 文档噪声档 +6**（2026-11-23 续：**评审器被自己的文档打了低分**）
+  **现象**：`ASSERT-006`（注释掉的断言，high）只看行首 `# assert`。但规则文档本身大量用这种
+  写法——每个规则的 rationale 注释都以 `# assert …` 开头（`# assert True, assert 1 是恒真断言`、
+  `# assert len(x) > 0: len() is the call…`）。`review_code.py` 自身 13 条 findings 里 **8 条**
+  是这种文档噪声，文件被自己的文档判成 74 分/C；整树 `grade C` 也由它拖出。
+  **修法**：判据单点 `_is_commented_assert_code`——`# assert` 后的尾巴命中任一即按「讲解」处理
+  （不产 finding）：①中文/英文讲解词（是/形如/is the/the call…）②多条 assert 连写（真被注释的
+  断言一行只有一条，枚举才连写）③冒号后 ≥3 词的解释段④AST/伪代码术语（`Compare(`、
+  `pytest.approx(`、省略号）。真被注释的断言代码（`# assert resp["x"] == "ACTIVE"`）不受影响
+  （尾巴是代码形态）。**规则侧顺带自洽**：源码里三处真讲解注释补了「形态示例」尾注，让判据在
+  自身文件上也成立（这不是躲扫——判据表测试钉死三种讲解形态必须为 False）。
+  守卫 `tests/test_review_code_assert006_noise.py` 6 条：①真被注释的断言仍判 high
+  ②③④三种讲解形态不产 ⑤取值表 9 行（真代码 4 True / 讲解 5 False）⑥自扫 ASSERT-006 ≤2 条
+  （改前 8 条）。变异实证：判据换成恒 True → ②③④⑥ 精确红（①保持绿，正是它的职责）。
+  真机复验：`review-code src` → `total_findings 40→34`、`avg 100`、**grade C→A**——
+  评审器不再被自己的 rationale 注释拖分；剩余 34 条全是 low/declared 档的**真留痕**
+  （吞异常有理由/注释里的凭据形态提醒），0 critical、0 误伤。
+  → **3145 MAINT-001 适用面 +5**（2026-11-23 同族第三例：**规则打了不该打的代码**）
+  **现象**：`MAINT-001`（硬 sleep，high）建议「改用 `waits.py` 语义等待」——那是**测试代码**的
+  纪律。但 `detect_kind` 把所有 `.py` 都当 `pytest` 扫，引擎自己的轮询实现被逐条判 high：
+  `atomic_io` 的 `time.sleep(_READ_RETRY_DELAY_S)`（读重试退避）、`dsl` 的
+  `time.sleep(interval_ms / 1000.0)`（`await: poll` 间隔）、`explore` 的命令轮询、
+  `legacy_fast` 的等待垫片——**这四个正是语义等待的实现本体**，报「请改用 waits.py」等于
+  要求引擎不要实现等待（自指噪声，与 ASSERT-006/SAFE-001 两波同族：**规则的适用面没写清**）。
+  **修法**：判据单点 `_is_test_module(path)`（文件名 `test_*.py`/`*_test.py`，**或**任一路径段
+  等于 `tests`；**刻意不用「含 test 子串」**——`contrast.py` 这类会误中）；
+  `_PytestAstScanner` 加 `is_test` 门（默认 True = 不知道时按测试口径报，fail-visible），
+  只作用于 `time.sleep`/`sleep` 两处 MAINT-001 落点，其余规则面不受影响。
+  守卫 `tests/test_review_code_maint001_scope.py` 5 条：①引擎 `.py` 的 sleep 不报 ②③`test_*.py`
+  与 `tests/` 下任意文件仍报（**正面对照：规则没被关掉**）④`contrast.py` 不算测试（防子串误判）
+  ⑤整树 `src/` 扫完 MAINT-001 恰 0 条（改前 4 条）。变异实证：`if self.is_test:` 换 `if True:`
+  → ①④⑤ 精确红，②③ 保持绿（正是它们该有的行为）；恢复后 sha256 一致。
+  真机复验：`review-code src` → `total_findings 34→27`、**MAINT-001 4→0**、`avg 100`、
+  `grade A` 保持；剩余 27 条全是 low 档真留痕（含 1 条 GREEN-004 的 `# type: ignore`
+  与 1 条 MAINT-003 写死数据，均为有意保留）。
+  → **3159 产物侧缺陷族手册 & 文档索引守卫 +3**（2026-11-23：把 13 波沉淀成可复用手册）
+  **手册** [docs/lessons-artifact-side.md](docs/lessons-artifact-side.md)：本会话 13 波全是
+  **产物侧**缺陷（在 Atlas 写给别人的文件里，不在本仓源码），共同点「离线全量绿 / rc 0 /
+  产物看起来完整，只有把生成→消费两端拼起来或用严档编译产物才现形」。手册给出：病因三条
+  （测不到自己写出去的东西 / 两端各写一半 / 默认档不报错）、症状→族→判据单点→守卫的 13 行
+  排查表、修法模式四条（判据单点收敛 / 写盘前严档自检 / 变异验证 / **适用面写清**）、
+  四条排查命令。**同轮补 `docs/reader-guide.md` 索引**：实测 index 表漏了 **8 份**文档
+  （`first-bug`/`migration-*` 4 份/`legacy-adapter-setup`/`knowledge-migration`/`dual-entry-flows`）
+  —— AGENTS §5 写了维护义务但此前**零机器检查**（与「CLAUDE 模块表漏 14 个模块」同族：
+  地图缺格比画错更难发现）。
+  **守卫** `tests/test_reader_guide_index.py` 3 条：①`docs/*.md` 每份必须进索引
+  ②索引条目必须指向真文件（死条目更误导）③正向对照下限（≥6 行/≥6 份）。
+  变异实证：删掉 `docs/first-bug.md` 那一行 → ①精确点名 `first-bug.md`；恢复后 sha256 一致。
+  真机复验：补完索引后 `reader-guide` 覆盖 `docs/` 全部 20 份（含 `gaps/` 与 `ownership/`
+  的目录级条目）。
+  → **3169 JSONL 写侧 BOM 零残留 +4**（2026-11-23 续波：读侧钉死后的**写侧收口**）
+  上一波钉了**读侧**（`read_jsonl_text` 用 `utf-8-sig`），但读侧兜底不能成为写侧借口：
+  **产物交给别人**，消费方未必都用 `utf-8-sig` 读——`pytest.ini`/`pyproject.toml` 的解析器、
+  用户编辑器都可能踩 BOM。本仓扫过一遍（`src/`+`scripts/` 全部 .py、`knowledge/`、
+  `examples/`、`flows/`、根目录文本）——**零 BOM**（`write_text(encoding="utf-8")` 从不产
+  BOM）。钉成守卫 `tests/test_repo_no_bom.py` 4 条：①全仓文本文件逐个查前 3 字节
+  （含 tests/scripts/knowledge/examples/flows/根）②源码不得有 `encoding="utf-8-sig"` 的
+  **写**调用（读侧两处正当：`read_jsonl_text`/`config` 的 BOM 探测）③写侧不得用 `utf-16` 系
+  （PS5.1 重定向默认会产 UTF-16；按**调用形态**区分——同一行 encoding 字面量与
+  write/open(a/w) 同现才算写侧命中，`config` 的「encoding = 局部变量」读侧探测形态放行）
+  ④正向对照下限（≥200 文件、≥20 个 write_text 调用）。
+  变异实证：在 `examples/` 植一个真 BOM 文件（`\xef\xbb\xbf{}`）→ ①精确点名
+  `examples\bom_probe_tmp.json`；删除后恢复全绿（探针已删净）。
+  → **3165 JSONL 读侧 BOM 口径 +6**（2026-11-23：**审核塔 2 条草稿只看得到 1 条**）
+  **缺陷**：Windows 上「记事本旧版另存为 UTF-8」与 PowerShell 5.1 `Set-Content -Encoding UTF8`
+  都写 BOM。五个 JSONL 读侧（`experience._read_queue` / `review.rows` / `reporting`〔含
+  summarize/export/allure〕/ `review_code` 基线 / `scheduling.state.read_runs`）此前一律
+  `read_text_retry(path, encoding="utf-8")`——首行于是变成 `\ufeff{"id":…}`，`json.loads` 抛
+  `JSONDecodeError`，被各自「残行跳过」分支**静默吞掉**。实测复现：带 BOM 的
+  `experience_drafts.jsonl` 让审核塔只看到 2 条草稿里的 1 条（不是崩，是**那条草稿从此不存在**）；
+  `runs.jsonl` 同形态则让 summary/allure/report 少一整条 run 而三处都「看起来正常」。
+  **修法**：判据单点 `atomic_io.read_jsonl_text`——`utf-8-sig`（无 BOM 时与 `utf-8` 逐字节
+  等价，存量行为零变化）+ 瞬态锁重试 + 坏字节回落 replace。五个读侧的
+  `try/except UnicodeDecodeError` **五份复制**（本身即 #92 坏味道）一并收敛到这一处。
+  守卫 `tests/test_jsonl_bom_first_row.py` 6 条：①review 队列看到 BOM 首条 ②summarize 不丢
+  BOM 首 run ③experience journal ④调度索引 ⑤**BOM 与中段坏字节共存**（首行仍在、坏行照旧
+  计 skipped——证明 `utf-8-sig` 没有吃掉 replace 回落）⑥源码面：五读侧都走单点、无裸
+  `encoding="utf-8"` 读 JSONL 的旧形态。
+  变异实证：`_BOM_SAFE_ENCODING` 改回 `"utf-8"` → ①②③④ 精确红（BOM 首条重新消失），
+  ⑤⑥ 保持绿；恢复后 sha256 一致。`config.py` 早就为 `.env` 付过同一笔学费
+  （`utf-8-sig` + 先看 BOM 字节）——同一现实第二次长在本仓，这次钉死在读侧单点。
+  **①读侧容错（7 条）**：`summarize`/`export_runlog`/`allure` 三条读侧历史上有 #131/#112 两波修
+  `UnicodeDecodeError` 裸崩，承诺是「一条坏行不顶掉整份」。这轮把**六类坏形态**真跑一遍
+  （腰斩 JSON、合法 JSON 非对象、缺 `run_id`、`steps:[null,"x",{…}]`、`dur_ms:"slow"`/`api_ms:null`、
+  UTF-8 多字节腰斩），确认承诺成立——于是钉成 `tests/test_runs_read_side_tolerance.py`：
+  rc 0 / 零 traceback / 合法行仍在 / `skipped_malformed_lines` 计数准确 / **坏行不进 passed**
+  （不洗绿）/ 空文件不崩 / `steps` 混入坏元素时好元素仍被计。
+  变异实证：`summarize` 的 `skipped += 1` 改成 `pass` → 计数测精确红（1≠2）。
+  **②无头默认（4 条）**：项目口径「调试与测试一律无头」。默认值属「一行改动悄悄反转全项目
+  真机行为、而离线测看不出来」的位置，故钉住：`AtlasConfig.headless=True` 默认；只有**精确**
+  `ATLAS_HEADED=1` 才开有头（`0`/`true`/`yes`/`2`/空串一律无头）；`session` 的
+  `launch_kwargs` 必须吃 `config.headless`；`--headed` 默认 `argparse.SUPPRESS`（不给时保持
+  子命令默认）。守卫 `tests/test_headless_default.py`，变异实证：把 env 表达式换成
+  `"headless": False,` → 精确红。**踩坑记录**：第一版测拿去 `AtlasConfig(tmp_path)` 直构，
+  被 pytest mixer 的 `channel="chrome"` 与仓库根真 `.env` 干扰，且 `inspect.getsource`
+  在插件环境下抛 `OSError`——改成「自造 `.atlas-root`+空 `.env` 的项目根 + `from_root`」才稳。
+  真机复验：`atlas gen examples/api_sample.md` → `save_as: resp_1_get_web_example_customer_code`
+  且断言行随之改形；再 `atlas export-pytest` 该 flow → 产物**零 TODO**、两步各有 `assert result.ok`。
+  变异实证：pages 那处改回 `{notes}` → ①②精确红（两种形态都现形：`\s` 非法转义、尾反斜杠
+  逃逸闭合引号）；compat 的 `flow_id` 未转义 → 源码面守卫当场点名 `emit_compat.py:839`。
+  **真机复验**：同一条 `gen --with-pytest --fast` 重新出包，5 个 `.py` 全部
+  `py_compile -W error::SyntaxWarning` 通过（改前该包 `atlas_pages.py` 红）。
 
 
 ## 3. 架构不变量
