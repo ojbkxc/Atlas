@@ -9,6 +9,7 @@ import_jmeter.py 改为 import 这里，回归测钉死行为零变化。
 """
 from __future__ import annotations
 import re
+import warnings
 from typing import Any
 
 _PLACEHOLDER = re.compile(r"\$\{([^}]+)\}")
@@ -19,6 +20,77 @@ def slugify(text: str, *, fallback: str = "flow") -> str:
     cleaned = re.sub(r"[^A-Za-z0-9_-]+", "-", text.strip()).strip("-").lower()
     cleaned = re.sub(r"-+", "-", cleaned)
     return cleaned or fallback
+
+
+def identifier_slug(text: str, *, fallback: str = "step") -> str:
+    """slugify 后转成**合法 Python 标识符片段**（非字母数字 → `_`）。
+
+    判据单点：产物要把名字写进 `def`/`class`/文件名时都走这里（emit_pytest 的模块位/类名、
+    emit_probe 的探针身份）。旧形态各自 `slugify` 后直接拼进代码，`get-web-example` 这种
+    带 `-` 的 slug 会产出 `class get-web-example…` —— 产物语法错、且生成期看不到（#9 同族）。
+    """
+    s = slugify(text, fallback=fallback).replace("-", "_")
+    s = re.sub(r"[^0-9a-zA-Z_]", "_", s)
+    s = re.sub(r"_+", "_", s).strip("_")
+    if not s or not (s[0].isalpha() or s[0] == "_"):
+        s = f"s_{s}" if s else fallback
+    return s
+
+
+def pascal_identifier(text: str, *, fallback: str = "Component") -> str:
+    """`get-web-example` → `GetWebExample`（类名惯制）；空输入给 fallback。
+
+    与 `identifier_slug` 同一族：产物类名唯一取自这里（emit_pytest 页对象、emit_probe 探针），
+    不各写一份 Pascal 逻辑（#92）。
+    """
+    parts = re.split(r"[^0-9a-zA-Z]+", text)
+    out = "".join(p[:1].upper() + p[1:] for p in parts if p)
+    return out or fallback
+
+
+def artifact_compile_problem(source: str, name: str) -> str | None:
+    """产物源码能不能**按 CI 严档**编译（非法转义算问题）——返回问题文本，全绿返回 None。
+
+    为什么不能只 `ast.parse`/裸 `compile`：``\\s`` 这类**非法转义**在默认档只是
+    ``SyntaxWarning``（被忽略），``ast.parse`` 照样通过；产物于是「生成 rc 0 / 结构齐全 /
+    一 import 就炸」，而生成期自检只编译本仓源码、看不见自己写出去的文件（#9 同一条缝，
+    2026-11-23 真机：通用知识包 notes 里的正则 ``/确\\s*定/`` 进了 ``atlas_pages.py`` 的类
+    docstring，3.13 + ``-W error::SyntaxWarning`` 直接 SyntaxError）。
+    判据单点：写盘前的自检（emit_pytest / emit_compat）都调这里，不各写一份口径。
+    """
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", SyntaxWarning)
+            compile(source, name, "exec")
+    except (SyntaxError, SyntaxWarning) as exc:
+        return f"{name}: {type(exc).__name__}: {exc}"
+    return None
+
+
+def artifact_compile_problems(items) -> list[str]:
+    """批量形态：``[(文件名, 源码), …]`` → 问题清单（空 = 全部可安全编译）。"""
+    problems: list[str] = []
+    for name, source in items:
+        problem = artifact_compile_problem(source, str(name))
+        if problem:
+            problems.append(problem)
+    return problems
+
+
+def docstring_text(value: Any) -> str:
+    """把外部文本（知识 ``notes``／文档 ``intent``／选择器元素名）渲染成**非 raw docstring 的安全内容**。
+
+    为什么要有这一把刀（真机抓出，产物侧缺陷）：通用知识包 ``components.json`` 的 notes 里写着
+    正则 ``/确\\s*定/``，原样插进产物 ``\"\"\"…\"\"\"`` 后 ``\\s`` 是**非法转义** —— 产物在 3.11 只报
+    ``SyntaxWarning``，在 CI 常规档 ``-W error::SyntaxWarning`` 或更严格解释器上直接
+    ``SyntaxError``：``atlas gen`` rc 0 写出「看起来完整」的包，消费方一 import 就崩，而生成期
+    自检只编译**本仓源码**，看不见自己写出去的文件（与「只生成不执行」#9 同一条缝）。
+    判据单点在此（emit_pytest / emit_compat 共用，不许各写一份）：转义反斜杠与双引号——引号转义后
+    ``__doc__`` 取值逐字不变，只去掉危险形态；其余字符（中文/单引号/换行）都合法，原样保留，
+    **不做** stderr 净化那类内容改写。
+    """
+    text = value if isinstance(value, str) else str(value or "")
+    return text.replace("\\", "\\\\").replace('"', '\\"')
 
 
 def scan_placeholders(value: Any, where: str, index: int,

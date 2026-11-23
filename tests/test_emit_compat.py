@@ -23,6 +23,7 @@ import os
 import re
 import subprocess
 import sys
+import warnings
 from pathlib import Path
 
 import pytest
@@ -43,8 +44,15 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _assert_compiles(source: str):
+    """语法树 + 真编译，且**非法转义算失败**（CI 常规档 `-W error::SyntaxWarning` 同口径）。
+
+    产物里出现 `\\s` 这类非法转义时默认只报 SyntaxWarning（被忽略 → 产物「看起来能跑」），
+    判据侧必须按错误口径编译，否则这条辅助函数对整族缺陷恒绿（`test_artifact_docstring_safety`）。
+    """
     ast.parse(source)
-    compile(source, "<gen>", "exec")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", SyntaxWarning)
+        compile(source, "<gen>", "exec")
 
 
 def _read_endpoint() -> Endpoint:

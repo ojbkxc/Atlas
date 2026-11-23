@@ -27,6 +27,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from .dsl_utils import artifact_compile_problems, docstring_text
+
 
 class CompatEmitError(ValueError):
     """--compat 产物生成/校验的结构问题（垫片文件缺失、vendor 内容与源不符）。"""
@@ -834,7 +836,7 @@ def render_compat_test_module(suite_slug: str, steps: list, flow_id: str) -> str
     lines += [
         "",
         f"class {cls}:",
-        f'    """旧仓兼容快包（flow {flow_id or "(未命名)"}）。order 编号=flow 步序（沿用旧次序）。"""',
+        f'    """旧仓兼容快包（flow {docstring_text(flow_id or "(未命名)")}）。order 编号=flow 步序（沿用旧次序）。"""',
         "",
     ]
     for s in steps:
@@ -845,7 +847,7 @@ def render_compat_test_module(suite_slug: str, steps: list, flow_id: str) -> str
                 f"    @pytest.mark.order({s.order})",
                 f"    @_title({s.intent!r})",
                 f"    def {method}(self, get_page, plan_ctx):",
-                f'        """{tag}{s.intent}  [桥接腿：整条委托旧 run_case_py，ctx 播种留旧代码]"""',
+                f'        """{tag}{docstring_text(s.intent)}  [桥接腿：整条委托旧 run_case_py，ctx 播种留旧代码]"""',
             ]
             for k in s.requires:
                 upstream = f"flow 步骤 {s.order} 的前置（期望由先前批次写入）"
@@ -867,7 +869,7 @@ def render_compat_test_module(suite_slug: str, steps: list, flow_id: str) -> str
                 f"    @pytest.mark.order({s.order})",
                 f"    @_title({s.intent!r})",
                 f"    def {method}(self, get_page, plan_ctx):",
-                f'        """{s.intent}  [原生腿：legacy_pages 委托旧 lib.pages 函数；只读复用，绝不写旧仓]"""',
+                f'        """{docstring_text(s.intent)}  [原生腿：legacy_pages 委托旧 lib.pages 函数；只读复用，绝不写旧仓]"""',
             ]
             for k in s.requires:
                 lines.append(f"        _require_ctx(plan_ctx, {k!r}, '前置键需先前批次写入')")
@@ -1066,11 +1068,16 @@ def emit_compat_package(*, out_dir: Path, flow: dict, flow_id: str = "",
                 for rel in SHIM_SOURCE_FILES}
     readme_src = render_compat_readme(flow_id, suite_slug, steps)
 
-    # 语法自检在写盘之前：坏模板不落半成品（#9「不假装可用」）
-    for text, name in ((conftest_src, "conftest.py"), (module_src, str(test_rel))):
-        ast.parse(text, filename=name)
-    for name, blob in sorted(vendored.items()):
-        ast.parse(blob.decode("utf-8"), filename=name)
+    # 语法自检在写盘之前：坏模板不落半成品（#9「不假装可用」）。
+    # 口径=CI 严档（非法转义也算问题，`dsl_utils.artifact_compile_problems` 单点）——裸
+    # `ast.parse` 对 `\s` 这类非法转义只发被忽略的警告，产物会「生成成功、一 import 就炸」。
+    problems = artifact_compile_problems(
+        [(name, text) for text, name in ((conftest_src, "conftest.py"),
+                                         (module_src, str(test_rel)))]
+        + [(name, blob.decode("utf-8")) for name, blob in sorted(vendored.items())])
+    if problems:
+        raise CompatEmitError(
+            "产物源码无法安全编译（拒绝写盘，零残留）：" + "；".join(problems))
 
     out_dir.mkdir(parents=True, exist_ok=True)
     written: list[str] = []

@@ -25,6 +25,7 @@ import json
 import re
 import sys
 import types
+import warnings
 from pathlib import Path
 
 import pytest
@@ -57,8 +58,11 @@ _ALLOWED_TOP = {"__future__", "os", "re", "json", "threading", "time", "uuid", "
 
 
 def _assert_compiles(src: str) -> None:
+    """语法树 + 真编译，且**非法转义算失败**（CI 常规档 `-W error::SyntaxWarning` 同口径）。"""
     ast.parse(src)
-    compile(src, "<emit_fast-template>", "exec")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", SyntaxWarning)
+        compile(src, "<emit_fast-template>", "exec")
 
 
 def _load_artifact(tmp_path: Path, monkeypatch, request):

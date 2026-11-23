@@ -38,7 +38,8 @@ from typing import Any
 from .. import locators
 from ..credential_gate import gate_flow_headers
 from .model import Endpoint
-from .dsl_utils import slugify, collect_path_query, form_pairs_to_string
+from .dsl_utils import (artifact_compile_problems, identifier_slug, pascal_identifier,
+                        slugify, collect_path_query, docstring_text, form_pairs_to_string)
 from .emit_flow import _save_as_name
 
 # 生成的模块文件名（与测试模块同目录，直接 import，不需要包结构）。
@@ -177,13 +178,8 @@ def _py_all_lines(names: list[str], *, width: int = 80) -> list[str]:
 
 
 def _ident_slug(text: str, *, fallback: str = "step") -> str:
-    """slugify 后转成合法标识符片段（非字母数字 → _）。"""
-    s = slugify(text, fallback=fallback).replace("-", "_")
-    s = re.sub(r"[^0-9a-zA-Z_]", "_", s)
-    s = re.sub(r"_+", "_", s).strip("_")
-    if not s or not (s[0].isalpha() or s[0] == "_"):
-        s = f"s_{s}" if s else fallback
-    return s
+    """标识符归一（实现单点在 `dsl_utils.identifier_slug`，此处只是历史调用面的别名）。"""
+    return identifier_slug(text, fallback=fallback)
 
 
 # ---------------------------------------------------------------------------
@@ -256,8 +252,8 @@ def _specs_from_endpoints(endpoints: list[Endpoint], *, global_headers: dict | N
 # flow dict → StepSpec[]
 # ---------------------------------------------------------------------------
 
-_FLOW_OK_RE = re.compile(r"^\s*(\w+)\.ok\s*==\s*true\s*$")
-_FLOW_RC_RE = re.compile(r'^\s*(\w+)\.data\.resultCode\s*==\s*["\'](.+?)["\']\s*$')
+_FLOW_OK_RE = re.compile(r"^\s*([A-Za-z_][\w-]*)\.ok\s*==\s*true\s*$")
+_FLOW_RC_RE = re.compile(r'^\s*([A-Za-z_][\w-]*)\.data\.resultCode\s*==\s*["\'](.+?)["\']\s*$')
 
 # 导出器「无渲染分支」的核心 Task 名单（**判据单点**，#92 只此一处；红线 #11：这是**框架**
 # 词汇、非业务名——与既有的 `api_call` 字面量同类）。为什么恰是这两个：导出器只有两条渲染腿——
@@ -319,6 +315,43 @@ def _parse_requires(raw: Any, i: int) -> tuple:
     return tuple(keys)
 
 
+def _assert_block_summary(item: dict) -> str:
+    """flow 级 **Task 形态**断言（`- task: assert_api …`）→ 一行人读摘要（进 TODO，不吞）。"""
+    task = str(item.get("task") or "?")
+    parts = [f"task={task}"]
+    for key in ("operation", "expect", "args"):
+        if key in item:
+            parts.append(f"{key}={_py_literal(item[key])}")
+    return " ".join(parts)
+
+
+def _flow_level_assert_notes(flow: dict, save_ases: set[str]) -> list[str]:
+    """flow 级断言里**不归属任何步骤**的条目 → 待接 TODO 文案（一条一次，不按步骤重复）。
+
+    为什么必须有这一条（真实缺陷）：`assert:` 块支持两种形态——文本表达式与 **Task 形态**
+    （`- task: assert_api` + `operation/args/expect`，dsl 静态段认可）。旧 `_flow_asserts`
+    对每条 `str(raw)` 后按 `save_as` 归属，Task 形态被 `str()` 成 `"{'task': 'assert_api'…}"`
+    字符串、文本形态若引用非步骤落点（`document_no != ""`）也一样 → **两边都静默丢弃**：
+    `atlas export-pytest` rc 0、产物看起来完整，而 flow 里的 API 断言块（含 `expect`）在产物里
+    一个字都不剩。此处改为「认不出就留 TODO」，与既有 `note` 机制同一条呈现路径。
+    """
+    notes: list[str] = []
+    for raw in flow.get("assert") or []:
+        if isinstance(raw, dict):
+            notes.append(f"待接断言：flow 级断言块 {_assert_block_summary(raw)}"
+                         f"——导出器没有 Task 形态算子的渲染分支")
+            continue
+        text = str(raw)
+        if not any(key and key in text for key in save_ases):
+            notes.append(f"待接断言：{text}")
+    return notes
+
+
+def flow_assert_notes(flow: dict, specs: list[StepSpec]) -> list[str]:
+    """对外名字（渲染层入口取 flow 级未归属断言用；判据在 `_flow_level_assert_notes`）。"""
+    return _flow_level_assert_notes(flow, {s.save_as for s in specs if s.save_as})
+
+
 def _specs_from_flow(flow: dict, *, naming: str = "resp_{n}_{slug}") -> list[StepSpec]:
     specs: list[StepSpec] = []
     for i, step in enumerate(flow.get("steps") or [], 1):
@@ -349,6 +382,8 @@ def _specs_from_flow(flow: dict, *, naming: str = "resp_{n}_{slug}") -> list[Ste
             page_object=step.get("page_object") or "",
             legacy_pages=step.get("legacy_pages") or "",
         ))
+    # flow 级**未归属**断言不再静默丢弃：由 `flow_assert_notes` 交给渲染层挂在**模块头**
+    # （挂某一步会随该腿的形态丢失——慢模式 UI 腿是 skip 骨架，不渲染断言注释）。
     return specs
 
 
@@ -373,7 +408,8 @@ def _render_api_test_fast(spec: StepSpec) -> list[str]:
     lines = [
         f'@fast_case(op="{op}", intent={_py_literal(spec.intent)})',
         f"def test_{spec.index:02d}_{spec.slug}(plan_ctx, _fast_runlog):",
-        f'    """{tag}{spec.intent}  [{spec.method} {spec.path}]"""',
+        f'    """{tag}{docstring_text(spec.intent)}  '
+        f'[{docstring_text(spec.method)} {docstring_text(spec.path)}]"""',
     ]
     for k in spec.requires:
         lines.append(f"    require_ctx(plan_ctx, {_py_literal(k)})")
@@ -413,7 +449,8 @@ def _render_api_test(spec: StepSpec, *, fast: bool = False) -> list[str]:
         return _render_api_test_fast(spec)
     lines = [f"def test_{spec.index:02d}_{spec.slug}():"]
     tag = "[写操作-需人工确认] " if spec.is_write else ""
-    lines.append(f'    """{tag}{spec.intent}  [{spec.method} {spec.path}]"""')
+    lines.append(f'    """{tag}{docstring_text(spec.intent)}  '
+                 f'[{docstring_text(spec.method)} {docstring_text(spec.path)}]"""')
     lines.append("    result = call_api(")
     lines.append(f'        method="{spec.method}",')
     lines.append(f"        path={_py_literal(spec.path)},")
@@ -508,7 +545,7 @@ def _render_ui_test_fast(spec: StepSpec, wiring: dict | None = None) -> list[str
     lines = [
         f'@fast_case(op="{op}", intent={_py_literal(spec.intent)})',
         f"def test_{spec.index:02d}_{spec.slug}(get_page, plan_ctx, _fast_runlog):",
-        f'    """{spec.intent}  [task={spec.task}]"""',
+        f'    """{docstring_text(spec.intent)}  [task={docstring_text(spec.task)}]"""',
     ]
     for k in spec.requires:
         lines.append(f"    require_ctx(plan_ctx, {_py_literal(k)})")
@@ -544,7 +581,7 @@ def _render_ui_test(spec: StepSpec, *, fast: bool = False) -> list[str]:
     lines = ["@pytest.mark.skip(",
              '    reason="生成候选：UI step 需人审接入 atlas_pages（依赖 Playwright）")',
              f"def test_{spec.index:02d}_{spec.slug}():",
-             f'    """{spec.intent}  [task={spec.task}]"""',
+             f'    """{docstring_text(spec.intent)}  [task={docstring_text(spec.task)}]"""',
              '    raise NotImplementedError(',
              '        "生成候选：请接入 atlas_pages 页对象后移除本 skip（见其模块 docstring）")',
              "",
@@ -553,7 +590,8 @@ def _render_ui_test(spec: StepSpec, *, fast: bool = False) -> list[str]:
 
 
 def _render_test_module_fast(specs: list[StepSpec], *, flow_id: str = "",
-                             base_url: str = "", wiring: dict | None = None) -> str:
+                             base_url: str = "", wiring: dict | None = None,
+                             flow_notes: list[str] | None = None) -> str:
     """快模式模块渲染（gap9 C.2）。禁词纪律：产物内不出现睡死/裸跳过类调用（E.1.3）。"""
     base_mod = _fast_base_module()
     has_ui = any(not s.is_api for s in specs)
@@ -563,7 +601,7 @@ def _render_test_module_fast(specs: list[StepSpec], *, flow_id: str = "",
     lines: list[str] = [
         '"""生成候选（generator/emit_pytest）：pytest 回归用例（快模式 fast）。',
         "",
-        f"来源 flow：{flow_id or '(未命名)'}。**只生成不执行**——鉴权值/写操作须人工确认后手动运行。",
+        f"来源 flow：{docstring_text(flow_id or '(未命名)')}。**只生成不执行**——鉴权值/写操作须人工确认后手动运行。",
         "断言只覆盖文档明示项（存活 + 文档给出的 resultCode），未放宽（AGENTS 红线 #7）。",
         "快模式底座（conftest 提供）：get_page 单浏览器/单登录；plan_ctx 跨批前置"
         "（缺前置显式终止，不静默跳过）；_fast_runlog 记 reports/runs.jsonl（Atlas 兼容行形态）。",
@@ -592,6 +630,9 @@ def _render_test_module_fast(specs: list[StepSpec], *, flow_id: str = "",
         "",
         "",
     ]
+    if flow_notes:
+        lines.extend(f"# TODO(人审): {note}" for note in flow_notes)
+        lines.append("")
     for spec in specs:
         lines += (_render_api_test_fast(spec) if spec.is_api
                   else _render_ui_test_fast(spec, wiring))
@@ -600,7 +641,8 @@ def _render_test_module_fast(specs: list[StepSpec], *, flow_id: str = "",
 
 def render_test_module(specs: list[StepSpec], *, flow_id: str = "",
                        base_url: str = "", fast: bool = False,
-                       components_map: dict | None = None) -> str:
+                       components_map: dict | None = None,
+                       flow_notes: list[str] | None = None) -> str:
     """把 StepSpec[] 渲染成一个 pytest 测试模块源码文本。
 
     ``fast=False``（默认）输出与快模式改造前**逐字节相同**（E.1.2 快照测钉死，#115）；
@@ -608,18 +650,22 @@ def render_test_module(specs: list[StepSpec], *, flow_id: str = "",
 
     ``components_map``（仅 fast 用）：组件库映射（``_components_map`` 形态），用于从数据派生
     auto-wire 映射（task→组件动作）——非 fast 完全无视它（旧形态零涟漪）。
+
+    ``flow_notes``：flow 级**未归属**断言（Task 形态 / 引用非步骤落点的文本）的待接 TODO
+    （由 `flow_assert_notes` 产出）。挂在**模块头**而不是某一步：慢模式 UI 腿是 skip 骨架、
+    不渲染断言注释，挂上去会随骨架一起消失。缺省 None ⇒ 输出逐字节不变（存量零涟漪）。
     """
     # 断言明细闸**先于任何渲染**（快慢两形态共用这一处，不在两个渲染器里各写一遍）。
     _reject_unknown_assert_kinds(specs)
     if fast:
         wiring = _task_action_wiring(components_map) if components_map else None
         return _render_test_module_fast(specs, flow_id=flow_id, base_url=base_url,
-                                        wiring=wiring)
+                                        wiring=wiring, flow_notes=flow_notes)
     has_ui = any(not s.is_api for s in specs)
     lines: list[str] = [
         '"""生成候选（generator/emit_pytest）：pytest 回归用例。',
         "",
-        f"来源 flow：{flow_id or '(未命名)'}。**只生成不执行**——鉴权值/写操作须人工确认后手动运行。",
+        f"来源 flow：{docstring_text(flow_id or '(未命名)')}。**只生成不执行**——鉴权值/写操作须人工确认后手动运行。",
         "断言只覆盖文档明示项（存活 + 文档给出的 resultCode），未放宽（AGENTS 红线 #7）。",
     ]
     if has_ui:
@@ -631,6 +677,11 @@ def render_test_module(specs: list[StepSpec], *, flow_id: str = "",
         "import os",
         "",
     ]
+    if flow_notes:
+        # 模块头留痕：flow 级断言里导出器认不出的条目（Task 形态 `assert_api` / 非步骤落点文本）
+        # 一条一行，绝不静默丢弃（旧实现整块消失，产物看起来完整）。
+        lines.extend(f"# TODO(人审): {note}" for note in flow_notes)
+        lines.append("")
     if has_ui:
         lines.append("import pytest")
         lines.append("")
@@ -772,9 +823,8 @@ def emit_support_module() -> str:
 
 
 def _pascal(name: str) -> str:
-    parts = re.split(r"[^0-9a-zA-Z]+", name)
-    out = "".join(p[:1].upper() + p[1:] for p in parts if p)
-    return out or "Component"
+    """类名归一（实现单点在 `dsl_utils.pascal_identifier`，此处只是历史调用面的别名）。"""
+    return pascal_identifier(name)
 
 
 def _const(name: str) -> str:
@@ -890,7 +940,7 @@ def _action_entry_lines(cls: str, elements: str, actions: dict) -> list[str]:
         if entry["kind"] == "click" or "value" in entry:
             return [
                 "    def action(self, *args, **kwargs):",
-                f'        """组件级动作：唯一声明动作「{element}」（自组件库 actions 直出）。"""',
+                f'        """组件级动作：唯一声明动作「{docstring_text(element)}」（自组件库 actions 直出）。"""',
                 f"        self.{method}()",
             ]
         return [
@@ -928,17 +978,17 @@ def _action_method_lines(actions: dict) -> list[str]:
         loc = f'self.locator({_py_literal(str(element))})'
         if kind == "click":
             out.append(f"    def {method}(self):")
-            out.append(f'        """自组件库 actions 直出：click（元素 {element}）。"""')
+            out.append(f'        """自组件库 actions 直出：click（元素 {docstring_text(element)}）。"""')
             out.append(f"        {loc}.click()")
             continue
         getter = _ACTION_VALUE_METHOD[kind]
         if "value" in entry:
             out.append(f"    def {method}(self):")
-            out.append(f'        """自组件库 actions 直出：{kind}（元素 {element}，值已绑定）。"""')
+            out.append(f'        """自组件库 actions 直出：{kind}（元素 {docstring_text(element)}，值已绑定）。"""')
             out.append(f"        {loc}.{getter}({_py_literal(entry['value'])})")
         else:
             out.append(f"    def {method}(self, value):")
-            out.append(f'        """自组件库 actions 直出：{kind}（元素 {element}，值由调用方绑定）。"""')
+            out.append(f'        """自组件库 actions 直出：{kind}（元素 {docstring_text(element)}，值由调用方绑定）。"""')
             out.append(f"        {loc}.{getter}(value)")
     return out
 
@@ -1112,7 +1162,7 @@ def _emit_pages_module_fast(comps: dict) -> str:
         selectors = spec.get("selectors") if isinstance(spec.get("selectors"), dict) else {}
         models = spec.get("models") if isinstance(spec.get("models"), dict) else {}
         lines.append(f"class {cls}:")
-        lines.append(f'    """Atlas 组件 {name}。{notes}"""')
+        lines.append(f'    """Atlas 组件 {name}。{docstring_text(notes)}"""')
         if selectors:
             lines.extend(_selector_member_lines(selectors, where=f"组件 {name}"))
         if models:
@@ -1170,7 +1220,7 @@ def emit_pages_module(components: dict | None, *, fast: bool = False) -> str:
         selectors = spec.get("selectors") if isinstance(spec.get("selectors"), dict) else {}
         models = spec.get("models") if isinstance(spec.get("models"), dict) else {}
         lines.append(f"class {cls}:")
-        lines.append(f'    """Atlas 组件 {name}。{notes}"""')
+        lines.append(f'    """Atlas 组件 {name}。{docstring_text(notes)}"""')
         if selectors:
             lines.extend(_selector_member_lines(selectors, where=f"组件 {name}"))
         if models:
@@ -1225,7 +1275,8 @@ def emit_pytest_from_flow(flow: dict, *, base_url: str = "",
     specs = _specs_from_flow(flow)
     comps_map = _components_map(components) if components is not None else None
     return render_test_module(specs, flow_id=str(flow.get("id") or ""), base_url=base_url,
-                              fast=fast, components_map=comps_map)
+                              fast=fast, components_map=comps_map,
+                              flow_notes=flow_assert_notes(flow, specs))
 
 
 def _default_components() -> dict:
@@ -1378,23 +1429,37 @@ def emit_pytest_package(*, out_dir: Path, endpoints: list[Endpoint] | None = Non
                 "组件库声明族与选择器前缀不符（换族接入错配）：" + "；".join(_fam_problems)
                 + "——请修正 components.json 的 family 声明或选择器后再生成")
         _fast_ui_gates(specs, comps_map)
+    # 先把单个文件的源码渲染完，再**按 CI 严档**自检，最后才写盘（拒绝零残留，同 F-9 纪律）。
+    # 闸的必要性：非法转义（`\s` 这类）在默认档只是被忽略的 SyntaxWarning——旧实现 `ast.parse`
+    # 自检也照样放过，产物「生成 rc 0 / 一 import 就炸」（2026-11-23 真机抓出：知识 notes 里的
+    # 正则进了 atlas_pages.py 的类 docstring）。判据单点在 `dsl_utils.artifact_compile_problems`。
+    test_src = render_test_module(specs, flow_id=flow_id, base_url=base_url, fast=fast,
+                                  components_map=comps_map,
+                                  flow_notes=flow_assert_notes(flow, specs) if flow else None)
+    support_src = emit_support_module()
+    pages_src = emit_pages_module(comps, fast=fast) if comps_map else None
+    problems = artifact_compile_problems(
+        [(f"test_{mod_id}.py", test_src), (f"{SUPPORT_MODULE_NAME}.py", support_src)]
+        + ([(f"{PAGES_MODULE_NAME}.py", pages_src)] if pages_src is not None else []))
+    if problems:
+        raise PytestEmitError(
+            "产物源码无法安全编译（拒绝写盘，零残留）：" + "；".join(problems)
+            + "——先修渲染层插值（外部文本必须过 dsl_utils.docstring_text）")
+
     out_dir.mkdir(parents=True, exist_ok=True)
     written: list[str] = []
 
     test_path = out_dir / f"test_{mod_id}.py"
-    test_path.write_text(
-        render_test_module(specs, flow_id=flow_id, base_url=base_url, fast=fast,
-                           components_map=comps_map),
-        encoding="utf-8")
+    test_path.write_text(test_src, encoding="utf-8")
     written.append(str(test_path))
 
     support_path = out_dir / f"{SUPPORT_MODULE_NAME}.py"
-    support_path.write_text(emit_support_module(), encoding="utf-8")
+    support_path.write_text(support_src, encoding="utf-8")
     written.append(str(support_path))
 
-    if comps_map:
+    if pages_src is not None:
         pages_path = out_dir / f"{PAGES_MODULE_NAME}.py"
-        pages_path.write_text(emit_pages_module(comps, fast=fast), encoding="utf-8")
+        pages_path.write_text(pages_src, encoding="utf-8")
         written.append(str(pages_path))
 
     readme_path = out_dir / "README.md"

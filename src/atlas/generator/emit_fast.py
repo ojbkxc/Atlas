@@ -26,6 +26,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .dsl_utils import artifact_compile_problems
+
 # 产物底座模块名（同 PAGES_MODULE_NAME 模式；C.1 钉死值）
 FAST_SUPPORT_MODULE_NAME = "_atlas_fast"
 
@@ -1585,6 +1587,13 @@ def write_fast_artifacts(out_dir: Path, *, force: bool = False) -> list[str]:
         raise FastEmitError(
             "目标文件已存在且内容不同（人审确认后加 force=True 覆盖）："
             + "、".join(str(p) for p in conflicts))
+    # 写盘前严档自检（与 emit_pytest / emit_compat 同一口径，判据单点在
+    # `dsl_utils.artifact_compile_problems`）：模板改成带插值后，非法转义（`\s` 这类）
+    # 在默认档只是被忽略的 SyntaxWarning，产物会「写成功、一 import 就炸」。
+    problems = artifact_compile_problems([(path.name, text) for path, text in targets])
+    if problems:
+        raise FastEmitError(
+            "产物底座无法安全编译（拒绝写盘，零残留）：" + "；".join(problems))
     out_dir.mkdir(parents=True, exist_ok=True)
     written: list[str] = []
     for path, text in targets:

@@ -13,6 +13,7 @@ import importlib.util
 import json
 import sys
 import types
+import warnings
 from pathlib import Path
 
 import pytest
@@ -56,8 +57,16 @@ def _array_endpoint() -> Endpoint:
 
 
 def _assert_compiles(source: str):
+    """语法树 + 真编译，且**非法转义算失败**（CI 常规档 `-W error::SyntaxWarning` 同口径）。
+
+    只 `compile()` 不看警告时，产物把知识 notes 里的正则（`/确\\s*定/`）原样拼进 docstring
+    也照样"通过"——真实产物文件在 3.13 + `-W error` 下直接 SyntaxError（见
+    `tests/test_artifact_docstring_safety.py`）。
+    """
     ast.parse(source)          # 语法树
-    compile(source, "<gen>", "exec")   # 可编译
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", SyntaxWarning)
+        compile(source, "<gen>", "exec")   # 可编译（警告即错误）
 
 
 def test_endpoint_module_compiles():
