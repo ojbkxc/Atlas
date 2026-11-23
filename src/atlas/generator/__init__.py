@@ -8,16 +8,18 @@ atlas compile 校验、可被 atlas run 执行的 Atlas 资产。**只生成不�
 """
 from __future__ import annotations
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
 
+from ..credential_gate import sanitize_text, sanitize_url
 from .model import Endpoint
 from .sources import parse_source, SourceError
 from .emit_flow import emit_flow, FlowEmitError
 from .emit_contract import emit_contracts
-from .emit_probe import emit_probe_skeleton
+from .emit_probe import emit_probe_skeleton, probe_entity_name
 from .checklist import check_flow, ChecklistError, scan_placeholders_only
 from .dsl_utils import slugify
 
@@ -54,6 +56,21 @@ class GenOptions:
             raise SourceError(
                 "--fast 需与 --with-pytest 同用（快模式产物是 pytest 回归包的扩展形态，"
                 "--fast 不会隐式打开 --with-pytest）")
+        # --naming 是**用户输入**，与其它 flag 同闸预检（#103：输入错误必须 rc 2 + 一行，
+        # 不能等到 emit_flow 里 `template.format` 抛 KeyError 变成「程序崩了」rc 1/3）。
+        # 判据与 emit_flow._save_as_name 的末道防线同一口径，但这里先点名、且发生在任何写盘前。
+        try:
+            sample = str(self.naming).format(n=1, slug="sample")
+        except (KeyError, IndexError, ValueError) as exc:
+            raise SourceError(
+                f"--naming 模板无法套用：{self.naming!r}（{type(exc).__name__}: {exc}）——"
+                f"只支持 {{n}}（步骤序号）与 {{slug}}（摘要/路径归一）两个占位符，"
+                f"例如 resp_{{n}}_{{slug}}") from exc
+        if not re.fullmatch(r"[A-Za-z_]\w*", sample):
+            raise SourceError(
+                f"--naming 生成的数据落点不是合法标识符：{sample!r}（模板 {self.naming!r}）——"
+                f"save_as 既是 ctx 键、也是 flow 级断言左操作数（<save_as>.ok == true），"
+                f"只许字母/数字/下划线且不以数字开头；示例 resp_{{n}}_{{slug}}")
 
 
 @dataclass
@@ -86,6 +103,36 @@ def _load_headers(headers_file: str) -> dict:
     return {str(k): str(v) for k, v in data.items()}
 
 
+def _redact_endpoint_secrets(endpoints: list[Endpoint]) -> list[str]:
+    """把文档里的**字面凭据**在生成前抹掉，返回「抹了什么」的人读清单（红线 #1 输入面）。
+
+    判定与改写**只用** `credential_gate`（`sanitize_url` / `sanitize_text` 单点，禁复制名单）：
+    - `path`/`base`：走 `sanitize_url`（query 逐键 redact + userinfo 整段 redact）；
+    - `summary`：走 `sanitize_text`（四道刀：URL / `键=值` / 引号 KV / 头部行）。
+
+    为什么要在这里做：`atlas gen` 的产物是**要交给别人的文件**（flow YAML / pytest 包 /
+    report.json），文档作者在摘要里贴一个带 `?token=…` 的示例 URL 是极常见的动作；旧实现只闸
+    headers，这些值会原样落进 flow YAML、产物 docstring，连 flow id 与文件名都带着它
+    （实测 `flows/get-web-example-customer-code-access_token-tok123.yaml`）。
+    抹掉后**如实留痕**（进 `manual_assertions` / report.json 的 manual 列表）：人要知道「这里
+    原本有个字面凭据，请改用 env」，而不是以为文档里本来就写的是 `<redacted>`。
+    """
+    notes: list[str] = []
+    for endpoint in endpoints:
+        for field in ("summary", "path", "base"):
+            raw = getattr(endpoint, field, "")
+            if not isinstance(raw, str) or not raw:
+                continue
+            clean = sanitize_url(raw) if field in {"path", "base"} else sanitize_text(raw)
+            if clean == raw:
+                continue
+            setattr(endpoint, field, clean)
+            notes.append(
+                f"文档 {field} 含字面凭据，生成前已占位为 <redacted>：{clean}"
+                f"（真实值请配置到 env，红线 #1 凭据不落盘）")
+    return notes
+
+
 def generate(source_path: Path, out_dir: Path | None = None,
              options: GenOptions | None = None, *, registry=None) -> GenResult:
     """主入口：文档 → 生成资产。纯离线、零网络、零执行。
@@ -96,6 +143,11 @@ def generate(source_path: Path, out_dir: Path | None = None,
     options = options or GenOptions()
     options.validate()   # 与 CLI 同一把判据闸（GenOptions.validate，gap9 C.3）
     endpoints, stype = parse_source(source_path, options.source_type)
+    # 红线 #1（凭据绝不落盘）的**输入面**：文档里的字面凭据必须在**任何产出之前**抹掉——
+    # 旧实现只闸 headers（C4①），文档摘要/路径里的 `https://user:pass@…` 与
+    # `?access_token=…` 会原样进 flow YAML / 产物 docstring / report.json，**连文件名**都带
+    # （实测 `flows/get-web-example-customer-code-access_token-tok123.yaml`）。
+    secret_notes = _redact_endpoint_secrets(endpoints)
     result = GenResult(source_type=stype, scenario=options.scenario)
     global_headers = _load_headers(options.headers_file)
     # 默认全局鉴权头（BUG-920 防线：isc-app 业务识别头并入每个 step）
@@ -127,16 +179,15 @@ def generate(source_path: Path, out_dir: Path | None = None,
 
     result.flows = batch_flows
     result.low_confidence = all_low
-    result.manual_assertions = all_manual
+    result.manual_assertions = all_manual + secret_notes
 
     # 契约候选
     result.contracts = emit_contracts(endpoints, level_mode=options.level,
                                        source_label=f"{stype}:{source_path.name}")
     result.conflicts = result.contracts.get("conflicts", [])
 
-    # 探针骨架
-    probe_name = slugify(endpoints[0].summary or source_path.stem,
-                         fallback="GeneratedProbe") + "Probe"
+    # 探针骨架（身份判据单点在 emit_probe.probe_entity_name：中文标题不再产 `GeneratedProbeProbe`）
+    probe_name = probe_entity_name(endpoints[0].summary, source_path.stem)
     result.probe_source = emit_probe_skeleton(endpoints, scenario=scenario,
                                                entity_name=probe_name)
 
