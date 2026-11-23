@@ -12,6 +12,10 @@ import re
 import warnings
 from typing import Any
 
+# 非法转义的两代警告类：3.11 是 DeprecationWarning，3.12+ 是 SyntaxWarning
+#（2026-11-24 CI linux 3.11 实测：只升 SyntaxWarning 时整族漏检）。恒元组、import 期固定。
+_ESCAPE_WARNINGS = (SyntaxWarning, DeprecationWarning)
+
 _PLACEHOLDER = re.compile(r"\$\{([^}]+)\}")
 
 
@@ -56,13 +60,17 @@ def artifact_compile_problem(source: str, name: str) -> str | None:
     一 import 就炸」，而生成期自检只编译本仓源码、看不见自己写出去的文件（#9 同一条缝，
     2026-11-23 真机：通用知识包 notes 里的正则 ``/确\\s*定/`` 进了 ``atlas_pages.py`` 的类
     docstring，3.13 + ``-W error::SyntaxWarning`` 直接 SyntaxError）。
-    判据单点：写盘前的自检（emit_pytest / emit_compat）都调这里，不各写一份口径。
+    判据单点：写盘前的自检（emit_pytest / emit_compat / emit_fast）都调这里，不各写一份口径。
+    **版本口径（2026-11-24 CI linux 3.11 实测翻车）**：非 docstring 字符串里的非法转义在
+    3.11 是 `DeprecationWarning`、3.12+ 才升 `SyntaxWarning`；`compile()` 只对 SyntaxWarning
+    升错误会漏整族。`_ESCAPE_WARNINGS` 两个一起升错误，两代解释器同一把刀。
     """
     try:
         with warnings.catch_warnings():
-            warnings.simplefilter("error", SyntaxWarning)
+            for category in _ESCAPE_WARNINGS:
+                warnings.simplefilter("error", category)
             compile(source, name, "exec")
-    except (SyntaxError, SyntaxWarning) as exc:
+    except (SyntaxError, SyntaxWarning, DeprecationWarning) as exc:
         return f"{name}: {type(exc).__name__}: {exc}"
     return None
 

@@ -72,9 +72,17 @@ _GENERATOR_DIR = _REPO / "src" / "atlas" / "generator"
 
 
 def _assert_warning_clean(source: str, name: str) -> None:
-    """与 CI 常规档同口径：编译期任何 SyntaxWarning 都当失败（非法转义在这里现形）。"""
+    """与 CI 常规档同口径：非法转义在这里现形。
+
+    **两代解释器**（2026-11-24 CI linux 3.11 实测）：3.11 对字符串非法转义发
+    `DeprecationWarning`，3.12+ 才是 `SyntaxWarning`；只升 SyntaxWarning 会让 3.11
+    静默通过。两类一起升错误（与 `dsl_utils.artifact_compile_problem` 的
+    `_ESCAPE_WARNINGS` 同一把尺——测试内联同一行实现了这层口径，避免为一条 helper
+    import 生产模块私有名）。
+    """
     with warnings.catch_warnings():
         warnings.simplefilter("error", SyntaxWarning)
+        warnings.simplefilter("error", DeprecationWarning)
         compile(source, name, "exec")
 
 
@@ -118,10 +126,16 @@ def test_notes_roundtrip_and_warning_clean():
 
 def test_discriminator_detects_raw_backslash_docstring():
     raw_source = 'class X:\n    """未转义 /确\\s*定/"""\n'
-    # CPython 实际形态：默认只警告；`simplefilter("error")`/CI 档下编译直接抛 SyntaxError
-    # （实测 3.13.16 就是 SyntaxError），两形态都算「判据报红」。
-    with pytest.raises((SyntaxWarning, SyntaxError)):
+    # CPython 实际形态：默认只警告；`simplefilter("error")`/CI 严档下编译直接抛错。**两代口径**
+    #（2026-11-24 CI linux 3.11 实测）：3.11 里非 docstring 语境是 DeprecationWarning、
+    # 3.12+ 才升 SyntaxWarning（3.13.16 直接 SyntaxError）——三类都算「判据报红」，
+    # 否则该形态随解释器版本漂移成漏检。
+    with pytest.raises((SyntaxWarning, SyntaxError, DeprecationWarning)):
         _assert_warning_clean(raw_source, "<raw>")
+    # 3.11 实测确认：docstring 里的转义在 compile 期就是可捕获的（探针
+    # `D:\tmp\probe_311.py` 双版本对照：docstring/plain 两形态都 raise）。若某解释器
+    # 连 DeprecationWarning 都不发，上面 raises 会红——那正是需要重新核对本判据的信号，"
+    # 不静默放过。
     # 同一份文本过 helper 后必须绿（成对证明：红不是环境噪声，绿不是判据失效）。
     # 反斜杠先算好再拼——f-string 花括号里写转义在 3.11 是语法错误（README 支持 3.11+）。
     escaped = docstring_text("\\s")

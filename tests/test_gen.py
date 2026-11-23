@@ -404,11 +404,18 @@ def test_to_tower_trace_step(tmp_path):
 def test_with_pytest_no_allure_rc2(tmp_path):
     p = tmp_path / "src.md"
     p.write_text("## GET /api/x\n\n```json\n{}```\n", encoding="utf-8")
-    # allure 未安装 → rc 2（不生成半截文件）
+    # 契据（2026-11-24 CI 实测修正）：`--with-pytest` 产物早已自包含（仅标准库 + pytest，
+    # gap7 评审定案——「不再需要 allure-pytest」），gen **不再**因 allure 缺失拒绝。
+    # 旧断言 `rc == 2` 是死契约：3.13 全局装了 allure → find_spec 非 None → 被静默跳过；
+    # CI 没装 allure → 直接红。两头都对不上实现，按**现行实现**重立：
+    #   有 allure 的机器：跳过（环境无法构造「无 allure」形态），带理由；
+    #   无 allure 的机器（CI）：断言 rc 0 且 check-only 不写产物文件。
     import importlib.util
-    if importlib.util.find_spec("allure") is None:
-        rc = main(["gen", str(p), "--with-pytest", "--check-only"])
-        assert rc == 2
+    if importlib.util.find_spec("allure") is not None:
+        pytest.skip("本环境装有 allure，无法验证「无 allure」形态（CI 上会走到 rc==0 分支）")
+    rc = main(["gen", str(p), "--with-pytest", "--check-only"])
+    assert rc == 0, "产物自包含后 gen 不应因 allure 缺失拒绝（gap7 定案：仅标准库+pytest）"
+    assert not (tmp_path / "pytest").exists(), "check-only 不得写产物"
 
 
 def test_gen_then_compile_end_to_end(tmp_path):

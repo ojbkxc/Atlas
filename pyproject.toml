@@ -11,7 +11,19 @@ requires-python = ">=3.11"
 dependencies = ["playwright>=1.45", "requests>=2.31", "PyYAML>=6.0"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pytest-cov>=5"]
+# CI 矩阵实测需要补齐的三件（2026-11-24 linux 3.11 Offline gate 翻车清单）：
+# ① tzdata：3.11/3.12 的 zoneinfo 没有数据源（Windows 注册表回退所以本地看不见），
+#    89 个 ZoneInfo("Europe/*") 用例当场 ZoneInfoNotFoundError；3.13 起 CPython 自带。
+# ② allure-pytest：compat 装配探针（test_emit_compat 的 _probe_fast_defaults）经产物
+#    fastplugin 包装 allure.attach——环境没有 allure 时装配腿失败，shots_installed 恒 False。
+#    本地全局 3.13 恰好装了它所以全绿，CI 才红。
+# pytest 8+ 与 cov 原有。
+dev = [
+  "pytest>=8",
+  "pytest-cov>=5",
+  "allure-pytest>=2.13",
+  "tzdata>=2024.1; python_version < '3.13'",
+]
 
 [project.scripts]
 atlas = "atlas.cli:main"
