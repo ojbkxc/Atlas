@@ -200,7 +200,7 @@ def _sanitize_fragment(fragment: str) -> str:
 
 
 def sanitize_url(url: object) -> str:
-    """URL 净化：query **逐键** redact + fragment 按形态处理（路由保留 / 其余整抹）。
+    """URL 净化：**userinfo（`user:pass@`）整段 redact** + query 逐键 redact + fragment 按形态处理。
 
     相对 URL（`/web/x?token=…`）同样处理。坏形态原样返回（永不抛）：净化是尽力而为
     的遮蔽，不得把诊断文本改成崩溃或空串。
@@ -210,11 +210,17 @@ def sanitize_url(url: object) -> str:
         parts = urlsplit(text)
     except ValueError:
         return text
-    if not (parts.query or parts.fragment):
+    netloc = parts.netloc
+    if "@" in netloc:
+        # `https://user:pass@host/x`：userinfo 是经典凭据形态，且**不带敏感键名**——
+        # 逐键 redact 抓不到它（2026-11-23 实测：文档摘要里的 `ops:S3cretPwd@…` 原样进了
+        # flow YAML 与产物 docstring）。整段替换成 REDACTED@host，host 保留（归因还需要它）。
+        netloc = f"{REDACTED}@{netloc.rsplit('@', 1)[1]}"
+    if not (parts.query or parts.fragment) and netloc == parts.netloc:
         return text
     fragment = _sanitize_fragment(parts.fragment) if parts.fragment else ""
     try:
-        return urlunsplit((parts.scheme, parts.netloc, parts.path,
+        return urlunsplit((parts.scheme, netloc, parts.path,
                            _sanitize_query(parts.query), fragment))
     except ValueError:
         return text
