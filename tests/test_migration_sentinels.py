@@ -224,6 +224,16 @@ MUTATION_RECORDS: dict[str, dict[str, str]] = {
 # ── 检查器（root 参数化：真盘与 tmp 副本共用同一判据，禁两份实现 #92）───────
 
 def _scope_files(root, globs: tuple[str, ...]) -> list:
+    """scope 解析（**仓库面**口径）。
+
+    **CI/bare-clone 修正（2026-11-24 CI linux 3.13 实测翻车）**：`flows/iservice/` 整目录被
+    `.gitignore` 列 sensitive（真实账号/内网域名只留受控磁盘），bare clone 上 `root.glob` 扫
+    不到任何文件 → `check_rule` 按「哨兵失效」红。但该形态**对 CI 是预期**：受控目录缺席
+    ≠哨兵失效。判「scope 有没有文件」与 reader-guide 同一纪律（**结论绑来源**）：以
+    `git ls-files` 为准——scope 至少有一个 tracked 文件即活；本地多出的 sensitive 文件照常
+    参与扫描（受控磁盘上哨兵仍要工作），缺席时不算死。
+    """
+    import subprocess
     files = []
     for pattern in globs:
         if any(ch in pattern for ch in "*?["):
@@ -233,7 +243,23 @@ def _scope_files(root, globs: tuple[str, ...]) -> list:
         for m in matched:
             if m.is_file():
                 files.append(m)
-    return files
+    if files or not globs:
+        return files
+    # glob 什么都没扫到：若 scope 在 git tracked 面同样为空**且当前是 git 仓库**，说明
+    # 这是受控-only 目录（.gitignore sensitive，bare clone 上预期缺席）；否则按哨兵失效红
+    #（非 git 目录如 tmp_path 走不到豁免——空就是失效，见 test_scope_empty_is_violation）。
+    out = subprocess.run(["git", "ls-files", *globs], cwd=root, capture_output=True,
+                         text=True, encoding="utf-8", errors="replace")
+    inside_git = subprocess.run(["git", "rev-parse", "--is-inside-work-tree"], cwd=root,
+                                capture_output=True, text=True).stdout.strip() == "true"
+    if inside_git and out.returncode == 0 and not out.stdout.strip():
+        return _ABSENTScope()  # 受控目录预期缺席：带标记让 check_rule 跳过
+    return files  # 保持空，上层按「哨兵失效」红
+
+
+class _ABSENTScope(list):
+    """「scope 全体为受控-only」的哨兵值：真 list（空），但带标记让 check_rule 区分。"""
+    expected_absent = True
 
 
 def _scan_text(path) -> str:
@@ -261,6 +287,8 @@ def check_rule(root, rule: SentinelRule) -> list[str]:
     """返回违规清单（空=绿）。scope 无文件=哨兵失效，直接点名（不给静默假绿）。"""
     files = _scope_files(root, rule.scope)
     if not files:
+        if getattr(files, "expected_absent", False):
+            return []  # scope 全在受控磁盘（.gitignore sensitive），bare clone 缺席是预期
         return [f"{rule.name}: scope {list(rule.scope)} 无文件=哨兵失效"]
     blob = "\n".join(_scan_text(f) for f in files)
     violations: list[str] = []
@@ -303,7 +331,10 @@ def test_rule_shapes_valid():
 
 
 def test_scope_empty_is_violation(tmp_path):
-    """scope 指空 = 哨兵自己失效，必须红（xplat 同款 scope_empty 纪律）。"""
+    """scope 指空 = 哨兵自己失效，必须红（xplat 同款 scope_empty 纪律）。
+
+    注意口径：`tmp_path` 不是 git 仓库，`git ls-files` 输出为空 → 走「受控-only 预期缺席」
+    分支会漏报。所以该分支判据要求 **git 命令可用且仓库内执行**——非 git 目录回退真红。"""
     rule = SentinelRule(name="ghost", direction="erosion",
                         scope=("nowhere/**/*.py",), must_contain=("x",))
     v = check_rule(tmp_path, rule)
@@ -393,6 +424,13 @@ def test_injected_rule_goes_red(rule):
                     text += f"\nx = '{rule.markers[0]}'\n"
                 injected = True
             dst.write_text(text, encoding="utf-8")
-        assert injected, f"{rule.name}: scope 无文件，无法重放注入"
+        # bare clone 上受控-only scope 拿不到文件（injected=False）：豁免判定先于硬断言
+        #（`_scope_files` 在 ROOT 上返回 expected_absent → skip，判据退化为形态自检；
+        # 本地受控磁盘有文件，照常重放注入，判据不放松）。
+        main_scope = _scope_files(ROOT, rule.scope)
+        if not injected and getattr(main_scope, "expected_absent", False):
+            pytest.skip(f"{rule.name}: scope 是受控-only 目录（.gitignore sensitive），"
+                        "bare clone 上无法重放注入")
+        assert injected, f"{rule.name}: scope 无文件，无法重放注入（且非受控豁免形态）"
         v = check_rule(root, rule)
         assert v, f"{rule.name}: 注入后哨兵仍绿=该断言失效（红样不红，红线没写）"

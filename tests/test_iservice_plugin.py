@@ -363,8 +363,8 @@ def test_session_defaults_unknown_env_falls_back_quietly(tmp_path, monkeypatch):
     assert defaults["account"] == "" and defaults["ou"] == ""
 
 
-def test_runtime_refuses_empty_account_before_opening_browser(monkeypatch):
-    """空账号必须在开浏览器/登录之前点名拒绝。
+def test_runtime_refuses_empty_account_before_opening_browser(monkeypatch, tmp_path_factory):
+    """空账号必须在开浏览器/登录之前点名拒绝（**自备环境**，不依赖仓库根 .env）。
 
     旧行为：`credential("")` 拿空串 → 起 Chromium → 走 SSO → 报一个与配置无关的错
     （#103「白烧会话 × 归因漂移」）。现闸门在 `__enter__` 最前，且消息点名 env 与两条补救路径。
@@ -384,8 +384,17 @@ def test_runtime_refuses_empty_account_before_opening_browser(monkeypatch):
     monkeypatch.setattr(runtime_mod, "resolve_plugin", lambda: _EmptySessionPlugin())
     monkeypatch.setattr(runtime_mod, "check_demo_api", lambda cfg: None)
     monkeypatch.setattr(AtlasConfig, "check_legacy_paths", lambda self: None)
-    config = AtlasConfig.from_root(ROOT)
-    monkeypatch.setenv("ISERVICE_URL_SIT", "https://sit.example/")
+    # CI/bare-clone 口径（2026-11-24 CI linux 3.13 真翻车）：仓库根的 .env 不进库，
+    # 而 `AtlasConfig.from_root(ROOT)` 会读它——本地被 .env 的 DEMO_URL_SIT 喂饱全绿，
+    # bare clone 上同变量缺失，闸门先于空账号判「缺 URL」把断言消息吃掉。判据自身的
+    # 输入必须自备：临时根只有 .atlas-root；同时**本测断言的闸门是空账号**，URL 侧
+    # 用引擎当前前缀的 DEMO_URL_SIT 喂齐（不猜插件前缀——resolve_plugin 已被 mock，
+    # env_url_key 仍走 demo 默认）。
+    root = tmp_path_factory.mktemp("noruntime-env")
+    (root / ".atlas-root").write_text("", encoding="utf-8")
+    config = AtlasConfig.from_root(root)
+    monkeypatch.setenv("DEMO_URL_SIT", "https://sit.example/")
+    monkeypatch.delenv("ISERVICE_URL_SIT", raising=False)
     # 闸门在 __enter__（开浏览器前），构造本身允许（login=False 的 no-login 通路不能误拦）
     with pytest.raises(ValueError) as ei:
         with runtime_mod.DemoRuntime(config, login=True, account=""):
