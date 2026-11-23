@@ -26,7 +26,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ..atomic_io import append_text_locked, read_text_retry
+from ..atomic_io import append_text_locked, read_jsonl_text
 from .constants import (DEFAULT_MAX_DURATION_MIN, MAX_CONSECUTIVE_FAILURES,
                         SCHEMA_VERSION)
 from .cron_parse import load_tz, min_gap_ok, parse_expr
@@ -413,11 +413,9 @@ def read_runs(path: Path) -> list:
     if not path.exists():
         return []
     # cc-1 读侧配套：索引由 append_text_locked 加锁写，Windows 并发读撞锁报
-    # PermissionError（瞬态）——read_text_retry 重试即过。
-    try:
-        raw = read_text_retry(path, encoding="utf-8")
-    except UnicodeDecodeError:
-        raw = read_text_retry(path, encoding="utf-8", errors="replace")
+    # PermissionError（瞬态）——read_jsonl_text 内部重试即过；BOM 口径同单点
+    # （带 BOM 的首条索引行过去会被 json.loads 拒成残行而静默丢失）。
+    raw = read_jsonl_text(path)
     rows = []
     for line in raw.splitlines():
         if not line.strip():

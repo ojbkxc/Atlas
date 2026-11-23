@@ -12,7 +12,7 @@ import json
 import os
 import time
 from pathlib import Path
-from .atomic_io import atomic_write_text, read_text_retry, update_text_locked
+from .atomic_io import atomic_write_text, read_jsonl_text, update_text_locked
 from .failures import classify_failure, exception_text
 
 
@@ -171,11 +171,9 @@ class ExperienceJournal:
         # 好行全被一条坏字节拖死（#109 trace 本体同族）。坏字节 replace 读入后
         # 残行 JSON 解析必败，自然落进既有「跳过残行」分支，合法行照常可见。
         # cc-1 读侧配套：本文件由加锁写路径写，Windows 上并发读撞锁报
-        # PermissionError（瞬态）——read_text_retry 重试即过。
-        try:
-            raw = read_text_retry(path, encoding="utf-8")
-        except UnicodeDecodeError:
-            raw = read_text_retry(path, encoding="utf-8", errors="replace")
+        # PermissionError（瞬态）——read_jsonl_text 内部重试即过；BOM 口径同单点
+        # （带 BOM 的首条草稿过去会被 json.loads 拒成残行而静默消失）。
+        raw = read_jsonl_text(path)
         return ExperienceJournal._parse_rows(raw)
 
     @staticmethod

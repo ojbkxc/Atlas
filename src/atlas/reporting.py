@@ -5,7 +5,7 @@ import os
 from collections import Counter
 from pathlib import Path
 
-from .atomic_io import read_text_retry
+from .atomic_io import read_jsonl_text
 from .failures import FLOW_STATUS_TIMEOUT, FailureClass, is_operational
 
 
@@ -40,11 +40,10 @@ def _read_runs_text(path: Path) -> str:
 
     cc-2 配套：``read_text_retry`` 只重试瞬态 PermissionError（写锁区间=文件头 1 字节），
     UnicodeDecodeError 不重试直接回落 replace（坏字节是确定事实），其余异常原样传播。
+    BOM 口径：走 ``atomic_io.read_jsonl_text``（`utf-8-sig`）——带 BOM 的 runs.jsonl 首行
+    会被 `json.loads` 拒成残行而**静默丢弃**（实测少一整条 run 而 summary 看起来正常）。
     """
-    try:
-        return read_text_retry(path, encoding="utf-8")
-    except UnicodeDecodeError:
-        return read_text_retry(path, encoding="utf-8", errors="replace")
+    return read_jsonl_text(path)
 
 
 def _read_inputs_text(inputs: list[Path]) -> str:

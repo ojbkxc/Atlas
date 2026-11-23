@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 
 from . import locators
-from .atomic_io import append_text_locked, exclusive_file_lock, read_text_retry
+from .atomic_io import append_text_locked, exclusive_file_lock, read_jsonl_text
 
 QUEUE_FILE = "experience_drafts.jsonl"
 DECISIONS_FILE = "review_decisions.jsonl"
@@ -139,11 +139,10 @@ class ReviewQueue:
         # 裸 UnicodeDecodeError 让整塔读崩，好草稿全部不可见（#109 trace 本体同口径：
         # 坏字节 replace 读入，残行 JSON 解析必败自然跳过）。两处读侧必须同防线。
         # cc-1 读侧配套：队列由 append_text_locked 加锁写，Windows 并发读撞锁报
-        # PermissionError（瞬态）——read_text_retry 重试即过。
-        try:
-            raw = read_text_retry(self.path, encoding="utf-8")
-        except UnicodeDecodeError:
-            raw = read_text_retry(self.path, encoding="utf-8", errors="replace")
+        # PermissionError（瞬态）——read_jsonl_text 内部重试即过。
+        # BOM 口径同 `/atomic_io.read_jsonl_text`：带 BOM 的队列首条草稿过去会被
+        # `json.loads` 拒成残行而**静默消失**（实测 2 条只看得到 1 条）。
+        raw = read_jsonl_text(self.path)
         rows = []
         for line in raw.splitlines():
             if line.strip():

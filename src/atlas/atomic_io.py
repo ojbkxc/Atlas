@@ -282,6 +282,34 @@ _READ_RETRY_ATTEMPTS = 3
 _READ_RETRY_DELAY_S = 0.05
 
 
+# JSONL 读侧的**编码口径单点**：`utf-8-sig`（无 BOM 时与 `utf-8` 逐字节等价）。
+# 为什么不用裸 `utf-8`（2026-11-23 实测）：Windows 上「记事本旧版另存为 UTF-8」会写 BOM，
+# 于是文件首行变成 `\ufeff{"id":…}` → `json.loads` 抛 `JSONDecodeError` → 各读侧按
+# 「残行跳过」**静默丢弃第一行**。实测 `experience_drafts.jsonl` 带 BOM 时审核塔只看到
+# 2 条草稿里的 1 条（不是解析崩，是那条草稿从此不存在）；`runs.jsonl` 同形态则会让
+# summary/allure/report 少一整条 run，而三处都「看起来正常工作」。
+# `config.py` 早就为 `.env` 付过这笔学费（`utf-8-sig` + 先看 BOM 字节），此处是同一现实。
+_BOM_SAFE_ENCODING = "utf-8-sig"
+
+
+def read_jsonl_text(path: Path) -> str:
+    """读一行一 JSON 的文本文件：**BOM 安全** + 瞬态锁重试 + 坏字节回落 replace。
+
+    三个读侧纪律合成一处（判据单点，#92）：`experience._read_queue` / `review.rows` /
+    `reporting`（含 `export_runlog`/`summarize`/`allure` 三消费方）/ `review_code` 基线 /
+    `scheduling.state.read_runs` 此前各自抄一份 `try: read_text_retry(...) except
+    UnicodeDecodeError: …errors="replace"`——五份里改一份就漂移。
+
+    取向纪律（不吞）：只重试 `PermissionError`（Windows 字节区间锁的毫秒级瞬态）；
+    `UnicodeDecodeError` 不重试、直接回落 `errors="replace"`（坏字节是确定事实，重试无用，
+    残行随后由各处「解析失败即跳过并计数」接住）；其余异常原样传播。
+    """
+    try:
+        return read_text_retry(path, encoding=_BOM_SAFE_ENCODING)
+    except UnicodeDecodeError:
+        return read_text_retry(path, encoding=_BOM_SAFE_ENCODING, errors="replace")
+
+
 def read_text_retry(path: Path, *, encoding: str = "utf-8", errors: str | None = None) -> str:
     """读文本，容忍 Windows 字节区间锁造成的**瞬态** `PermissionError`（cc-1 读侧配套）。
 
