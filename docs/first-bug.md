@@ -40,8 +40,28 @@ rc 1 的三个常见缺项（hints 会逐条给）：
 | 缺项 | 补法 |
 |---|---|
 | `base_url=unset` | 把 `<PREFIX>URL_<ENV>` 键写进 `.env`（playbook §9 第 1 项） |
-| `legacy_pages` / `demo_api` 缺失 | 无旧仓资产的平台**不需要**——见 AGENTS「按需预检」口径，这两项只影响 doctor 的 rc，不挡 API 腿 |
+| `legacy_pages` 缺失 | 无旧仓资产的平台**不需要**——它只影响 doctor 的 rc，不挡 API 腿 |
+| **`demo_api` 缺失** | **会挡 `atlas run`（连纯 `api_call` flow 也挡）**——见下方第 4 条；doctor 的 rc 只是它的第一面 |
 | `knowledge=builtin` | 设 `ATLAS_KNOWLEDGE_DIR` 指私有知识库（读回退包内虚构默认，批准写路径必须私有） |
+
+**关于 `demo_api`（2026-11-24 实测更正，别照旧文档猜）**：新骨架没有旧仓 API 项目时，
+`atlas run flows/smoke.yaml --no-login` 会在**开浏览器之前** rc 2 退出：
+
+```
+FileNotFoundError: 找不到 DemoApi 适配目标：<root>/../legacy-api/scripts/demo_api.py
+```
+
+原因不是「配置写错」，而是**当前装配口径**：`DemoRuntime.__enter__` 无条件
+`attach_demo`，而 `precheck_session_inputs` 的 `check_demo_api` 把这条失败**前移**成
+fail-fast（#103：旧实现会先起 Chromium、走真实登录、白烧会话才撞缺文件）。
+这条边界已登记在 `docs/gaps/wave5-backlog.md`（en-5/ob-5 行末「`attach_demo` 仍无条件
+装配」，根治需插件 API seam，属未解决设计项）。
+
+现在能做的两件事（**不要**指望跳过预检让它跑起来——那只是把失败推后到 `attach_demo`）：
+
+1. 设 `ATLAS_DEMO_API_PROJECT` 指向含 `scripts/demo_api.py` 的目录（旧仓或自建桩）；
+2. 或先用**不依赖 DemoRuntime 装配**的离线面验证流程结构：`atlas compile` →
+   `atlas gen --with-pytest`（产物零 `import atlas`，可独立运行）。
 
 ## 3. 离线跑通最小闭环（不联网）
 
