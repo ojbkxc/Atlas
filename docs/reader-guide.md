@@ -18,6 +18,7 @@
 | [docs/functional-testing-playbook.md](functional-testing-playbook.md) | 跨平台功能测试作业手册：流程 + 跨平台不变的判据（误报教训固化） | 贡献（换平台施工） |
 | [docs/element-ui-generic-knowledge.md](element-ui-generic-knowledge.md) | Element UI 通用知识包分类台账：逐条通用性判定与去向 | 贡献（知识提炼） |
 | [docs/lessons-artifact-side.md](lessons-artifact-side.md) | 产物侧缺陷族排查手册：13 波「离线全绿但产物坏」的症状→族→判据与修法模式 | 贡献 + 判据（写产物前必读） |
+| [docs/verification-history.md](verification-history.md) | 验证历史波次链（1448 → 当前）：逐波根因与守卫编号；AGENTS §2 的过程叙事搬到这里 | 贡献（查「某波改了什么」） |
 | [docs/first-bug.md](first-bug.md) | 骨架 → 第一个 bug 的最短路径（每步命令 + 预期 rc） | 上手（第二步） |
 | [docs/migration-from-ui-auto-test.md](migration-from-ui-auto-test.md) | UI AUTO TEST → Atlas 移植方案（总览与决策） | 迁移 |
 | [docs/legacy-adapter-setup.md](legacy-adapter-setup.md) | LegacyAdapter 接管旧 UI AUTO TEST（L1 接入） | 迁移 |
