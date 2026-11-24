@@ -554,6 +554,20 @@ PYTHONPATH=src python -m atlas doctor
   变异实证：删掉 `docs/first-bug.md` 那一行 → ①精确点名 `first-bug.md`；恢复后 sha256 一致。
   真机复验：补完索引后 `reader-guide` 覆盖 `docs/` 全部 20 份（含 `gaps/` 与 `ownership/`
   的目录级条目）。
+  → **3183 时间戳口径复核（无缺陷，仅留结论）**（2026-11-24 同一轮分析的收口）
+  顺着「结论绑来源」族扫 `strftime`/`datetime.now` 全仓，看时间戳是否也「只对本机成立」：
+  **runs.jsonl 与快包底座是 UTC**（`recorder.py:61/100`、`emit_fast.py:491/560` 都
+  `datetime.now(timezone.utc).isoformat()` → `+00:00`），**调度核全链 UTC**
+  （`state.py`/`dispatch.py`/`cron_parse.py` 一律 `timezone.utc`）。
+  九处 `created_at`/`decided_at`（experience×2 / explore / knowledge / overlay / review×4）
+  是**本地时间无 offset** 的 `%Y-%m-%dT%H:%M:%S`，但消费面只有「显示」
+  （`cli_render.py:336`）与「同一文件内字符串排序」，**没有任何跨机比较或 age 计算**
+  （`allure_report.py:80` 的 `fromisoformat` 只读 runs.jsonl 的 UTC 形态）。
+  结论：**不是缺陷**——同机同 tz 下排序恒成立；跨机合并 runs 的场景不存在（runs.jsonl 由
+  单次 run 追加，`ATLAS_RUNS_DIR` 是隔离逃生舱而非 merge）。因此**不**统一格式：
+  改它要动 `test_overlay_pipeline.py:222` 那条 `^\d{4}-…T\d{2}:\d{2}:\d{2}$` 断言（契约面），
+  收益为零、风险为正。**边界登记**：将来若真做「多机 runs 合并」或「草稿 age 告警」，
+  这九处必须同步改成带 offset 的 ISO，且改之前先翻本条。
   → **3183 editable 安装指向守卫 +3**（2026-11-24：**环境被另一个 clone 悄悄接管**）
   **本机实测**：为复现 CI bare-clone，我在 `D:\tmp\atlas-r34\clone` 里跑了一次
   `pip install -e ".[dev]"`——**全局 Python 的 `atlas-test-platform` 可编辑安装从此指向那个
