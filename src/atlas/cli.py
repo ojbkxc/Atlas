@@ -2032,6 +2032,18 @@ def _review_code(args, config) -> int:
 
     mode = getattr(args, "review_mode", "static")
 
+    # `--fail-under` 的**值域闸**（2026-11-24 实测缺口）：argparse 只 `type=int`，
+    # 于是 `--fail-under -1` 静默接受——`avg_score < -1` 恒假，**门禁永远通过**（评分 0
+    # 也不拦），这是最危险的一种「看起来设了阈值」；`101` 则恒真、每次都红（噪音）。
+    # 越界属**用户输入错误**（rc 2 一行），与 `--fail-under abc` 的 argparse 报错同族；
+    # 不用 argparse `choices=range(0,101)` 是因为它会把 101 个可选值全打进 usage。
+    fail_under = getattr(args, "fail_under", None)
+    if fail_under is not None and not (0 <= fail_under <= 100):
+        return _user_error(ValueError(
+            f"--fail-under 必须在 0..100 之间（收到 {fail_under!r}）——"
+            f"总分是百分制：负数会让 `avg_score < 阈值` 恒假、门禁永不生效，"
+            f"超过 100 则恒真、每次必红"))
+
     try:
         result = review_code(
             args.paths,

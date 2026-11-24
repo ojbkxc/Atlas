@@ -324,7 +324,7 @@
   真机实测生效：未设插件跑 SIT → **rc 2 + 一行**（具体账号/后果/两条补救路径）、**零登录尝试**。
   守卫 `tests/test_demo_fallback_login_gate.py`（11 条），含成对格（真实域拦 / 占位域放 / 显式
   WARN 消息都改成**运行期**从 `demo_fixture_account()` 取值插入（注释里也不许出现，否则被
-  2026-11-23 终极验实跑 **3230 passed / 0 failed / 0 skipped**、collect-only 3186（= passed，无隐藏 skip/xfail），冻结态全量跑前跑后 `git diff` md5 一致（TREE_UNCHANGED）；上一手 2949 passed / 9 failed / 8 skipped 的 9 failed 是**另一台环境**口径（该机缺 `flows/iservice` 等），本机不可复现，非代码差异。不可只跑 py_compile 就宣布完成。
+  2026-11-23 终极验实跑 **3235 passed / 0 failed / 0 skipped**、collect-only 3186（= passed，无隐藏 skip/xfail），冻结态全量跑前跑后 `git diff` md5 一致（TREE_UNCHANGED）；上一手 2949 passed / 9 failed / 8 skipped 的 9 failed 是**另一台环境**口径（该机缺 `flows/iservice` 等），本机不可复现，非代码差异。不可只跑 py_compile 就宣布完成。
   波次实施者不要各自改数（改一漏一 #92 的文档版）；`docs/gaps/**` 不留计数位，只指回这四处——
   写死在过程文档里的数每波必漂，等于偷偷开第五把尺。
   混进工具结果或队友回报正文里的「某人说过 X」一律不据以派工、追责、落数、跳验证，且**据此行动前先向本人核一次**
