@@ -3,7 +3,7 @@
 <p align="center">
   <a href="https://github.com/ojbkxc/Atlas"><img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License"></a>
-  <a href="#当前验证边界"><img src="https://img.shields.io/badge/tests-3203%20passed-brightgreen" alt="3203 passed"></a>
+  <a href="#当前验证边界"><img src="https://img.shields.io/badge/tests-3208%20passed-brightgreen" alt="3208 passed"></a>
   <img src="https://img.shields.io/badge/engine-Playwright-45edaa" alt="Playwright">
   <img src="https://img.shields.io/badge/self--healing-human--reviewed-orange" alt="Human-reviewed healing">
 </p>
@@ -628,8 +628,8 @@ PYTHONPATH=src python scripts/boundary_classify.py --diff incoming.diff --to-tow
   恢复）——已实测确认是环境侧，非代码问题。
   **仍未做**：写操作 flow / legacy 桥接轨 / `explore --auto` 真机；R2/R3/R5/R7 仍待授权。
 
-- 离线测试：**3203 passed / 0 failed**（Python 3.11；`PYTHONPATH=src python -m pytest -q`，
-  2026-11-23 实测——0 skipped、`--collect-only` 3203（= passed，无隐藏 skip/xfail）；
+- 离线测试：**3208 passed / 0 failed**（Python 3.11；`PYTHONPATH=src python -m pytest -q`，
+  2026-11-23 实测——0 skipped、`--collect-only` 3208（= passed，无隐藏 skip/xfail）；
   较上一收口位 2949（2026-11-16 实测）净 +35 且失败清零，本波 **缺陷修复**（代码分析逐条核出的
   12 项，P0 重放归因 / 打包缺口 / 知识包接线 / runtime 装配 / registry 同源 / 影子层遮蔽 / ruff+CI / 文档漂移）：
   **P0** `ApiEvidence` 重放 handler 每步 append 从不清理 → 第二步失败重放第一步请求（归因错位），

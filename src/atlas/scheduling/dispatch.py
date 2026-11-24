@@ -192,9 +192,11 @@ def tick(task_id: str, config, *, now: "datetime | None" = None, dry: bool = Fal
     tasks_file = state.tasks_path(root)
     doc = state.load_doc(tasks_file)
     task = state.get_task(doc, task_id, source=tasks_file)
-    if not task.get("enabled", True):
-        # AUTO-PAUSED 的答复是 `atlas schedule status`，OS cron 这一路不需要噪声
-        return 0
+    # 停用判定在 dry 分支**之后**（2026-11-24 实测修正）：`--dry-run` 是**诊断面**，
+    # 停用任务跑它旧实现静默 return 0、零输出——人分不清「任务停用了」与「这轮没到期」，
+    # 只能去翻 tasks.json 才知道自己为什么看不到计划（AUTO-PAUSED 的真实排查路径）。
+    # 实际 tick 语义逐字不变（下面仍 return 0，不派发、不记台账）。
+    disabled = not task.get("enabled", True)
     moment = now or now_utc()
     flow_file = state.resolve_flow(root, task.get("flow"))
     if not flow_file.is_file():
@@ -214,9 +216,17 @@ def tick(task_id: str, config, *, now: "datetime | None" = None, dry: bool = Fal
             "trigger": decision.trigger, "scheduled_for": state.iso(decision.scheduled_for),
             "skipped_slots": decision.skipped_slots, "now": state.iso(moment),
             "watermark": watermark_raw, "command": command,
+            # 停用态必须显式出现在计划里：否则「disabled」与「这轮没到期」在 dry-run 输出上
+            # 无法区分（2026-11-24 实测：停用任务旧实现零输出、rc 0）。
+            "enabled": not disabled,
             "max_duration_min": int(task.get("max_duration_min") or DEFAULT_MAX_DURATION_MIN),
             "lease": str(state.lease_path(root, task_id))},
             ensure_ascii=False, indent=2, sort_keys=True))
+        return 0
+
+    if disabled:
+        # AUTO-PAUSED 的答复是 `atlas schedule status`，OS cron 这一路不需要噪声——
+        # 只有 dry-run（诊断面）才值得把停用态说出来。
         return 0
 
     lock = state.lease_path(root, task_id)
