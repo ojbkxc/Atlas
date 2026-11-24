@@ -667,6 +667,20 @@ def explore_auto(config, goal: str, *, llm, page, trace: Path, journal,
     """
     if config.is_production:
         raise PermissionError(PRODUCTION_REFUSED)
+    # 上限参数的值域闸（2026-11-24 实测）：`--max-steps -1` 会让 `while index < -1`
+    # **一次都不跑**，report 却给出 `stopped_reason="max_steps"`——读起来像「步数用尽」，
+    # 实际是**什么都没做**；`--max-seconds -10` 同理（`clock()-t0 > -10` 恒真）。
+    # 负上限不是「更严格」，是**把功能静默关掉**，与 `--fail-under -1` 同一族。
+    # 0 也拒：explore --auto 的目标就是「走几步」，0 步等于空转，同样只会产出误导性结论。
+    if not isinstance(max_steps, int) or isinstance(max_steps, bool) or max_steps < 1:
+        raise ValueError(
+            f"--max-steps 必须是正整数（收到 {max_steps!r}）——0 或负数会让循环一次都不跑，"
+            f"却仍报 stopped_reason=max_steps（看起来像「步数用尽」，实际什么都没做）")
+    if not isinstance(max_seconds, (int, float)) or isinstance(max_seconds, bool) \
+            or not max_seconds > 0:
+        raise ValueError(
+            f"--max-seconds 必须是正数（收到 {max_seconds!r}）——0 或负数会让墙钟闸恒真、"
+            f"循环一次都不跑，却仍报 stopped_reason=max_seconds")
     trace = Path(trace)
     trace.parent.mkdir(parents=True, exist_ok=True)
     shots = Path(shots) if shots else (config.artifacts_dir / "exploration" / trace.stem)
