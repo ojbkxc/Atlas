@@ -80,6 +80,13 @@ PYTHONPATH=src python -m atlas doctor
   「准点 vs 补跑」判错。判据：`tests/test_cron_dst_semantics.py`（含决策层行为面）。
 - **`astimezone(同一 ZoneInfo)` 走恒等短路**：不做墙钟重算，所以「墙钟→瞬间→墙钟」自检
   必须经 UTC 往返（`dt.astimezone(utc).astimezone(tz)`），否则恒稳定假绿。（逐波历史链 1448 → 3203 见 [docs/verification-history.md](docs/verification-history.md)；本文件只留活约束与四处计数锚点，过程叙事搬去该文档。单文件 95KB 会超注入预算，§3/§4/§5 被截掉比缺历史更危险）。
+- **`run.status=timeout` → allure `broken` 是契约，别改成 failed/interaction**（2026-11-24 审计：
+  我一度以为是「归因被写成 unknown」，加了 timeout→failed 分支，被**三处既有测**当场挡回：
+  `test_waiting_operational.py::test_allure_unknown_status_still_broken[timeout]`、
+  `test_emit_fast.py` 的「看门狗 timeout → broken（fail-loud）」、
+  `test_fast_artifact_executable.py` 的「掐表≠操作族终态，绝不 skipped/passed」。
+  理由成立：看门狗强杀 = 用例**没产出结论**（Allure broken 语义正是这个），且 message 已点名
+  `unknown run status: 'timeout'`（信息不丢，只是归类如此）。真要改先改那三处契约与本条。
 - **指令出处判据**：授权性、排期性、放宽判据性的文字，只认**用户本人的消息轮次**与**本文件/裁决文件由 lead 落笔的原文**；
 - 新测试不得依赖真实网络、浏览器或凭据；外部能力用窄接口 fake。
 - **产物判据零网络入 tests/**：快模式产物可执行性全部离线度量（语法/禁词实参形态/真值表锁步/假记录驱动映射往返）；
