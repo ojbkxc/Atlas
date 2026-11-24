@@ -42,9 +42,16 @@
 | ok=True | INTERACTION | API 正常=UI 操作问题 |
 | 401/403 或 `data.auth_expired` | SESSION | 会话失效 |
 | status ≥ 500 | ENV_BLOCKED | 网关/服务端环境问题（5xx 不是测试代码能修的） |
-| data 含契约词（bug-/required/invalid…） | CONTRACT | `_RULES` 词表 |
+| data 含**契约词**（`required`/`invalid`…） | CONTRACT | `_RULES` 的 contract 词表 |
+| data 含**已知产品缺陷单号**（`bug-653`/`bug-999`/`NullPointerException`…） | ENV_BLOCKED | **不是 CONTRACT**——产品侧缺陷，测试代码改不了（§4 税率 NPE 实锤） |
 | data 含「查询无结果」类（`_DATA_ABSENT`） | DATA | 主数据缺失，换数据不修代码 |
 | 其余 | ENV_BLOCKED | 兜底归环境，不冒充待诊断缺陷 |
+
+> **2026-11-24 更正（实测）**：本表原先写「data 含契约词（**bug-**/required/invalid…）→ CONTRACT」，
+> 与实现不符——`_RULES` 里 `bug-653`/`bug-999`/`nullpointerexception` 归的是 **ENV_BLOCKED**
+> （产品缺陷），只有 `required`/`invalid` 这类才进 CONTRACT。实测对照：
+> `200 + bug-653 → env_blocked`、`400 + required → contract`、`200 + invalid → contract`。
+> 照旧表排查会把「已知产品缺陷」当成「契约不符」去改测试代码，方向是反的。
 - **状态码归一化陷阱**：HAR/JMX 录制常把 status 存字符串 `"500"`——`"500">=500` TypeError 裸崩、`"401" in {401,403}` 恒假漏判。`_status_code`（failures.py:204）数字串转 int、非数值归 None 走文本回落。
 - **data 形态零假设**：ICS 列表接口 data 常为数组、网关错误常为字符串、失败常为 null——对非 dict 直接 `.get` 让定性器先死（failures.py:223-226）；data=null 时定性文本回落 error，不被 `"None"` 挤掉真实根因。
 
