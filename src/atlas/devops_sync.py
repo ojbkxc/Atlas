@@ -34,6 +34,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -117,6 +118,32 @@ def config_path(root: str | Path, *, path: str | Path | None = None) -> Path:
     return Path(path) if path is not None else Path(root) / CONFIG_FILENAME
 
 
+# `devops-sync.yaml` 的**合法键**——唯一真相是 `DevopsSyncConfig` 的字段名（下方
+# `_warn_unknown_config_keys` 与 dataclass 锁步，改字段必须同步改这里；测试
+# `tests/test_devops_config_unknown_keys.py` 逐项比对两者）。
+# 为什么需要它（2026-11-24 实测）：YAML 里写错的键**被静默忽略**——我把 MCP 地址写成
+# 嵌套的 `mcp:\n  url: …`，dry-run 照常 rc 0 且 `mcp_url` 是空串，直到 `--execute`
+# 才发现「没配 MCP」。配置面静默吞键与「静默丢弃」同族：错的是人的手，痛的是后来的人。
+_CONFIG_KEYS = (
+    "system_id", "system_name", "exec_user", "testcase_directory",
+    "testplan_title_template", "org_id", "suite_directories",
+    "mcp_server", "send_midea_mkt_id",
+)
+
+
+def _warn_unknown_config_keys(data: dict, cfg_path: Path) -> None:
+    """未知键 → 一行 WARN（点名键与合法键全集），**不阻断**。
+
+    只警告不报错的理由：配置文件里常有人留自己的注释性键（`# todo: …` 之类的扩展位），
+    直接 rc 2 会把能用配置翻成错误（#115 不把正常路径翻成错误）。但静默更坏——
+    拼错的键（`mcp:` / `directory:`）会让人以为配好了。
+    """
+    unknown = sorted(str(k) for k in data if str(k) not in _CONFIG_KEYS)
+    if unknown:
+        print(f"WARN: {cfg_path} 含未知配置键 {unknown}——已被忽略；"
+              f"合法键：{list(_CONFIG_KEYS)}", file=sys.stderr)
+
+
 def load_config(root: str | Path, *, path: str | Path | None = None) -> DevopsSyncConfig:
     """读取 ``devops-sync.yaml``。
 
@@ -163,6 +190,7 @@ def load_config(root: str | Path, *, path: str | Path | None = None) -> DevopsSy
             f"配置 {cfg_path} 的 suite_directories 必须是映射（suite→目录），"
             f"实际是 {type(suite_directories).__name__}"
         )
+    _warn_unknown_config_keys(data, cfg_path)
     return DevopsSyncConfig(
         system_id=str(data["system_id"]),
         system_name=system_name,
