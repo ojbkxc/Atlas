@@ -2386,12 +2386,22 @@ def _schedule_crontab(args, task: dict, root: Path, moment, parse_expr, load_tz,
                      "否则无人值守轮次跑包内虚构知识（与 schedule add 的 WARN 同源）")
     if platform == "linux":
         # crontab 的环境比交互 shell 干净：不注入 PYTHONPATH/ATLAS_KNOWLEDGE_DIR 时 `python -m atlas`
-        # 在 src 布局起不来、私有知识也回落 builtin
+        # 在 src 布局起不来、私有知识也回落 builtin。
+        # **但只在 src 真存在时注入**（2026-11-24 dogfood）：<root> 是**用户项目根**，脚手架项目
+        # 没有 src/（`atlas init` 生成的不是 src 布局），pip 安装下 `python -m atlas` 自足——
+        # 无条件写一个不存在的目录，等于给用户的成品行里塞假路径（他会以为必须建 src，
+        # 或不敢粘贴）。
+        src_dir = root / "src"
+        env_prefix = (f'PYTHONPATH={src_dir.as_posix()} ' if src_dir.is_dir() else "")
         line = (f'{expr} cd {root.as_posix()} && ATLAS_KNOWLEDGE_DIR="{kb_value}" '
-                f'PYTHONPATH={(root / "src").as_posix()} '
-                f'{python} -m atlas schedule run {task_id} >> {log_path.as_posix()} 2>&1')
+                f'{env_prefix}{python} -m atlas schedule run {task_id} '
+                f'>> {log_path.as_posix()} 2>&1')
         notes.append("Linux：expr 已逐字复制（窗外不补发；窗外错过由窗内下一 tick 以 catch-up 补最近一轮）")
         notes.append("Linux：cronie 按本机墙钟调起，不解析任务里的 tz——tz 只用于 Atlas 侧窗口/水位线判定")
+        if not src_dir.is_dir():
+            notes.append("Linux：本机项目根无 src/（pip 安装布局）——成品行未注入 PYTHONPATH，"
+                         "`python -m atlas` 由已装包解析；若你确实用源码树跑，请自行加 "
+                         "PYTHONPATH=<Atlas 源码根>/src")
     else:
         gap = min_gap_minutes(spec, tz, moment)
         if gap is None:
@@ -2403,14 +2413,16 @@ def _schedule_crontab(args, task: dict, root: Path, moment, parse_expr, load_tz,
         if mo > 1439:
             raise ValueError(f"最小间隔 {mo} 分钟超出 schtasks /SC MINUTE 上限 1439——"
                              "请用 /SC DAILY/WEEKLY/MONTHLY 手工建任务（Atlas 不猜别的 /SC 形态）")
-        src_path = str(root / "src")
+        src_dir = root / "src"
         kb_native = str(kb_root) if kb_root is not None else _KB_PLACEHOLDER
         # /TR 外层已有一对引号，内层 `set "K=V"` 的引号必须转义成 \" ——否则 schtasks 收到的
         # /TR 在第一个内层引号处截断（Microsoft 文档示例同款写法）。
         inner = '\\"'
+        # 同上：src 不存在时不注入假路径（脚手架/pip 布局）。
+        py_part = (f'set {inner}PYTHONPATH={str(src_dir)}{inner} && '
+                   if src_dir.is_dir() else "")
         tr = (f'cmd /c cd /d {str(root)} && set {inner}ATLAS_KNOWLEDGE_DIR={kb_native}{inner} && '
-              f'set {inner}PYTHONPATH={src_path}{inner} && '
-              f'{python} -m atlas schedule run {task_id}')
+              f'{py_part}{python} -m atlas schedule run {task_id}')
         line = f'schtasks /Create /SC MINUTE /MO {mo} /TN atlas-{task_id} /TR "{tr}"'
         notes.append(f"Windows：每 {mo} 分钟 tick（窗外也 tick，错过的以 catch-up 补最近一轮——与 Linux 形态有意不同）")
         notes.append("Windows：/TR 引号形态须真实 schtasks 冒烟一次（design_c1 §10 未验证项）；"
