@@ -35,7 +35,7 @@ import pathlib
 import re
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
-DOC = REPO_ROOT / "Claude.md"
+DOC = REPO_ROOT / "CLAUDE.md"
 SRC = REPO_ROOT / "src" / "atlas"
 
 
