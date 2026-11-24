@@ -313,14 +313,26 @@ def resolve_mcp_url(
 # ══════════════════════════════════════════════════════════════════════════
 
 def repair_mojibake(text: str) -> str:
-    """SSE 返回的 UTF-8 常被当作 Latin-1，需 ``encode('latin-1').decode('utf-8')`` 修复。
+    """SSE 返回的 UTF-8 常被当作单字节编码解码，需 ``encode(<单字节>).decode('utf-8')`` 修复。
 
-    已正确的中文串（含 >255 码位）``encode('latin-1')`` 必失败 → 原样返回，不会二次损坏。
+    两级口径（2026-11-24 补第二级）：先按 `latin-1`（原实现，无行为变化）；**编码失败**时才试
+    `cp1252`。为什么需要第二级：Windows 侧把 UTF-8 字节按 cp1252 解出的形态里，0x80–0x9F
+    区间被映射到 `‹`(U+2039)/`•`(U+2022)/`”`(U+201D) 这类 **>0xFF** 的码位——`latin-1`
+    `encode` 必失败，旧实现于是**原样返回乱码**，标题/步骤名就这么带着乱码进了 DevOps
+    （静默写坏数据，与「静默丢弃」同族：不报错、只是内容是错的）。
+
+    安全性由「双向失败即原文」兜住，实测（`tests/test_devops_sync.py` 钉住）：
+    - 正常中文/emoji：`latin-1` 与 `cp1252` 都编码失败 → 原文；
+    - 合法西欧文本（`München`/`naïve`）：`latin-1` 可编码但 utf-8 解码失败，
+      `cp1252` 亦然 → 原文（**不会二次损坏**）；
+    - 纯 ASCII：两条路径都往返恒等。
     """
-    try:
-        return text.encode("latin-1").decode("utf-8")
-    except (UnicodeEncodeError, UnicodeDecodeError):
-        return text
+    for encoding in ("latin-1", "cp1252"):
+        try:
+            return text.encode(encoding).decode("utf-8")
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            continue
+    return text
 
 
 def _content_text(data: dict) -> tuple[bool, str]:
