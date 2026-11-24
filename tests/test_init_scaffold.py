@@ -173,6 +173,14 @@ def test_allure_e2e_offline(tmp_path, capsys):
 
     # 跑 pytest -q（产 runs.jsonl）
     import subprocess, sys, os
+    # 骨架的 tests/ 是**独立项目**（pyproject 里 `atlas-test-platform @ file://…`），子进程
+    # 靠 site-packages 里已装的 atlas；本机若没装（或 editable 指向别的 clone），失败形态
+    # 与浏览器崩溃同属**环境限制**，按 autonomous-execution 纪律 skip 并说清（不伪装通过）。
+    # 注意：这里只放行「本机没装/装歪」，不掩盖 rc≠0 的真实失败（下面仍 assert False）。
+    import importlib.util
+    spec = importlib.util.find_spec("atlas")
+    if spec is None:
+        pytest.skip("本机未安装 atlas（骨架子进程需要它）；CI 走 `pip install -e .` 后不触发")
     proc = subprocess.run([sys.executable, "-m", "pytest", "-q"],
                           cwd=str(proj), capture_output=True, text=True,
                           env={**os.environ, "PYTHONPATH": str(proj)})
