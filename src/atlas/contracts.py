@@ -10,9 +10,9 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
-import json
 from typing import Any
 
+from .atomic_io import read_json_file
 from .failures import ContractViolation
 
 LEVELS = {"minimal": 0, "high": 1, "core": 2}
@@ -144,7 +144,11 @@ class ContractRegistry:
         # (JSONDecodeError, UnicodeDecodeError) 里，直接顶掉整条契约链（连包内回退都没走到），
         # 断言层整体死亡。统一转成可定位 ValueError：plugin 侧据此回退或点名，与 #73 损坏
         # 降级策略同口径。
-        raw = json.loads(Path(path).read_text(encoding="utf-8"))
+        # BOM 安全读（单点 `atomic_io.read_json_file`）。此前裸 utf-8：BOM 是合法 UTF-8，
+        # 解码不报错但把 `\ufeff` 带进文本 → `json.loads` 招 `JSONDecodeError`。该异常在
+        # DemoPlugin.contracts 捕获的 (JSONDecodeError, UnicodeDecodeError) **之内**，
+        # 所以整条契约链连同包内回退一起 degrade——一份带 BOM 的私有契约就让它退回虚构默认。
+        raw = read_json_file(path)
         if not isinstance(raw, dict):
             raise ValueError(f"契约文件 {path.name} 顶层必须是映射（含 contracts 列表），"
                              f"收到 {type(raw).__name__}")

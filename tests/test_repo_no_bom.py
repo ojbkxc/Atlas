@@ -67,13 +67,88 @@ def test_repo_text_files_have_no_bom():
         "写侧缺陷；write_text(encoding='utf-8') 不会产 BOM）：\n" + "\n".join(found))
 
 
-def test_source_never_writes_bom_encoding():
-    offenders = []
+def _call_args(text: str, open_paren: int) -> str:
+    """从 `(` 后一个字符开始，返回该调用的参数串（到配对 `)` 前为止）。"""
+    depth = 1
+    i = open_paren
+    while i < len(text) and depth:
+        if text[i] == "(":
+            depth += 1
+        elif text[i] == ")":
+            depth -= 1
+        i += 1
+    return text[open_paren:i - 1]
+
+
+def _open_mode(args: str) -> str:
+    """从 `open(...)` 的参数串里认出 mode（缺省 'r'）。"""
+    m = re.search(r"\bmode\s*=\s*['\"]([^'\"]*)['\"]", args)
+    if m:
+        return m.group(1)
+    # 位置参数里的 mode 字面量：`open(p, "a", encoding=…)`——跳过第一个路径参数
+    for lit in re.finditer(r"['\"]([^'\"]*)['\"]", args):
+        val = lit.group(1)
+        if val and set(val) <= set("rwaxbt+U"):
+            return val
+    return "r"
+
+
+def _bom_write_offenders() -> list[str]:
+    """源码里**写侧**用 `utf-8-sig` 的位置。
+
+    **形态区分是必然的，不是放宽**（与同文件 `test_source_avoids_utf16_writes` 同一口径）：
+    本波给 JSON 读侧加 BOM 安全必需 `open(path, "r", encoding="utf-8-sig")`，它是**读**——
+    写成写侧缺陷会让守卫禁掉正确的修法，反过来逼人放弃 BOM 安全。缺陷的定义始终是
+    「用 utf-8-sig **写**」（会产 BOM），读侧本就是为兼容别人写的 BOM。
+
+    因此按**调用形态**判：`write_text`/`write_bytes` 命中即违规；`open(...)` 还必须
+    mode 含 `w`/`a`/`x`/`+` 才算。
+    """
+    offenders: list[str] = []
     for path in _code_sources():
         text = path.read_text(encoding="utf-8")
-        for m in re.finditer(r'(write_text|write_bytes|open)\((?:(?!\)).)*encoding\s*=\s*"utf-8-sig"', text):
-            offenders.append(f"{path.relative_to(_REPO)}: BOM 写入")
-    assert not offenders, "\n".join(offenders)
+        for m in re.finditer(r"\b(write_text|write_bytes|open)\s*\(", text):
+            name = m.group(1)
+            args = _call_args(text, m.end())
+            if not re.search(r'encoding\s*=\s*["\']utf-8-sig["\']', args):
+                continue
+            if name == "open" and not set(_open_mode(args)) & set("wax+"):
+                continue          # 读模式的 open：BOM 兼容正是它该做的事
+            line = text.count("\n", 0, m.start()) + 1
+            offenders.append(f"{path.relative_to(_REPO)}:{line}: {name}(…utf-8-sig…) 写侧")
+    return offenders
+
+
+def test_source_never_writes_bom_encoding():
+    offenders = _bom_write_offenders()
+    assert not offenders, "写侧用 utf-8-sig（会产 BOM，交给别人的产物不该带）：\n" + "\n".join(offenders)
+
+
+def test_bom_write_guard_still_catches_writes():
+    """守卫**自证**：形态区分不能变成「啥也不拦」——真写样本必须被抓。
+
+    前一条钉「现有源码无违规」，这条钉「判据本身有牙齿」。两者缺一：只靠前者，
+    把 `_open_mode` 改成恒返 'r' 也能全绿（恒绿守卫比没守卫更坏）。
+    """
+    assert _bom_write_offenders() == []
+    # 直接验判据函数：三个写形态都要点名，两个合法读形态都要放行
+    cases = {
+        'p.write_text(d, encoding="utf-8-sig")': True,
+        'p.write_bytes(d) if False else open(p, "a", encoding="utf-8-sig")': True,
+        'open(p, mode="x", encoding="utf-8-sig")': True,
+        'open(p, "r", encoding="utf-8-sig")': False,
+        'p.read_text(encoding="utf-8-sig")': False,
+    }
+    for snippet, should_flag in cases.items():
+        flagged = False
+        for m in re.finditer(r"\b(write_text|write_bytes|open)\s*\(", snippet):
+            name, args = m.group(1), _call_args(snippet, m.end())
+            if not re.search(r'encoding\s*=\s*["\']utf-8-sig["\']', args):
+                continue
+            if name == "open" and not set(_open_mode(args)) & set("wax+"):
+                continue
+            flagged = True
+        assert flagged is should_flag, f"形态判据错：{snippet!r} 期望命中={should_flag}"
 
 
 def test_source_avoids_utf16_writes():

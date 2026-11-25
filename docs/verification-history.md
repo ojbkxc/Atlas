@@ -611,3 +611,171 @@
   且断言行随之改形；再 `atlas export-pytest` 该 flow → 产物**零 TODO**、两步各有 `assert result.ok`。
   变异实证：pages 那处改回 `{notes}` → ①②精确红（两种形态都现形：`\s` 非法转义、尾反斜杠
   逃逸闭合引号）；compat 的 `flow_id` 未转义 → 源码面守卫当场点名 `emit_compat.py:839`。
+
+## 3240 → 3257（2026-11-24，JSON 对象读侧 BOM 单点）
+
+**触发**：`overlay` 读 BU 坐标 JSON 用 `read_text(encoding="utf-8")`，Windows 上 PowerShell /
+记事本写出的带 BOM 文件直接 `Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)` → rc 2。
+与 3159 已修的 JSONL 读侧 BOM 同一现实，但 **JSON 对象这条读路径整条被漏掉**。
+
+**根因（比缺陷本身重要）**：BOM 是**合法 UTF-8 字节**（`EF BB BF`），裸 `encoding="utf-8"`
+读它**不抛** `UnicodeDecodeError`，只是把 `\ufeff` 留在文本首字符，然后 `json.loads` 才抛
+`JSONDecodeError`。这一层之隔让所有「我兜了 `UnicodeDecodeError`」的写法**一行都没拦到**——
+看起来处理了 BOM，实际兜底分支永不触发。这也是为什么逐点排查容易漏：崩的地方和声明兜底的地方不是同一处。
+
+**全仓实际 12 处（不是 8 处）**，后果分两族：
+
+| 族 | 站点 | BOM 下行为 |
+|---|---|---|
+| 裸崩 | `overlay.load_overlays` / `contracts.ContractRegistry.load` / `review_code.load_config` / `plugins/demo/creators.build_payload` | rc 2；契约链被 `JSONDecodeError` 顶掉，包内回退都走不到 |
+| **静默降级** | `knowledge._read_mapping` → `None` / `ui_family.load_family_table` → `{}` / `allure_analysis` result → `skipped += 1` / `scheduling.lease.read_lock` → `None` / `devops_sync.load_mcp_servers` → `DevopsSyncError` / `legacy_fast.load_site_rules` → `[]` + 一行 WARN / `boundaries.load_ledger` / `scheduling.state` 台账 / `devops_sync` allure 结果 | 报告照常产出、退出码正常，只有结论悄悄变错 |
+
+第二族才是重点：`read_lock` 返回 `None` 的语义是**「视同无锁」**——一个带 BOM 的锁文件
+**反而把并发闸关掉了**（没锁文件时调用方还会报，有 BOM 锁文件时静默当无锁）。
+`knowledge`/`ui_family` 同形态：知识命中凭空变少、族表静默换成内置副本，没有任何报错。
+与 `--fail-under -1`（评分 0 也 rc 0）、`--max-steps -1`（零迭代却报「步数用尽」）同一族：
+**输入没校验，功能静默失效**。
+
+**修法**：判据单点 `atomic_io.read_json_file(path)`（= `read_text_retry` + `utf-8-sig` + `json.loads`）。
+与 JSONL 侧 `read_jsonl_text` 同取向，但**刻意不做** `errors="replace"` 回落：JSONL 一行坏字节
+只毁一行且损失可见（残行跳过并计数）；JSON **对象**用 replace 会让坏字节变成合法 `U+FFFD`
+并照样通过 `json.loads`，于是错误数据被当正确配置消费——JSON 是契约文件，必须精确或大声失败。
+`legacy_fast.py` 例外：它明确禁用相对 import（无包上下文 standalone 加载），内联同口径 `utf-8-sig`。
+顺带把 `explore.compile_trace` / `probes` 两处 JSONL 裸读收回 `read_jsonl_text`（消除重复 try/except）；
+`generator/emit_compat` 的 `_load_plan_ctx` 产物字面量同改 `utf-8-sig`（否则生成出去的包同缺陷）。
+
+**守卫**：`tests/test_json_bom_read_sites.py` 17 条——单点正向吃 BOM / 坏字节**必须抛**（正向对照，
+不许 replace 混过）/ 12 个加载器逐个喂**真 BOM 文件**并断言解析结果等值（不是「不抛就算过」）/
+源码面零裸写法 `json.loads(...read_text(encoding="utf-8"))` / 正则**自证**（拿已知坏样本喂正则必须命中，
+防「正则改坏 = 全仓恒绿」）。全部 17 条在改动前均红（overlay 崩溃、knowledge 返回 None、read_lock 返回 None…）。
+
+**顺带修两条既有守卫的缺陷**（都不放宽判据）：
+1. `tests/test_repo_no_bom.py::test_source_never_writes_bom_encoding`——其正则把
+   `open(p, "r", encoding="utf-8-sig")` 的**读**判成写侧违规（该测 docstring 自己写着「读侧允许」），
+   会禁掉正确的修法。改为按**调用形态**判（`write_text`/`write_bytes` 命中即违规；`open` 还须
+   mode 含 `w`/`a`/`x`/`+`），与同文件 `test_source_avoids_utf16_writes` 的既有口径一致，
+   并新增 `test_bom_write_guard_still_catches_writes` 做**判据自证**（三写形态必抓、两读形态必放）。
+2. `tests/test_doc_verification_count.py::test_collect_count_matches_declared_when_repo_is_clean`——
+   原判据 `collected == declared` 只在「仓内零 skip」时成立。本机装有 allure 后，
+   `test_gen.py` 的「无 allure 形态」用例因**环境无法构造**而条件跳过（有 allure 就构造不出没 allure），
+   于是 `collected = passed + skipped` 恒差 1，旧写法会把一个**环境事实**报成「加了测试没落数」。
+   改为同类比同类：`passed == declared`（skip 数写进失败消息）。判据强度未降——仍然秒级
+   `--collect-only`，仍然把「新增用例没改文档」变成红。
+
+**验证**：`PYTHONPATH=src python -m pytest -q` → **3257 passed / 0 failed / 1 skipped**
+（`--collect-only` 3258）。1 skipped 即上述 `test_gen.py` 的条件跳过（本机装 allure；CI 无 allure 会实跑）。
+新增 18 条测试、净 passed +17，差值正是那条从「跑」转「跳过」的既有用例。
+
+## 3257 → 3280（2026-11-25，同族缺陷根治续波）
+
+本波由团队并行推进（auditor 出清单 / implementer 落地 / lead 收口），主题是**把上一波的
+「输入未校验 → 功能静默失效」族扫干净**，而不是再修单个点。
+
+### ① BOM 单点的漏点：`cli.py` 两处 JSONL 读侧
+
+上一波把「读 JSON **对象**文件」收敛到 `atomic_io.read_json_file`，但 **JSONL 读侧**还有两处
+裸 `utf-8` 漏在 `cli.py` 里：
+
+| 站点 | 读什么 | BOM 下后果 |
+|---|---|---|
+| `_recycle`（`cli.py:1505`） | 回收清单 `recycle_list.jsonl` | 首行 `\ufeff{...}` 解析失败 → `skipped += 1` → **一条已真实产生的单号从清单里消失**，rc 仍 0 |
+| `_review --apply`（`cli.py:1640`） | 审批决策文件 | 首行落 `broken` 分支 → **一条已批准的决策凭空变成「格式错误」** |
+
+**为什么之前没被发现**：守卫 `tests/test_jsonl_bom_first_row.py::test_jsonl_readers_use_single_point`
+是**白名单式**的——只核 5 个具名文件（experience/review/reporting/review_code/scheduling.state）。
+新增读侧不会自己进名单，这是白名单守卫的**结构性**缺陷，不是某次疏忽。
+
+**修法**：两处改走 `read_jsonl_text`（`utf-8-sig` + 锁重试 + 坏字节 replace 回落）。
+**补扫描式守卫**：`tests/test_json_bom_read_sites.py::test_jsonl_readers_go_through_single_point`
+按**形态**认而不是按文件名认——`_JSONL_SHAPE` = 「`read_text(encoding="utf-8")` 之后不远处
+出现 `json.loads(line)`」。配自证测（坏形态必命中、正形态必放行）与 `_recycle` 的 BOM 行为测
+（断言输出里真有那条单号，不是「不抛异常」）+ 坏字节正向对照（合法行不被连带丢掉）。
+
+变异实证：把 `_recycle` 还原成裸 `utf-8` → 守卫精确点名 `src/atlas/cli.py:1505`；恢复后 21 绿。
+
+### ② `scaffold.py` 的 TOML 读侧 BOM
+
+`detect_atlas_source_root()`（`scaffold.py:56`）靠 `pyproject.toml` 的 `project.name` 判断
+「这个目录是不是 Atlas 源码根」，读法 `tomllib.loads(read_text(encoding="utf-8"))`：
+
+```
+>>> tomllib.loads('\ufeff[project]\nname="x"\n')
+TOMLDecodeError: Invalid statement (at line 1, column 1)
+```
+
+后果链是**静默降级**，不是崩：
+
+```
+pyproject.toml 带 BOM → tomllib 抛 → except Exception: continue（吞掉）
+  → detect_atlas_source_root() 返回 None
+  → atlas init 不把依赖钉成 atlas-test-platform @ file:///...
+  → 生成的骨架 pip install -e . 装不上
+  → README「拿到先跑这三步」第 3 步失效，全程 rc 0 零报错
+```
+
+**修法**：`read_text_retry(candidate, encoding="utf-8-sig")`。**保留** `except Exception: continue`
+——坏 pyproject 确实不是「Atlas 根」的证据，这个兜底是对的；要修的是编码，不是吞异常。
+改错方向会把静默降级变成裸崩。
+
+**对照排除**：YAML 侧**不是**缺陷，PyYAML 自己吃 BOM（实测 `yaml.safe_load('\ufeffa: 1')`
+→ `{'a': 1}`），所以 `state_machine.py:151` / `dsl.py:274` / `generator/__init__.py:99` /
+`devops_sync.py:877` 四处有意不动。
+
+守卫 3 条（`tests/test_init_scaffold.py`）：BOM 正向（断言返回 `tmp_path` 本身，不是「不抛」）/
+非 Atlas 名反向对照（防把闸收成「找到 pyproject 就算」）/ BOM + 坏 TOML 仍不算证据。
+
+### ③ 参数值域闸三处
+
+| 站点 | 缺陷 | 危害 |
+|---|---|---|
+| `autopilot._validate_wait` | `min_rows: -1` → `count >= -1` 第一拍恒真，「等表格就绪」变「立刻就当它好了」；`timeout_ms: 0` 被 `int(x or 10000)` 的 `or` 当空值静默换成 10000 | 假绿 / 静默改语义 |
+| `review_code._validate_weights` | 负权重让「该维度缺陷越多 → 维度分越低 → ×负权重 → 总分越高」，评分方向整个反转 | 假绿（越糟越容易过闸） |
+| `review_code._validate_severity_deductions` | 负扣分 = 缺陷变加分（实测一条 high 让该维度 130 分、总分 106、grade A）；非映射原来被 `if isinstance(sd, dict)` **静默整块跳过**（用户以为改过扣分，一个键都没生效） | 假绿 / 静默降级 |
+
+三处均按已修先例的形态：入口校验、`ValueError`/`ActionRejected` 点名原值与后果、
+测试四件套（负例 / 零例 / bool 混入 / 正向对照）。`test_review_code_config_ranges` 9 条 +
+`test_autopilot_wait_range` 7 条。
+
+### ④ 顺带修 `CLAUDE.md` 自身一处拼接损坏
+
+上一波脚本替换把链尾写成 `3183 上一收口位 + 33183 上一收口位 + 3`（重复拼接）。
+已修为 `3240 上一收口位 + 17（同波）；3183 上一收口位 + 3`。
+
+### ⑤ 如实留白
+
+`reports/parameter-audit-2026-11-24.md` 另登记 9 条**未修**，按危害排序：
+
+- **A-01（假绿，最该修）**：`review_code.py` 的 `avg_score = round(total/len)` 之后才比阈值
+  ——真均值 79.6 显示 80 → `80 < 80` 为假 → `--fail-under 80` 放行。`round` 方向恒定有利，
+  属判据本身放宽。
+- **A-02（假绿）**：`--review-mode knowledge` 下 `except Exception: registry = None` 无 WARN
+  无标记，选择器核对整段不执行（三处以 `registry is not None` 为闸），报告仍自称 `mode: knowledge`。
+- **B-01**：`--baseline` 读失败 `except OSError: pass` → 差分 finding 全丢且 `baseline_notes` 为空。
+- A-03 `--create-quota -1` 绕过 `CreateQuota.__init__` 的值域闸，输入错误被伪装成
+  `EnvBlocked`（OPERATIONAL 族，不进 failed 分布）；A-04 `llm.complete(max_tokens=0)` 被
+  `if max_tokens:` 静默丢弃；A-05 `explore_auto(max_failures=0)` 无闸；A-06 `ATLAS_HEADED`
+  绕过 `_flag_env` 单点；A-07 `state_machine.run(max_steps=0)` 消息指向「循环/守卫恒假」；
+  A-08 `review_code(fail_under=)` 值域闸只在 CLI 面，API 直调 `-1` 门禁永不生效。
+
+### 验证
+
+```
+PYTHONPATH=src python -m pytest -q                → 3280 passed / 0 failed / 1 skipped
+PYTHONPATH=src python -m pytest -q --collect-only → 3281 collected
+PYTHONPATH=src python -m compileall -q src        → rc 0
+PYTHONPATH=src python -m atlas doctor             → 正常
+```
+
+增量构成（3257 → 3280 = **+23**，逐文件核过、非凑数）：
+`test_autopilot_wait_range.py` +7、`test_review_code_config_ranges.py` +9、
+`test_json_bom_read_sites.py` 17→21（+4：扫描守卫/自证/两条 `_recycle` 行为测）、
+`test_init_scaffold.py` +3。1 skipped 仍是 `test_gen.py` 的「无 allure 形态」条件跳过。
+
+**两条被改的既有守卫均做过变异实证，未触犯「为变绿放宽断言」红线**：
+
+- `test_repo_no_bom.py::test_source_never_writes_bom_encoding`（改为按调用形态判读写）：
+  植入 `open(p,"w",encoding="utf-8-sig")` 写样本 → 精确点名 `_tmp_mutation_probe.py:2`，
+  同文件的读样本 `open(p,"r",encoding="utf-8-sig")` **未被点名**（mode 判据有效）；删除后 5 绿。
+- `test_doc_verification_count.py::test_collect_count_matches_declared_when_repo_is_clean`
+  （改为 `collected - conditional_skips == declared`）：把 AGENTS 基线改成 3256 → 该测与
+  `test_declared_test_counts_agree_across_all_sites` **同时精确红**；还原后绿。

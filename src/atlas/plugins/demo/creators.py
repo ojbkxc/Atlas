@@ -9,12 +9,16 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from ...atomic_io import read_json_file
+
 AUTO_TAG = "非人工创建"
 SAVE_PATH = "/web/demo-sales/saleOrder/saveSalesOrder"
 
 
 def build_payload(template_path: Path, where: dict) -> dict:
-    payload = json.loads(Path(template_path).read_text(encoding="utf-8"))
+    # BOM 安全读（单点 `atomic_io.read_json_file`）：建单模板是人手/脚本产出的资产，
+    # 带 BOM 时裸 utf-8 会让 `json.loads` 招 Unexpected UTF-8 BOM，建单链直接死。
+    payload = read_json_file(template_path)
     order = payload["saleOrder"]
     remark = str(where.get("remark") or "API建单验证")
     if AUTO_TAG not in remark:

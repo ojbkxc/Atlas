@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 from .config import AtlasConfig, PROD_WRITE_WARNING
 from . import delivery
-from .atomic_io import atomic_write_text
+from .atomic_io import atomic_write_text, read_jsonl_text
 from .failures import EnvBlocked
 
 @dataclass
@@ -110,11 +110,9 @@ class CreateQuota:
             # #132：与 reporting/#112 同防线——上次运行中断可把尾行腰斩在多字节字符上，
             # 旧 read_text 裸 UnicodeDecodeError：读崩=合并写回不执行，**本次新造的
             # 单号随崩溃一起丢**（#86 回收闭环被一条历史坏字节掏空，比列不出更糟——
-            # 单据已真实产生却再无人知道单号）。replace 读入，残行落既有跳过分支。
-            try:
-                raw = path.read_text(encoding="utf-8")
-            except UnicodeDecodeError:
-                raw = path.read_text(encoding="utf-8", errors="replace")
+            # 单据已真实产生却再无人知道单号）。现走单点 `read_jsonl_text`：
+            # `utf-8-sig`（BOM 不会让首条记录变残行）+ 锁重试 + 坏字节 replace 回落。
+            raw = read_jsonl_text(path)
             for line in raw.splitlines():
                 line = line.strip()
                 if not line:

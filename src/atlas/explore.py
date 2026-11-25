@@ -44,7 +44,7 @@ import sys
 import time
 from pathlib import Path
 
-from .atomic_io import append_text_locked
+from .atomic_io import append_text_locked, read_jsonl_text
 from .credential_gate import sanitize_url
 
 # 可操作元素才值得成为选择器候选：其余（generic/text/grid）噪声大
@@ -244,13 +244,10 @@ def compile_trace(trace_path: Path, journal) -> dict:
     summary = {"checkpoints": 0, "steps": 0, "selector_candidates": 0, "malformed_lines": 0}
     # #109：交互会话 Ctrl-C 可把最后一行多字节字符腰斩在字节上（非法 UTF-8 尾序列）——
     # 旧实现 read_text 裸 UnicodeDecodeError 顶掉整份编译，#68 的逐行容错一行没轮到。
-    # 先按严格 UTF-8 读保真；撞坏字节回落 errors="replace"：残尾行替换字符下必然 JSON 失败，
-    # 自然落进 malformed_lines 计数，前面的合法 checkpoint 照常编译。
+    # 现走单点 `read_jsonl_text`：`utf-8-sig`（BOM 不会把首行变成残行）+ 锁重试 + 坏字节 replace 回落。
+    # 此前裸 utf-8 时，带 BOM 的 journal 首行被当成坏 JSON 计入 malformed_lines——**静默少一个 checkpoint**。
     path = Path(trace_path)
-    try:
-        raw = path.read_text(encoding="utf-8")
-    except UnicodeDecodeError:
-        raw = path.read_text(encoding="utf-8", errors="replace")
+    raw = read_jsonl_text(path)
     for line in raw.splitlines():
         if not line.strip():
             continue

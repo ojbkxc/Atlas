@@ -261,6 +261,54 @@ def test_detect_atlas_source_root_synthetic(tmp_path):
     assert detect_atlas_source_root(marker) is None
 
 
+def _write_bom_pyproject(path: Path, name: str) -> None:
+    """写带 BOM 的 pyproject.toml；**先断言 BOM 真的在盘上**，否则测试是空转
+    （记事本/PS5.1 的「UTF-8 with BOM」正是本缺陷的触发形态，2026-11-24 实测）。"""
+    path.write_bytes(b"\xef\xbb\xbf" + f'[project]\nname = "{name}"\n'.encode("utf-8"))
+    assert path.read_bytes()[:3] == b"\xef\xbb\xbf"
+
+
+def test_detect_atlas_root_accepts_bom_pyproject(tmp_path):
+    """带 BOM 的 pyproject.toml 仍是「这是 Atlas 源码根」的有效证据。
+
+    改前：BOM 是合法 UTF-8 → 裸 utf-8 不报解码错 → `tomllib` 才抛 → 被
+    `except Exception: continue` 吞成「不是 Atlas 根」→ 返回 None → `atlas init`
+    不钉 file:// 依赖、骨架 `pip install -e .` 装不上，**全程零报错**。
+    断言是**返回值**（正向），不是「不抛异常」——后者在吞异常的旧实现里恒绿。
+    """
+    from atlas.scaffold import detect_atlas_source_root
+    src = tmp_path / "src"
+    (src / "atlas").mkdir(parents=True)
+    marker = src / "atlas" / "__init__.py"
+    marker.write_text("", encoding="utf-8")
+    _write_bom_pyproject(tmp_path / "pyproject.toml", "atlas-test-platform")
+    assert detect_atlas_source_root(marker) == tmp_path.resolve()
+
+
+def test_detect_atlas_root_rejects_non_atlas_bom_pyproject(tmp_path):
+    """正向对照：吃 BOM 不等于放宽闸门——名字不是本分发的 BOM pyproject 仍返回 None。"""
+    from atlas.scaffold import detect_atlas_source_root
+    src = tmp_path / "src"
+    (src / "atlas").mkdir(parents=True)
+    marker = src / "atlas" / "__init__.py"
+    marker.write_text("", encoding="utf-8")
+    _write_bom_pyproject(tmp_path / "pyproject.toml", "some-other-pkg")
+    assert detect_atlas_source_root(marker) is None
+
+
+def test_detect_atlas_root_bom_broken_toml_still_not_evidence(tmp_path):
+    """保留「坏 pyproject 不是证据」的既有语义：BOM + 非 TOML 仍返回 None，不裸崩。"""
+    from atlas.scaffold import detect_atlas_source_root
+    src = tmp_path / "src"
+    (src / "atlas").mkdir(parents=True)
+    marker = src / "atlas" / "__init__.py"
+    marker.write_text("", encoding="utf-8")
+    bad = tmp_path / "pyproject.toml"
+    bad.write_bytes(b"\xef\xbb\xbf" + "this is not toml [".encode("utf-8"))
+    assert bad.read_bytes()[:3] == b"\xef\xbb\xbf"
+    assert detect_atlas_source_root(marker) is None
+
+
 def test_default_init_pins_detected_source(tmp_path, capsys):
     """默认 `atlas init`（不带 --atlas-path）应把探测到的源码根钉成 file:// 依赖；
     探测不到时如实回落为索引名 + mode=index（由 CLI 打 WARN）。"""

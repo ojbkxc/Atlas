@@ -541,7 +541,7 @@ def render_compat_conftest(steps: list, flow_id: str) -> str:
         "def _load_plan_ctx():",
         "    if _PLAN_CTX_FILE.exists():",
         "        try:",
-        '            return json.loads(_PLAN_CTX_FILE.read_text(encoding="utf-8"))',
+        '            return json.loads(_PLAN_CTX_FILE.read_text(encoding="utf-8-sig"))',
         "        except Exception:",
         "            return {}",
         "    return {}",

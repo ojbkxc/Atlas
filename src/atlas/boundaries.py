@@ -19,6 +19,8 @@ from datetime import datetime
 from fnmatch import fnmatchcase
 from pathlib import Path, PurePosixPath
 
+from .atomic_io import read_json_text
+
 SCHEMA_VERSION = 1
 LEDGER_REL_PATH = "docs/ownership/atlas-boundaries.json"
 
@@ -55,9 +57,13 @@ def load_ledger(path: Path) -> tuple[dict, list[str]]:
     if not path.is_file():
         return {}, [f"账本文件缺失: {LEDGER_REL_PATH}（期望 {path}）"]
     try:
-        raw = path.read_text(encoding="utf-8")
+        # BOM 安全（单点口径 `utf-8-sig`）：账本是边界拒绝的**唯一依据**，带 BOM 时
+        # 裸 utf-8 会把 `\ufeff` 留在文本首 → JSON 解析失败 → 整份账本变成「不可用」，
+        # 边界判定随之失效。
+        raw = read_json_text(path)
     except UnicodeDecodeError:
-        raw = path.read_text(encoding="utf-8", errors="replace")  # 腰斩尾行：坏字节进 JSON 必败，点名不崩
+        # 腰斩尾行：坏字节进 JSON 必败，点名不崩（保留既有 replace 宽容，只换编码口径）
+        raw = path.read_text(encoding="utf-8-sig", errors="replace")
     except OSError as exc:
         return {}, [f"账本不可读: {exc}"]
     try:

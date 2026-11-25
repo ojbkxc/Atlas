@@ -10,6 +10,7 @@ from pathlib import Path
 
 import yaml
 from . import __version__, boundaries, ui_family, versioning
+from .atomic_io import read_jsonl_text
 from .knowledge import platform_checklist as knowledge_platform_checklist
 from .cli_render import (contracts_text, contracts_validate_text, doctor_text,
                          dump_json, dump_line, library_text, review_stats_text,
@@ -1497,10 +1498,11 @@ def _recycle(args, config) -> int:
     skipped = 0
     # #132：尾行腰斩坏字节时整读崩——一条写坏的历史记录让人连要回收的单都列不出，
     # 且违反本函数自己的残行计数口径（#71）与 CLI 友好报错纪律（#79/#80）。
-    try:
-        raw = path.read_text(encoding="utf-8")
-    except UnicodeDecodeError:
-        raw = path.read_text(encoding="utf-8", errors="replace")
+    # 编码口径走单点 `read_jsonl_text`（`utf-8-sig`）：BOM 是合法 UTF-8，裸 `utf-8` 读它
+    # 不抛 UnicodeDecodeError，而是让首行变成 `\ufeff{...}` → JSON 解析失败 → 被下面
+    # `skipped += 1` **静默吞掉**：一条已造出的单号从此不在回收清单里（单据真实存在，
+    # 但再没人知道它）。与已修的五个 JSONL 读点同族。
+    raw = read_jsonl_text(path)
     for line in raw.splitlines():
         line = line.strip()
         if not line:
@@ -1634,12 +1636,10 @@ def _review(args, config, plugin) -> int:
         # `read_text(encoding="utf-8")` 整读在腰斩多字节尾行抛 UnicodeDecodeError——
         # 探针实锤裸 traceback 顶掉 CLI rc2 口径，且**崩在逐行之前，一条合法决策都没落**
         # （半途崩：首行本该已批准的事实因读崩变成全批没发生，审核者无从知道塔动了没有）。
-        # 先严格读保真、撞坏字节回落 replace：残行 JSON 必败自然落既有 malformed 跳过分支，
-        # 截断前的合法行照常批准——与 reporting/experience/review/recycle 六方同纪律。
-        try:
-            raw = args.apply.read_text(encoding="utf-8")
-        except UnicodeDecodeError:
-            raw = args.apply.read_text(encoding="utf-8", errors="replace")
+        # 编码口径走单点 `read_jsonl_text`（`utf-8-sig`）：BOM 下裸 `utf-8` 会把首行变成
+        # `\ufeff{...}` → 落进 `broken` 分支——**一条审批决策凭空变成「格式错误」**，
+        # 而且它本来是被批准过的。坏字节仍由单点的 replace 回落接住（残行照旧落 broken）。
+        raw = read_jsonl_text(args.apply)
         for lineno, line in enumerate(raw.splitlines(), 1):
             if not line.strip():
                 continue

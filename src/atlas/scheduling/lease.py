@@ -27,6 +27,7 @@ import time
 from pathlib import Path
 
 from .constants import LEASE_TTL_S
+from ..atomic_io import read_json_text
 
 
 def _payload(token: str, pid: int, now: float) -> dict:
@@ -63,7 +64,11 @@ def read_lock(path: "str | Path") -> "dict | None":
     """锁文件读侧：坏 JSON/非映射/读崩一律 None（视同无锁），噪音由调用方如实记录。"""
     path = Path(path)
     try:
-        raw = path.read_text(encoding="utf-8")
+        # BOM 安全（单点口径 `utf-8-sig`）。这里是**最危险的一处**：坏 JSON 一律返回 None
+        # =「视同无锁」，而带 BOM 的锁文件在裸 utf-8 下就是一个坏 JSON——于是锁文件的
+        # **存在性反而让并发闸失效**（没锁文件时调用方可能还会报，有 BOM 锁文件反而静默
+        # 当无锁），噪音只靠调用方如实记录。
+        raw = read_json_text(path)
     except (OSError, UnicodeDecodeError):
         return None
     try:

@@ -34,6 +34,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from .agent import Decision, RiskLevel, classify_risk
 from .core import TaskMetadata
@@ -129,11 +130,54 @@ def parse_action(text: str) -> dict:
         raise ActionRejected("goto 必须带 url")
     if kind == "assert":
         _validate_assert(obj)
+    if kind == "wait":
+        _validate_wait(obj)
     if kind == "record" and obj.get("key") is not None:
         value = obj.get("value")
         if value is None or isinstance(value, (dict, list)):
             raise ActionRejected("record 带 key 时 value 必须是标量（改前值，供 compare 用）")
     return obj
+
+
+def _validate_wait_int(field: str, value: Any, *, allow_zero: bool) -> None:
+    """wait 旋钮的数值判据（2026-11-24 实测缺口，与 `--fail-under -1` / autopilot
+    `--max-steps` 同族：**参数值域不校验 → 功能静默失效**）。
+
+    改前的三个形态（都在 `_execute` 里静默成形，没有任何输出提示）：
+
+    - `min_rows: -1` → `count >= -1` 第一拍恒真，「等表格就绪」变成「立刻就当它好了」
+      （假绿）；
+    - `timeout_ms: 0` → `int(action.get("timeout_ms") or 10000)` 的 `or` 把 0 当空值，
+      静默换成 10000（想「不等」，实际等了 10s）；负数则第一拍就 TimeoutError；
+    - `ms: 0`（旧行为兼底路径）同理；`5.7` 被 `int()` 静默截成 5。
+
+    bool 一律不算数（`True` 是 `int` 子类，会静默变 1）。
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        kind = "非负整数" if allow_zero else "正整数"
+        raise ActionRejected(
+            f"wait.{field} 必须是{kind}（收到 {value!r}）——"
+            f"它们是毫秒预算/行数下限，写错不会报错，只会静默改变等待语义")
+    if allow_zero and value < 0:
+        raise ActionRejected(
+            f"wait.{field} 必须是非负整数（收到 {value!r}）——"
+            f"负数会让「行数 ≥ min_rows」第一拍恒真：表格还没数据就判就绪（假绿）")
+    if not allow_zero and value <= 0:
+        raise ActionRejected(
+            f"wait.{field} 必须是正整数毫秒（收到 {value!r}）——"
+            f"0 会被当成空值静默换成默认预算，负数则第一拍就超时"
+            f"（想「不等」就别发这个动作）")
+
+
+def _validate_wait(obj: dict) -> None:
+    """wait 动作的数值旋钮在 parse 期点名（与 assert 形态判据同口径：
+    坏形态绝不进执行面猜语义）。"""
+    if "timeout_ms" in obj:
+        _validate_wait_int("timeout_ms", obj["timeout_ms"], allow_zero=False)
+    if "ms" in obj:
+        _validate_wait_int("ms", obj["ms"], allow_zero=False)
+    if "min_rows" in obj:
+        _validate_wait_int("min_rows", obj["min_rows"], allow_zero=True)
 
 
 def _validate_assert(obj: dict) -> None:

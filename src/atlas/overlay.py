@@ -5,16 +5,19 @@
 """
 from __future__ import annotations
 import hashlib
-import json
 import time
 from pathlib import Path
+from .atomic_io import read_json_file
 
 KIND = "bu_overlay"
 
 
 def load_overlays(path: Path | str) -> dict[str, dict]:
     """文件形态：{"BU-A": {"ou": "...", "division": "..."}, "BU-B(sample)": {...}}。"""
-    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    # BOM 安全读（单点 `atomic_io.read_json_file`）：PowerShell/记事本产出的 JSON 常带 BOM，
+    # 裸 utf-8 读进来会带 `\ufeff` 前缀 → `json.loads` 招 `Unexpected UTF-8 BOM` → `atlas overlay`
+    # 直接 rc 2。租户坐标入口不该因一个 BOM 崩。
+    data = read_json_file(path)
     if not isinstance(data, dict) or not all(isinstance(v, dict) for v in data.values()):
         raise ValueError('overlay 文件口径：{"BU名": {坐标键: 值, ...}}')
     return data

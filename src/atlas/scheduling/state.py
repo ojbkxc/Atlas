@@ -26,7 +26,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ..atomic_io import append_text_locked, read_jsonl_text
+from ..atomic_io import append_text_locked, read_json_text, read_jsonl_text
 from .constants import (DEFAULT_MAX_DURATION_MIN, MAX_CONSECUTIVE_FAILURES,
                         SCHEMA_VERSION)
 from .cron_parse import load_tz, min_gap_ok, parse_expr
@@ -240,7 +240,9 @@ def load_doc(path: Path) -> dict:
     if not path.exists():
         return {"schema_version": SCHEMA_VERSION, "tasks": {}}
     try:
-        raw = path.read_text(encoding="utf-8")
+        # BOM 安全（单点口径 `utf-8-sig`）：台账是人手可读可改的文件，带 BOM 时裸 utf-8
+        # 会让 `json.loads` 报错，而下面的分支会把**合法台账**说成「JSON 无法解析」。
+        raw = read_json_text(path)
     except UnicodeDecodeError as exc:
         raise ValueError(f"台账 {path} 不是 UTF-8（中断写坏？删除后重新 schedule add）：{exc}") from exc
     try:

@@ -18,6 +18,8 @@ import json
 import re
 from pathlib import Path
 
+from .atomic_io import read_json_file
+
 # 内置兜底族名（仅当通用包族表读不到/无 default 时用）。
 DEFAULT_FAMILY = "element-ui"
 
@@ -74,7 +76,10 @@ def load_family_table() -> dict:
     try:
         if not path.exists():
             return {}
-        data = json.loads(path.read_text(encoding="utf-8"))
+        # BOM 安全读（单点 `atomic_io.read_json_file`）。此前裸 utf-8：带 BOM 的族表会掉进
+        # 下面的 except → 返回 `{}` → **静默回退内置副本**，整个族表替换无声发生（报告照常
+        # 产出，只是等待/读取判据用的是内置值）。族表是数据资产，不该因 BOM 被废弃。
+        data = read_json_file(path)
     except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         return {}
     return data if isinstance(data, dict) else {}

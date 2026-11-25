@@ -14,6 +14,7 @@ from __future__ import annotations
 import tomllib
 from pathlib import Path
 
+from .atomic_io import read_text_retry
 from .config import ENV_PREFIX_DEFAULT, ENV_URL_SUFFIXES
 
 # 本分发的名字，同时是 `atlas init` 生成项目里那条依赖的名字。探测源码根时用它校验
@@ -53,7 +54,15 @@ def detect_atlas_source_root(pkg_file: Path | None = None) -> Path | None:
         if not candidate.is_file():
             continue
         try:
-            data = tomllib.loads(candidate.read_text(encoding="utf-8"))
+            # 编码口径与 `atomic_io._JSON_READ_ENCODING` 一致（`utf-8-sig`），但**不**走
+            # `read_json_file`——TOML 不是 JSON。为什么必须 BOM 安全（2026-11-24 实测）：
+            # BOM 是**合法 UTF-8**，裸 `encoding="utf-8"` 读它不抛 UnicodeDecodeError，只是
+            # 把 `\ufeff` 留在首字符，然后才是 `tomllib` 抛 TOMLDecodeError。而本函数下面
+            # 有 `except Exception: continue`（坏 pyproject 确实不是「Atlas 根」的证据），
+            # 于是**带 BOM 的真源码根被静默读成 None**：`atlas init` 不钉 file:// 依赖 →
+            # 骨架 `pip install -e .` 装不上，全程零报错（README「先跑这三步」第 3 步）。
+            # TOML 也没有 `errors="replace"` 的理由：契约文件必须精确或大声失败。
+            data = tomllib.loads(read_text_retry(candidate, encoding="utf-8-sig"))
         except Exception:
             continue   # 坏 pyproject 不是「Atlas 源码根」的证据，跳过而非裸崩
         if str((data.get("project") or {}).get("name", "")) == _ATLAS_DIST_NAME:

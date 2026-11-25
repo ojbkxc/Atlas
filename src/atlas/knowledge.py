@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from .failures import FailureClass, classify_failure, exception_text
 from . import locators
-from .atomic_io import atomic_write_text
+from .atomic_io import atomic_write_text, read_json_file
 
 # 平台维度（en-2）：知识条目可带可选 `plugin` 字段（组件条目/draft 行），把「哪个平台批准的
 # 选择器」变成数据。缺失=兼容可见（存量数据默认行为逐字节不变）；"generic"=对所有平台可见。
@@ -66,8 +66,12 @@ def _read_mapping(path: Path) -> dict | None:
     if not path.exists():
         return None
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, UnicodeDecodeError):
+        # BOM 安全读（单点 `atomic_io.read_json_file`）。此前裸 utf-8 遇上带 BOM 的私有知识
+        # 文件（`ATLAS_KNOWLEDGE_DIR`，人手编辑/PS 产出常见）会招 JSONDecodeError，被下面
+        # 的 except 当成「文件损坏」回 None——**整份知识文件静默消失**，调用方回退下一个来源，
+        # 没有报错、没有提示，只有知识命中凭空变少。读取侧唯一判据不变（仍返回 None 回退）。
+        data = read_json_file(path)
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError):
         return None
     return data if isinstance(data, dict) else None
 

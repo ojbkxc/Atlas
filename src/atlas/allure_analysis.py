@@ -22,7 +22,7 @@ import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from .atomic_io import atomic_write_text
+from .atomic_io import atomic_write_text, read_json_text, read_text_retry
 from .failures import FailureClass, OPERATIONAL, classify_text
 
 # 增量读指纹缓存文件名（pf-9）：atlas- 前缀 → emit_allure 的 clean 随结果文件同生命周期；
@@ -149,7 +149,9 @@ def _read_fingerprint(results_dir: Path) -> dict:
     if not fp.exists():
         return {}
     try:
-        raw = fp.read_text(encoding="utf-8")
+        # BOM 安全（单点口径 `utf-8-sig`）：指纹文件带 BOM 时裸 utf-8 会让 `json_loads`
+        # 失败 → 缓存直接失效回「本次全量解析」，且只打一行 stderr，看上去像没毛病。
+        raw = read_json_text(fp)
     except OSError:
         print(f"警告：{fp} 读取失败，本次全量解析", file=sys.stderr)
         return {}
@@ -222,11 +224,13 @@ def _load(results_dir: Path, *, incremental: bool = True) -> tuple[list[AllureFi
                         touched[fpath.name] = cached
                         continue
         # 先严格读保真；撞坏字节回落 errors="replace"——残行 JSON 解析必败自然落 skipped 计数
+        # BOM 口径走单点 `read_json_text`（`utf-8-sig`）：BOM 是合法 UTF-8，裸 utf-8 不报解码错，
+        # 而是把 `\ufeff` 留在首字符 → `json.loads` 失败 → 整份 result 文件被计 skipped **静默丢弃**。
         try:
-            raw = fpath.read_text(encoding="utf-8")
+            raw = read_json_text(fpath)
         except UnicodeDecodeError:
             try:
-                raw = fpath.read_text(encoding="utf-8", errors="replace")
+                raw = read_text_retry(fpath, encoding="utf-8-sig", errors="replace")
             except OSError:
                 skipped += 1
                 continue

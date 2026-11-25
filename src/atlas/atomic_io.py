@@ -38,6 +38,7 @@
 """
 from __future__ import annotations
 
+import json
 import os
 import threading
 import time
@@ -308,6 +309,45 @@ def read_jsonl_text(path: Path) -> str:
         return read_text_retry(path, encoding=_BOM_SAFE_ENCODING)
     except UnicodeDecodeError:
         return read_text_retry(path, encoding=_BOM_SAFE_ENCODING, errors="replace")
+
+
+# JSON **对象/配置文件**读侧的编码口径单点。与 JSONL 侧同取向（`utf-8-sig`），但**不做**
+# `errors="replace"` 回落——这点差异是刻意的，不是漏统一：
+#
+#   JSONL 一行坏字节只毁一行，残行由各读侧「解析失败即跳过并计数」接住，信息损失可见；
+#   而一个 JSON **对象**文件（契约/知识/overlay/族表/配置）用 replace 读进来，会把坏字节
+#   变成一个合法的 U+FFFD 字符并**照样通过 `json.loads`** —— 于是错误的数据被当成正确配置
+#   消费，没有任何报错。JSON 是契约文件，必须精确或大声失败，所以这里只重试锁、不替换字节。
+#
+# 为什么必须 `utf-8-sig`（2026-11-24 实测）：**BOM 是合法 UTF-8 字节**（EF BB BF），裸
+# `encoding="utf-8"` 读它**不会**抛 `UnicodeDecodeError`，只会把 `\ufeff` 留在文本首位，
+# 然后 `json.loads` 抛 `JSONDecodeError: Unexpected UTF-8 BOM`。后果分两族，都比「崩」更坏：
+#   ①裸崩族（overlay/contracts/review_code/creators）：rc 2 或整条契约链被顶掉；
+#   ②**静默降级族**（knowledge/ui_family/devops_sync/legacy_fast 规则）：那些地方本就有
+#     `except (OSError, JSONDecodeError, UnicodeDecodeError): return None/{}` 兜底，BOM 撞进去
+#     变成「文件不存在」——知识命中消失、族表回退内置、allure 结果被计入 skipped，
+#     报告照常产出且**看起来正常**。这类缺口没有任何症状，只有结论悄悄变错。
+#
+# 判据单点（#92）：所有「读一个 JSON 对象文件」的地方只许调 `read_json_file`，不再各写
+# `json.loads(path.read_text(…utf-8…))`（真写法故意不写全，以免被 sources 守卫当违规命中）——
+# 那份写法在 Windows + PowerShell/记事本产物上必错，且每抄一份就多一个回潮口。
+# 守卫：`tests/test_json_bom_read_sites.py`。
+_JSON_READ_ENCODING = "utf-8-sig"
+
+
+def read_json_text(path: Path) -> str:
+    """读 JSON 对象文件的文本：**BOM 安全** + 瞬态锁重试；坏字节**不**替换（见上方口径）。"""
+    return read_text_retry(Path(path), encoding=_JSON_READ_ENCODING)
+
+
+def read_json_file(path: Path):
+    """读一个 JSON 对象文件并解析：全仓「读 JSON 文件」的唯一入口。
+
+    解析失败（`JSONDecodeError` / `UnicodeDecodeError`）**原样抛出**，由各调用方按自己的
+    契约处置（有的转 ValueError、有的回退下一个来源、有的直接终止）——本函数不替调用方
+    决定，更不捕获后返回空值（那正是上面 ② 类静默降级的成因）。
+    """
+    return json.loads(read_json_text(path))
 
 
 def read_text_retry(path: Path, *, encoding: str = "utf-8", errors: str | None = None) -> str:

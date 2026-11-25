@@ -29,7 +29,7 @@ from urllib.parse import urlsplit
 
 import yaml
 
-from .atomic_io import read_jsonl_text
+from .atomic_io import read_json_file, read_jsonl_text
 
 # ── 维度权重（默认，可经 reviewcode.json 覆盖）────────────────────────────
 DEFAULT_WEIGHTS = {
@@ -328,10 +328,54 @@ def _rule_enabled(rule_id: str, config: dict) -> bool:
 
 # ── 配置加载 ──────────────────────────────────────────────────────────────
 
+def _is_number(value: Any) -> bool:
+    """数值判据：bool 是 `int` 的子类，`True` 当权重/扣分会静默变成 1 分/1 扣分；
+    NaN（`nan` / JSON 里的 `NaN`）也不许过闸——它与任何数比较恒假，会在计分处
+    静默产出 NaN 总分，而不是报错。"""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    return value == value  # NaN 自比恒假
+
+
+def _validate_weights(weights: dict) -> None:
+    """权重逐项值域（2026-11-24 实测缺口，与 `--fail-under -1` 同族）。
+
+    只看**和 = 1** 是不够的：`{"assertion": -0.25, ...}` 配上别的项凑到 1 就能过闸，
+    而负权重会让「该维度缺陷越多 → 维度分越低 → ×负权重 → 总分越高」，评分方向整个
+    反转（实测：weight={assertion:-0.25,...} 时全净维度得 75，塞满缺陷反而 100）。
+    大于 1 则单维度能顶穿百分制（另一头的噪音）。
+    """
+    for key, value in weights.items():
+        if not _is_number(value) or not (0.0 <= value <= 1.0):
+            raise ValueError(
+                f"weights[{key!r}] 必须是 0..1 之间的数（收到 {value!r}）——"
+                f"负权重会让该维度的缺陷反向抬高总分（评分方向反转、假绿），"
+                f"大于 1 则单维度就能顶穿百分制")
+
+
+def _validate_severity_deductions(deductions: dict) -> None:
+    """扣分值域：非负数。负扣分 = 缺陷变加分。
+
+    实测（改前）：`{"severity_deductions": {"high": -30}}` 之下，一条 high 让该维度
+    得 130 分、总分 106 且 grade=A；配 `--fail-under 90` 就是「越糟越容易过闸」。
+    非数值（如 `"30"`）则会在 `sum(f["deduction"] ...)` 处炸成 TypeError，与
+    「参数写错应指名到键」相比是更差的形态。
+    """
+    for key, value in deductions.items():
+        if not _is_number(value) or value < 0:
+            raise ValueError(
+                f"severity_deductions[{key!r}] 必须是非负数（收到 {value!r}）——"
+                f"负扣分把缺陷变成加分：high/critical 越多总分越高，评审闸门静默失效")
+
+
 def load_config(config_path: str | Path | None) -> dict:
     """加载 reviewcode.json 配置；缺省用默认值。
 
     权重和必须 = 1，否则 ValueError（CLI 接 _user_error rc 2）。
+    逐项值域也在这里卡死（`_validate_weights` / `_validate_severity_deductions` /
+    `critical_cap`）：这些旋钮是**人手改的配置**，写错一个符号就能让评分与闸门结论
+    静默反转——正与 `--fail-under -1`（门禁永不生效）同族，所以同样走「入口点名 +
+    rc 2」，不做「悄悄取默认值」。
     """
     config = {
         "weights": dict(DEFAULT_WEIGHTS),
@@ -343,22 +387,38 @@ def load_config(config_path: str | Path | None) -> dict:
         path = Path(config_path)
         if not path.exists():
             raise ValueError(f"配置文件不存在：{path}")
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        # BOM 安全读（单点 `atomic_io.read_json_file`）：review 配置是人手编辑的文件，
+        # PowerShell/记事本产物常带 BOM，裸 utf-8 会把它读成 `\ufeff{...}` 并在这里崩。
+        raw = read_json_file(path)
         if not isinstance(raw, dict):
             raise ValueError(f"配置文件 {path} 顶层必须是映射")
         if "weights" in raw:
             weights = raw["weights"]
             if not isinstance(weights, dict):
                 raise ValueError("weights 必须是映射")
+            _validate_weights(weights)
             config["weights"].update(weights)
         if "severity_deductions" in raw:
             sd = raw["severity_deductions"]
-            if isinstance(sd, dict):
-                config["severity_deductions"].update(sd)
+            # 非映射不再静默跳过（改前 `if isinstance(sd, dict)` 把整块配置当空气：
+            # 用户以为改过扣分，实际一个键都没生效，仍用内置值）。
+            if not isinstance(sd, dict):
+                raise ValueError(
+                    f"severity_deductions 必须是映射（severity → 扣分值），"
+                    f"收到 {type(sd).__name__}；写错形态不该静默回退到内置扣分")
+            _validate_severity_deductions(sd)
+            config["severity_deductions"].update(sd)
         if "critical_cap" in raw:
             cap = raw["critical_cap"]
-            if isinstance(cap, (int, float)) and not isinstance(cap, bool):
-                config["critical_cap"] = int(cap)
+            # 值域 0..100（总分是百分制）：负数会产出负分，>100 与 100 等价但暗示
+            # 写错了量纲。100 本身允许——那是「不要硬顶」的显式写法（critical 仍会让
+            # `has_critical` 触发 rc 1，硬顶只管报告里的分数）。
+            if not _is_number(cap) or not (0 <= cap <= 100):
+                raise ValueError(
+                    f"critical_cap 必须是 0..100 的数（收到 {cap!r}）——"
+                    f"它是有 critical finding 时总分的硬顶，负数会产出负分、"
+                    f"超过 100 与 100 等价（百分制量纲写错）")
+            config["critical_cap"] = int(cap)
         if "rules" in raw:
             rules = raw["rules"]
             if isinstance(rules, dict):

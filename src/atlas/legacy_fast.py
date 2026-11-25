@@ -589,7 +589,12 @@ def load_site_rules(path) -> list:
     if not path:
         return []
     try:
-        with open(path, "r", encoding="utf-8") as fh:
+        # BOM 安全：本模块不许相对 import（无包上下文 standalone 加载），所以不走
+        # `atomic_io.read_json_file` 单点，用同口径的 `utf-8-sig` 内联。
+        # 此前 `encoding="utf-8"` + `json.load`：带 BOM 的规则文件会掉进下面的
+        # `except Exception` → 只打一行 WARN 然后**返回空规则**。等着看：规则全部失效，
+        # 但只是 WARN，回归照跑——静默降级。
+        with open(path, "r", encoding="utf-8-sig") as fh:
             doc = json.load(fh)
     except Exception as exc:
         print(f"WARN: fast waits 规则文件不可用（{path}）："

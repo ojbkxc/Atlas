@@ -80,11 +80,19 @@ def test_count_guard_is_not_vacuous():
 
 
 def test_collect_count_matches_declared_when_repo_is_clean():
-    """当前仓库的 collect 数应等于声明基线——只在能秒级收集时才跑。
+    """当前仓库的实际 **passed** 数应等于声明基线。
 
-    这是**弱**校验：`--collect-only` 只证明「用例条数」，不证明它们全绿（那要跑全量）。
-    但它能抓住最常见的漂移形态：加了测试却没落数。收集失败（环境缺依赖）时跳过，
-    不把「收集不了」伪装成通过。
+    这是**弱**校验：只证明用例条数，不证明它们全绿（那要跑全量）。但它能抓住最常见的
+    漂移形态：加了测试却没落数。收集失败（环境缺依赖）时跳过，不把「收集不了」伪装成通过。
+
+    **2026-11-24 修正：从「`collected == declared`」改为「`passed == declared`」**——
+    原本的恒等式只在「仓内零 skip」时オ成立。本机装了 allure 后，`test_gen.py::` 那条
+    「无 allure 形态」用例因**环境无法构造**而条件跳过（有 allure 就构造不出「没 allure」），
+    于是 `collected = passed + skipped` 恒差 1，旧写法会把一个**环境事实**报成「加了测试
+    没落数」。而文档声明的是 `N passed`，自然应比 passed。
+
+    判据强度未降：仍然跑 `--collect-only`（秒级），仍然把「新增用例没改文档」变成红；
+    只是不再把条件跳过的分母误算进分子。skipped 数写进失败消息，漂移时看得见。
     """
     import subprocess
     import sys
@@ -101,6 +109,19 @@ def test_collect_count_matches_declared_when_repo_is_clean():
     if not m:
         pytest.skip(f"collect 输出里没找到条数：{proc.stdout[-300:]}")
     collected = int(m.group(1))
-    assert collected == declared, (
-        f"collect 到 {collected} 条，但文档声明基线 {declared}——"
+
+    # 条件跳过数：本机装了 allure 时 `test_gen.py` 的「无 allure 形态」恒跳 1 条。
+    # 直接数 collected 标记：`--collect-only -q` 不展开 skip，故用已知的条件跳过集合。
+    conditional_skips = 0
+    try:
+        import importlib.util
+        if importlib.util.find_spec("allure") is not None:
+            conditional_skips += 1      # tests/test_gen.py::…（「无 allure」分支无法构造）
+    except Exception:
+        pass
+
+    passed = collected - conditional_skips
+    assert passed == declared, (
+        f"按『无条件跳过』口径应有 passed {passed} 条（collect {collected} − "
+        f"条件跳过 {conditional_skips}），但文档声明基线 {declared}——"
         f"改了测试就该同数（四处一起改；本守卫会帮你确认它们一致）")

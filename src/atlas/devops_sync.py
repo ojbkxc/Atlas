@@ -46,6 +46,7 @@ from typing import Any
 import yaml
 
 from .allure_analysis import load_allure_results
+from .atomic_io import read_json_file, read_json_text, read_text_retry
 from .credential_gate import sanitize_url
 
 # ── 协议常量（DevOps 平台规定值，非业务字面量）──────────────────────────
@@ -229,10 +230,16 @@ def load_mcp_servers(mcp_config: str | Path | None = None) -> dict[str, dict]:
             "或设置 ATLAS_DEVOPS_MCP_URL / ATLAS_DEVOPS_MCP_SERVER。"
         )
     try:
-        data = json.loads(cfg.read_text(encoding="utf-8"))
+        # BOM 安全读（单点 `atomic_io.read_json_file`）。此前裸 utf-8：BOM 是合法 UTF-8，
+        # 它**不**招 UnicodeDecodeError，而是把 `\ufeff` 留在文本首 → `json.loads` 招
+        # JSONDecodeError → 下面两个 except 里第一个（对应 UnicodeDecodeError 的 replace 回落）
+        # 永远不会触发，直接报「解析失败」。同一个 mcp.json 各工具都能读，就 Atlas 报错。
+        data = read_json_file(cfg)
     except UnicodeDecodeError:
+        # 真·坏字节（非 BOM）：保持既有的「replace 后再试」宽容，坏字节是确定事实，
+        # 重试无用，只能尽力解析并把失败点名。
         try:
-            data = json.loads(cfg.read_text(encoding="utf-8", errors="replace"))
+            data = json.loads(cfg.read_text(encoding="utf-8-sig", errors="replace"))
         except (OSError, json.JSONDecodeError) as exc:
             raise DevopsSyncError(f"MCP 配置 {cfg} 解析失败：{exc}") from exc
     except (OSError, json.JSONDecodeError) as exc:
@@ -708,10 +715,13 @@ def _read_raw_results(results_dir: str | Path) -> tuple[list[dict], int]:
     skipped = 0
     for fpath in sorted(results_dir.glob("*-result.json")):
         try:
-            text = fpath.read_text(encoding="utf-8")
+            # BOM 安全读（单点 `atomic_io.read_json_text`）。此前裸 utf-8：带 BOM 的
+            # allure 结果文件会走到下面的 `except Exception: skipped += 1`——**被当成坏文件
+            # 静默丢弃**，同步上去的用例少几条，却没有任何报错。
+            text = read_json_text(fpath)
         except UnicodeDecodeError:
             try:
-                text = fpath.read_text(encoding="utf-8", errors="replace")
+                text = read_text_retry(fpath, encoding="utf-8-sig", errors="replace")
             except OSError:
                 skipped += 1
                 continue
