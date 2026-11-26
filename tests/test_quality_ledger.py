@@ -133,6 +133,55 @@ def test_todo_locations_still_carry_a_marker():
     assert not bad, "D 项位置已无待办标记（要么标记被删、要么台账没跟）：\n" + "\n".join(bad)
 
 
+def test_every_row_declares_judgment_and_disposition():
+    """每条 F/D/L 的「判定」与「处置」两列必须非空，且判定落在受控词汇内。
+
+    这条守的是目标的**字面要求**：「每一项已知质量问题都有**明确处置**」。
+    一条只有位置、没写判定或处置的行，就是「知道了但没决定」——正是台账要消灭的状态。
+    另外把判定词表收在测试里：新造一个同义词（比如「以后再看」）应该失败，
+    因为那等于把「不做+理由」偷渡成「待定」。
+    """
+    allowed = {
+        # F 类
+        "真缺陷", "理由成立", "理由成立但缺注释", "文档噪声", "合法类型抑制",
+        # D 类
+        "设计留白", "显式留白", "文档描述", "产品特性", "产品文案", "非标记（grep 误匹配）",
+        "非标记",
+        # L 类
+        "真缺口", "环境未实测",
+    }
+    rows = []
+    for ln in _LEDGER.read_text(encoding="utf-8").splitlines():
+        if not ln.startswith("|"):
+            continue
+        m = re.match(r"^\|\s*\**([FDL]\d{2})\**\s*\|", ln)
+        if not m:
+            continue
+        cells = [c.strip().strip("*") for c in ln.strip().strip("|").split("|")]
+        # 只认**带位置的**条目：F/D 的第 2 列必须是 `path:line`。散文里的同号引用
+        # （如台账「双向点明抽查」表 `| D01 | 代码侧理由… |`）第 2 列是说明文字，不是
+        # 条目——不排除它们会被当成「列数不足的坏行」（实测踩到过一次）。
+        if m.group(1)[0] in "FD" and ":" not in cells[1]:
+            continue
+        rows.append((m.group(1), cells))
+    assert len(rows) == 50, f"只解析到 {len(rows)} 条台账行，应为 50"
+
+    problems = []
+    for entry, cells in rows:
+        if len(cells) < 5:
+            problems.append(f"{entry}: 列数不足（{len(cells)}，需要 编号|位置|判定|处置|证据）")
+            continue
+        # L 表多一列（编号|项|判定|处置|证据/理由），判定仍在第 3、处置第 4
+        judgment, disposition = cells[2], cells[3]
+        if not judgment:
+            problems.append(f"{entry}: 判定列为空")
+        elif not any(a in judgment for a in allowed):
+            problems.append(f"{entry}: 判定 {judgment!r} 不在受控词汇表内")
+        if not disposition:
+            problems.append(f"{entry}: 处置列为空（知道了但没决定）")
+    assert not problems, "台账条目未给明确处置：\n" + "\n".join(problems)
+
+
 def test_patched_rows_carry_rationale():
     """标 `已补` 的条目，其位置附近**必须**有紧邻的理由注释。
 
