@@ -1317,7 +1317,7 @@ def emit_allure_review(file_results: list[dict], out_dir: Path,
         # 状态：有 critical/high → failed，否则 passed
         status = "failed" if max_severity in ("critical", "high") else "passed"
 
-        # 降级标记（台账 L01，上游 A-02 的留白）：本函数每文件一个 result、**没有容器概念**，
+        # 降级标记（台账 L01，自 A-02 遗留）：本函数每文件一个 result、**没有容器概念**，
         # 于是只看 allure 的 CI 看不到「knowledge 模式知识库不可用 → 选择器核对整段未执行」。
         #
         # 为什么不另造一个“降级容器/伪 result”：`*-result.json` 的消费方不止渲染器——

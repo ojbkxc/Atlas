@@ -33,7 +33,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
 
 from atlas import review_code as rc_mod
 from atlas.allure_analysis import load_allure_results
