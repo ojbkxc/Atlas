@@ -725,6 +725,16 @@ def explore_auto(config, goal: str, *, llm, page, trace: Path, journal,
         raise ValueError(
             f"--max-seconds 必须是正数（收到 {max_seconds!r}）——0 或负数会让墙钟闸恒真、"
             f"循环一次都不跑，却仍报 stopped_reason=max_seconds")
+    # `max_failures` 同族缺口（2026-11-25 审计 A-05）：兄弟参数都有闸，唯独它没有。
+    # 消费点是 `report.failures >= max_failures`（三处）——0 或负数首败即停，
+    # `stopped_reason="max_failures"` 把「参数写错」读成「连续失败达上限」，
+    # 与刚修掉的 `--max-steps -1` 是同一句话的两种拼写。
+    # 限缩：CLI 只透传 max_steps/max_seconds，`max_failures` 恒为默认 3、无法从命令行触达，
+    # 所以只是内部 API 缺口，不是用户可见面。
+    if isinstance(max_failures, bool) or not isinstance(max_failures, int) or max_failures < 1:
+        raise ValueError(
+            f"max_failures 必须是 ≥1 的整数（收到 {max_failures!r}）——"
+            f"0 或负数会让首条失败就停，却仍报 stopped_reason=max_failures")
     trace = Path(trace)
     trace.parent.mkdir(parents=True, exist_ok=True)
     shots = Path(shots) if shots else (config.artifacts_dir / "exploration" / trace.stem)

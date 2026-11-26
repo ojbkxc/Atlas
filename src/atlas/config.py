@@ -212,7 +212,7 @@ class AtlasConfig:
         values = {
             "env": os.environ.get("ATLAS_ENV", "sit"),
             "mode": os.environ.get("ATLAS_MODE", "run"),
-            "headless": os.environ.get("ATLAS_HEADED", "0") != "1",
+            "headless": not _flag_env("ATLAS_HEADED"),
             "channel": os.environ.get("ATLAS_BROWSER_CHANNEL", "chrome"),
         }
         values.update(overrides)

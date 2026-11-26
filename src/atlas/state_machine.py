@@ -48,10 +48,19 @@ class StateMachine:
     def run(self, target: str, tasks: dict[str, Task], actor, *, guards: dict[str, Callable] | None = None,
             max_steps: int = 50) -> str:
         guards = guards or {}
+        # 值域闸（2026-11-25 审计 A-07）：改前 `max_steps=0` 一次都不迭代，却报
+        # 「可能存在循环或守卫恒假」——归因指向别处，与已修 `--max-steps -1` 同一症状形态
+        # （零迭代 + 错因）。参数写错就该点名参数。
+        if isinstance(max_steps, bool) or not isinstance(max_steps, int) or max_steps < 1:
+            raise ValueError(
+                f"max_steps 必须是正整数（收到 {max_steps!r}）——"
+                f"0 或负数会让循环一次都不跑，却报「可能存在循环或守卫恒假」（归因指向错处）")
         state, steps = self.initial, 0
         while state != target:
             if steps >= max_steps:
-                raise RuntimeError("状态机超过 max_steps，可能存在循环或守卫恒假")
+                raise RuntimeError(
+                    f"状态机超过 max_steps={max_steps} 步仍未到达 {target!r}（当前 {state!r}），"
+                    f"可能存在循环或守卫恒假")
             candidates = []
             for edge in self.states.get(state, []):
                 if edge.guard:

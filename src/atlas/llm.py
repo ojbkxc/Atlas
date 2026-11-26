@@ -88,7 +88,16 @@ class LLMClient:
                  max_tokens: int | None = None, timeout: float | None = None) -> str:
         payload: dict = {"model": self.config.model, "messages": list(messages),
                          "temperature": temperature}
-        if max_tokens:
+        # `is not None` 而不是 `if max_tokens`（2026-11-25 审计 A-04）：`0` 为假 → 键根本不写
+        # → 想「不限输出」的人拿到 provider 默认上限（通常很小），表现为 JSON 被截断，
+        # 而归因会漂到 `_parse_content`（指向「模型输出缺字段」而不是「你把 max_tokens
+        # 写成 0 了」）。负数则原样进 payload（provider 侧 400）。
+        # 「缺省」与「显式零」是两件事（#115 同族）：None = 不传，其他值必须过值域闸。
+        if max_tokens is not None:
+            if isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens <= 0:
+                raise LLMError(
+                    f"max_tokens 必须是正整数（收到 {max_tokens!r}）——"
+                    f"不传=用 provider 默认上限；写 0 会被当空值静默丢弃，反而拿到默认上限")
             payload["max_tokens"] = int(max_tokens)
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         url = f"{self.config.base_url}/chat/completions"

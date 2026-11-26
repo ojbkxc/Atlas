@@ -450,7 +450,10 @@ class DemoRuntime:
             # ATLAS_PLUGIN=iservice 时数据供给仍是 demo 的 SalesOrder/Customer 探针，
             # 业务插件的 make_provider 成了没人调用的死方法（换业务只换插件断在这里）。
             self.provider = plugin.make_provider(self.config, self.demo_api, self.division_code)
-            self.provider.quota.limit = self.create_quota
+            # 值域防线（审计 A-03）：直接写属性会绕过 `CreateQuota.__init__` 的
+            # `limit < 0 → ValueError`。CLI 面已加 rc 2 闸，这里只做库面兵底：
+            # 负配额一旦进到运行期就变成每次建单的 `EnvBlocked`（伪装成环境阻塞）。
+            self.provider.quota.limit = max(0, self.create_quota)
             self.actor.knowledge = plugin.knowledge()
             self.actor.contracts = self.contracts()
             # 自愈、经验与 API 实证在运行时统一装配，避免 DSL 里出现“模块存在但没接”。

@@ -586,6 +586,16 @@ def _run(args, config, plugin) -> int:
     if case_timeout is not None and case_timeout <= 0:
         return _user_error(ValueError(
             f"--case-timeout 必须是正整数秒（不限就别传），收到 {case_timeout}"))
+    # `--create-quota` 值域闸（2026-11-25 审计 A-03）：CLI 只声明 `type=int`，而
+    # `runtime.py` 直接 `provider.quota.limit = create_quota` **绕过** `CreateQuota.__init__`
+    # 的 `limit < 0 → ValueError`。于是 `-1` 变成每次建单的 `EnvBlocked`——用户输入错误
+    # 被伪装成**环境阻塞终态**（`OPERATIONAL` 族不进 failed 分布，归因漂到被测系统），
+    # 多 flow 轨又是「失败即停」，写错一个参数会让整批在第一单就全停。
+    # 零保留：`default=0` 是**合法显式值**（= 本次不自动建单）。
+    if getattr(args, "create_quota", 0) < 0:
+        return _user_error(ValueError(
+            f"--create-quota 不能为负数（收到 {args.create_quota}）——"
+            f"0=本次不自动建单，正数=允许的建单数"))
     if args.bu:
         from .plugins.demo.tasks import apply_bu
         try:
@@ -1421,6 +1431,12 @@ def _run_multi_flows(args, config, flows: list) -> int:
             "--case-timeout 不支持多 flow：per-case 看护按「每条 flow 一个子进程」实现，"
             "多 flow 共用一个子进程会把整个批次一起强杀而非单条。请逐条 atlas run 各带 "
             "--case-timeout，或去掉该参数整批共享一次登录"))
+    # 与单 flow 同款闸（审计 A-03）：多 flow 是「失败即停」，负配额会让第一单就 EnvBlocked
+    # 并把整批停掉、归因还指向配额而非参数写错。
+    if getattr(args, "create_quota", 0) < 0:
+        return _user_error(ValueError(
+            f"--create-quota 不能为负数（收到 {args.create_quota}）——"
+            f"0=本次不自动建单，正数=允许的建单数"))
     # load 是「用户传入 flow 文件」的输入边界，与单 flow 路径同口径：全部 flow 先
     # load+validate（fail fast 在登录/开浏览器之前），任一结构坏 = rc 2 点名，零半截现场。
     flows_loaded = []

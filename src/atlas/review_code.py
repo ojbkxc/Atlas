@@ -22,6 +22,7 @@ import ast
 import hashlib
 import json
 import re
+import sys
 import uuid
 from pathlib import Path
 from typing import Any
@@ -1169,8 +1170,9 @@ def format_text(result: dict) -> str:
     mode = summary.get("mode", result.get("mode", "static"))
     lines = []
     lines.append(f"=== Atlas 代码质量评审报告 ===")
+    degraded = "（降级：选择器核对未执行）" if summary.get("knowledge_degraded") else ""
     lines.append(f"总分: {total}/100  等级: {grade}  "
-                 f"模式: {mode}")
+                 f"模式: {mode}{degraded}")
     lines.append(f"文件数: {summary.get('files', 0)}  "
                  f"问题数: {summary.get('total_findings', 0)}  "
                  f"critical: {summary.get('critical_findings', 0)}")
@@ -1452,6 +1454,15 @@ def review_code(paths: list[str | Path], *, mode: str = "static",
 
     返回 {"results": [per_file], "summary": {...}, "rc": int}。
     """
+    # 值域闸下沉到库面（2026-11-25 审计 A-08）：改前判据只在 `cli.py`，库面直调
+    # `review_code(..., fail_under=-1)` → `avg_score < -1` 恒假 → 门禁静默失效，
+    # 与已修的 `--fail-under -1` 逐字同族。CLI 面保留（双层不冲突，且能保住
+    # `_user_error` 的 rc 2 文案）。
+    if fail_under is not None and not 0 <= fail_under <= 100:
+        raise ValueError(
+            f"fail_under 必须在 0..100 之间（收到 {fail_under!r}）——"
+            f"它按百分制与 avg_score 比较：负数让门禁恒不触发（静默关掉），"
+            f"大于 100 则恒触发")
     config = load_config(config_path)
     targets = _iter_targets(paths, kind)
     if not targets:
@@ -1459,6 +1470,7 @@ def review_code(paths: list[str | Path], *, mode: str = "static",
 
     # knowledge 模式：加载选择器注册表
     registry = None
+    knowledge_degraded = False
     if mode == "knowledge":
         try:
             from .plugin_api import resolve_plugin
@@ -1470,8 +1482,16 @@ def review_code(paths: list[str | Path], *, mode: str = "static",
             # 会对「用了通用组件的合法用例」误报（实测影子 7 条 vs 组合 22 条）。
             components = kb.load_composed("components")
             registry = SelectorRegistry(components)
-        except Exception:
-            registry = None  # 知识库不可用时降级为 static
+        except Exception as exc:
+            # 降级可接受，但**必须留下可见计数**（同族纪律：`explore._read_snapshot` 把
+            # 跳过量记成 `unreadable_snapshots` 并对用户展示）。
+            # 改前这里是裸 `registry = None`：下游三处（SAFE 系列 / `_selector_in_registry`）
+            # 全以 `registry is not None` 为闸，于是**选择器核对整段不存在**，而报告照旧
+            # 自称 `mode: knowledge`——读者没有任何线索，分数却因少一批 finding 而升高，
+            # `--fail-under` 可能因此由红转绿（假绿）。
+            knowledge_degraded = True
+            print(f"WARN: knowledge 模式知识库不可用（{type(exc).__name__}: {exc}），"
+                  f"本次选择器核对未执行，结果等同 static", file=sys.stderr)
 
     file_results = []
     all_findings = []
@@ -1517,8 +1537,14 @@ def review_code(paths: list[str | Path], *, mode: str = "static",
                     if diff_findings:
                         baseline_notes.append(
                             f"{file_str}: {len(diff_findings)} 条基线差分 finding")
-                except OSError:
-                    pass
+                except OSError as exc:
+                    # 改前 `except OSError: pass`：读失败与「读了但没差分」在输出上完全一样
+                    # （都是空 `baseline_notes`）。`--baseline` 是用户显式传的旋钮，
+                    # 静默不差等于把这道判据关掉而分数不受影响（静默降级）。
+                    # 不改抛错：评审器读一个坏基线不该让整份评审崩（#89）。
+                    note = f"{file_str}: 基线差分未执行（{type(exc).__name__}: {exc}）"
+                    baseline_notes.append(note)
+                    print(f"WARN: {note}", file=sys.stderr)
 
         # 运行史交叉
         if baseline and file_kind == "pytest":
@@ -1531,19 +1557,27 @@ def review_code(paths: list[str | Path], *, mode: str = "static",
                         f"{file_str}: {len(cross_findings)} 条运行史交叉 finding")
 
         score = score_findings(findings, config)
-        file_results.append({
+        file_result = {
             "file": file_str,
             "kind": file_kind,
             "findings": findings,
             "score": score,
             "mode": mode,
             "baseline_notes": baseline_notes,
-        })
+        }
+        if knowledge_degraded:
+            file_result["knowledge_degraded"] = True
+        file_results.append(file_result)
         all_findings.extend(findings)
 
     # 汇总
     total_score = sum(fr["score"]["total"] for fr in file_results)
-    avg_score = round(total_score / len(file_results)) if file_results else 100
+    # 门禁必须用**未取整**的均值（2026-11-25 审计 A-01）：改前
+    # `avg_score = round(total/len)` 之后才比 `fail_under`，于是真均值 79.6 → 显示 80 →
+    # `80 < 80` 为假 → **`--fail-under 80` 放行**。`round` 的方向恒定有利（五入向上），
+    # 属判据本身放宽而不是显示问题，且报告里的 `avg_score: 80` 让人无法察觉。
+    raw_avg = total_score / len(file_results) if file_results else 100.0
+    avg_score = round(raw_avg)
     # 取最低等级（最差）
     _GRADE_RANK = {"A": 0, "B": 1, "C": 2, "D": 3, "F": 4}
     # 起点必须是**最好**的等级：旧实现从这里 `max_grade = "F"` 起步，而 F 的 rank 已经是最大值
@@ -1560,14 +1594,19 @@ def review_code(paths: list[str | Path], *, mode: str = "static",
         "total_findings": len(all_findings),
         "critical_findings": sum(1 for f in all_findings if f["severity"] == "critical"),
         "avg_score": avg_score,
+        # 未取整的真实均值（两位小数）供对账：展示值取整、判据值不取整，两个数都给出来。
+        "avg_score_raw": round(raw_avg, 2),
         "grade": max_grade,
         "mode": mode,
     }
+    if knowledge_degraded:
+        # 只在真降级时出现：非 knowledge 模式不得凭空多出这个键（防噪声化）。
+        summary["knowledge_degraded"] = True
 
     # 门禁判定
     rc = 0
     has_critical = any(f["severity"] == "critical" for f in all_findings)
-    if has_critical or (fail_under is not None and avg_score < fail_under):
+    if has_critical or (fail_under is not None and raw_avg < fail_under):
         rc = 1
 
     result = {

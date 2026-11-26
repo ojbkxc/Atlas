@@ -779,3 +779,90 @@ PYTHONPATH=src python -m atlas doctor             → 正常
 - `test_doc_verification_count.py::test_collect_count_matches_declared_when_repo_is_clean`
   （改为 `collected - conditional_skips == declared`）：把 AGENTS 基线改成 3256 → 该测与
   `test_declared_test_counts_agree_across_all_sites` **同时精确红**；还原后绿。
+
+## 3280 → 3310（2026-11-25，审计清单 9 条全落地）
+
+上一波修完「输入未校验 → 功能静默失效」族的三处后，审计（`reports/parameter-audit-2026-11-24.md`）
+又登记 9 条同族缺陷，本波**全部落地闸门**，判据在 `tests/test_silent_degrade_gates.py`（30 条，
+四件套：负例 / 零例 / bool 混入 / 正向对照）。
+
+### ② 假绿（最该先修的两条）
+
+**A-01 `avg_score` 先取整再比阈值。** `review_code` 聚合是
+`avg_score = round(total/len)` 之后才 `avg_score < fail_under`：
+
+```
+round(79.6) == 80      → True
+79.6 < 80              → True    （真实均值确实不达线）
+round(79.6) < 80       → False   （门禁按这个判 → 放行）
+```
+
+`score_findings` 的 total 是加权浮点和，79.6 这种值是常态。`round` 的方向**恒定有利**
+（五入向上），属判据本身放宽而不是显示问题；且报告里的 `avg_score: 80` 让读者无法察觉。
+改：门禁比未取整 `raw_avg`；`summary` 同时给 `avg_score`（展示）与 `avg_score_raw`（两位小数对账）。
+
+**A-02 knowledge 模式静默降级却仍自称 knowledge。** `except Exception: registry = None`，
+而下游三处（SAFE 系列 / `_selector_in_registry`）全以 `registry is not None` 为闸——
+`registry=None` = **选择器核对整段不存在**，不是「核对后无问题」。报告照旧写 `mode: knowledge`，
+分数因少一批 finding 而升高，`--fail-under` 可能因此由红转绿。
+改：stderr `WARN` 点名异常类型与消息 + `summary["knowledge_degraded"]`
+（**只在真降级时出现**——非 knowledge 模式多出该键属噪声化，单独一条测钉住）+
+`format_text` 在模式行后标「（降级：选择器核对未执行）」。
+
+### ③ 静默降级 / 误导归因
+
+- **B-01** `--baseline` 读失败 `except OSError: pass`：读失败与「读了但没差分」输出**完全一样**
+  （都是空 `baseline_notes`），用户显式传的旋钮被静默关掉而分数不受影响。改 `baseline_notes`
+  点名 + stderr WARN；**不改抛错**（读一个坏基线不该让整份评审崩，#89）。
+- **A-03** `--create-quota -1` 绕过 `CreateQuota.__init__` 的 `limit < 0 → ValueError`
+  （`runtime.py` 直接 `provider.quota.limit = self.create_quota` 写属性），于是变成每次建单的
+  `EnvBlocked("本次运行 create 配额已用完（-1）")`——**用户输入错误被伪装成环境阻塞终态**，
+  而 `EnvBlocked` 属 `OPERATIONAL`（不进 failed 分布），多 flow 轨又是「失败即停」，写错一个
+  参数让整批在第一单就全停且理由指向配额。改：CLI 双入口（`_run` / `_run_multi_flows`）
+  与 `--case-timeout` 同款 rc 2 闸 + `runtime` 侧 `max(0, ...)` 兜底。**`0` 仍是合法显式值**
+  （= 本次不建单），不许被闸顺手改成「必须 >0」。
+- **A-04** `llm.complete(max_tokens=0)` 被 `if max_tokens:` 当空值静默丢弃：想「不限输出」的人
+  拿到 provider 默认上限（通常很小），表现为 JSON 被截断，而归因漂到 `_parse_content`
+  （指向「模型输出缺字段」而非「你把 max_tokens 写成 0 了」）；负数原样发给 provider。
+  改 `is not None` + 正整数闸（「缺省」与「显式零」是两件事，#115 同族）。
+- **A-05** `explore_auto(max_failures)`：同函数的 `max_steps`/`max_seconds` 都有闸，唯独它没有
+  ——`0`/负数首败即停，`stopped_reason="max_failures"` 把「参数写错」读成「连续失败达上限」，
+  与刚修的 `--max-steps -1` 是同一句话的两种拼写。补 ≥1 闸（含 bool 排除）。
+  限缩：CLI 只透传 `max_steps`/`max_seconds`，`max_failures` 恒为默认 3，故只是内部 API 缺口。
+
+### ④ 噪音
+
+- **A-06** `ATLAS_HEADED` 裸读 `os.environ.get(...) != "1"`，绕过同文件 `_flag_env` 单点
+  （其 docstring 自称「布尔开关的唯一读取点」，`ATLAS_ALLOW_PROD_WRITE` 走的就是它）——
+  `ATLAS_HEADED=true` 静默无头、零提示，同一文件里两套开关语义正是 #92「不留第二把刀」要消灭的。
+  改 `not _flag_env("ATLAS_HEADED")`（坏值点名原始值 repr）。
+- **A-07** `state_machine.run(max_steps=0)` 一次都不迭代却报「可能存在循环或守卫恒假」
+  ——归因指向别处，与 `--max-steps -1` 症状形态完全一致。改点名参数 + 消息带上实参。
+- **A-08** `fail_under` 值域闸只在 `cli.py`：库面直调 `review_code(..., fail_under=-1)` →
+  `avg_score < -1` 恒假 → 门禁静默失效。判据下沉进 `review_code()`（CLI 面保留，双层不冲突）。
+
+### 验证
+
+```
+PYTHONPATH=src python -m pytest -q                → 3310 passed / 0 failed / 1 skipped
+PYTHONPATH=src python -m pytest -q --collect-only → 3311 collected
+PYTHONPATH=src python -m compileall -q src        → rc 0
+```
+
+增量 3280 → 3310 = **+30**，全部来自 `tests/test_silent_degrade_gates.py`（30 条，逐条对上）。
+1 skipped 仍是 `test_gen.py` 的「无 allure 形态」条件跳过。
+
+**变异实证**（证明判据有牙齿，不是空转）：4 处回退 → **5 条精确红**，还原后 30 绿：
+
+| 回退 | 变红的测 |
+|---|---|
+| 门禁改回比 `avg_score`（取整值） | `test_fail_under_uses_raw_average_not_rounded` |
+| `knowledge_degraded = False`（不标降级） | `test_knowledge_mode_degradation_is_visible`、`test_text_format_marks_degradation` |
+| `if max_tokens is not None:` → `if max_tokens:` | `test_max_tokens_rejects_non_positive[0]` |
+| `_flag_env("ATLAS_HEADED")` → 裸读 env | `test_headed_flag_uses_single_point` |
+
+### 留白
+
+`emit_allure_review` 没有 summary/container 概念（每个文件一个 result），A-02 的降级标记
+**未进 allure 面**——CI 只看 allure 的人暂时看不到「选择器核对未执行」。要做到需要给
+allure 输出加一条容器级结果，属独立改动，不在本波内顺手塞。
