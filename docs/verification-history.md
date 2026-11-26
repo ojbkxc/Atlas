@@ -866,3 +866,46 @@ PYTHONPATH=src python -m compileall -q src        → rc 0
 `emit_allure_review` 没有 summary/container 概念（每个文件一个 result），A-02 的降级标记
 **未进 allure 面**——CI 只看 allure 的人暂时看不到「选择器核对未执行」。要做到需要给
 allure 输出加一条容器级结果，属独立改动，不在本波内顺手塞。
+
+## 3310 → 3318（2026-11-26，质量台账波 / T1）
+
+「整个项目挑不出毛病」按字面不可达，与用户确认为**全绿口径**：自动化判据全绿 + 清空
+已知留白，每条要么修、要么登记「不做+理由」；允许改门禁但**不得放宽**。
+
+**本波只建分母，不动业务代码。**
+
+### 三个新文件
+
+- `docs/quality-ledger.md`——50 项逐条编号：F01–F27（review-code findings）、
+  D01–D21（TODO/留白 grep 命中）、L01–L02（已知留白）。每项给判定与处置与证据。
+- `scripts/quality_inventory.py`——清点器（可复跑）。`reports/` 是 gitignored，
+  脚本必须入库，否则「脚本核对」不可复现。`F=27 D=21 L=2 total=50`。
+- `tests/test_quality_ledger.py`——6 条对账守卫：编号齐全/分母一致/位置可解析/
+  标记仍在/D21 反向断言/守卫自证（改不存在的行号必须点名）。
+
+### 判定结果（50 项）
+
+真缺陷 4（F05/F06/F12 缺理由注释 + F21 medium 写死样例客户号）、设计留白 20、
+文档噪声 6、合法类型抑制 1、理由已成立 16、非标记 1（D21 `\uXXXX` 误匹配）、
+环境未实测 1（L02 无 docker）、真缺口 1（L01 allure 降级标记）。
+
+**必须讲明**：收口后 `atlas review-code src` 仍会报约 26 条 low。那不是没修完——
+`GREEN-001-DECLARED`（带理由注释的收尾吞异常）与 `SAFE-001-COMMENT`（docstring 里的
+凭据**形态**讲解）正是项目为「真信号不被噪声淹没」专门降的档。让它们归零只有放宽规则
+一条路，而本目标明令禁止。
+
+### 顺带修掉的真缺陷（清点器自身）
+
+首版用 `subprocess.run(text=True)` 抓 review-code 输出 → Windows 默认 GBK 解码让 reader
+线程抛 `UnicodeDecodeError` → `proc.stdout` 变 **None**（rc=0 却拿不到输出，报错还指向
+`.strip()`）。显式 `encoding="utf-8", errors="replace"` 修掉。与既有的「默认编码」族同型。
+
+### 台账自身的三处不一致（已修，修结构不迁就测试）
+
+① D 项短路径 vs 约定写长路径；② L 项无 `path:line`，表格解析不到；③ 第四节「要动手
+清单」用表格重复出现 F21/F05，被编号唯一性当成重复条目。分别改为：统一约定
+「F/D 均相对 `src/atlas/`，L 无路径」、L 单独按首列认、第四节改列表引用。
+
+### 验证
+
+`pytest -q --collect-only` → 3319；`pytest -q` → **3318 passed / 0 failed / 1 skipped**。
