@@ -84,7 +84,7 @@ file:line 仍可解析、D 项的标记仍在——任何一侧漂移都会变�
 | 理由已成立（登记引用） | **16** | GREEN-001-DECLARED（F01–F19 中除 F05/F06/F12） |
 | 非标记（grep 误匹配） | **1** | D21（`\uXXXX`） |
 | 环境未实测 | **1** | L02（本机无 docker） |
-| 真缺口（机制缺失） | **1** | L01（allure 降级标记未进容器级结果） |
+| 真缺口（机制缺失） | **1** | L01（allure 降级标记未进容器级结果，**已修**） |
 | **合计** | **50** | 4+20+6+1+16+1+1+1 = **50**（与 F27+D21+L2 对得上） |
 
 ---
@@ -211,7 +211,7 @@ file:line 仍可解析、D 项的标记仍在——任何一侧漂移都会变�
 
 | 编号 | 项 | 判定 | 处置 | 证据 / 理由 |
 |---|---|---|---|---|
-| **L01** | allure 降级标记（`emit_allure_review` 无容器概念） | 真缺口 | **修** | 上一波 A-02 只把 `knowledge_degraded` 写进 `summary` 与 text 格式；`emit_allure_review(file_results, out_dir)` 每个文件一个 result、没有容器级结果，**只看 allure 的 CI 看不到「选择器核对未执行」**。已在上一波 commit 里显式留白，本台账收口。 |
+| **L01** | allure 降级标记（`emit_allure_review` 无容器概念） | 真缺口 | **已修** | 上一波 A-02 只把 `knowledge_degraded` 写进 `summary` 与 text 格式；`emit_allure_review(file_results, out_dir)` 每文件一个 result、无 summary/容器，**只看 allure 的 CI 看不到「选择器核对未执行」**。修法：把事实钉在**每个真实 result** 上（`statusDetails` 前缀「评审降级（…选择器核对未执行）」+ label `atlas.knowledge_degraded=true`，仅降级时加）。**不另造伪 result**：`devops_sync.load_allure_results` 会把每个 `*-result.json` 当一个用例同步，伪 result 等于凭空多一条不存在的用例（红线 #7 反向）。守卫：`tests/test_allure_degraded_marker.py` 4 条。 |
 | **L02** | Docker / compose / CI 未实测 | 环境未实测 | **不做（登记）** | 实测 `docker --version` → `command not found`；本机无 Docker，无法真实构建镜像或跑 compose。**绝不伪造通过**（AGENTS §1.15：必须真实执行并归档才能声称跨平台完成）。复现命令：`docker build -t atlas . && docker compose up --abort-on-container-exit`。CI 部分改为**本地核对判据一致性**（读 `.github/workflows/*.yml` 与本地命令逐条比对），不声称「CI 已绿」。 |
 
 ---
@@ -224,7 +224,7 @@ file:line 仍可解析、D 项的标记仍在——任何一侧漂移都会变�
 - **F05** `cli.py:1291` 补理由注释 —— **已补**（不改行为）
 - **F06** `cli.py:1298` 补理由注释 —— **已补**（不改行为）
 - **F12** `runtime.py:517` 补理由注释 —— **已补**（不改行为）
-- **L01** `emit_allure_review` 加容器级结果承载降级事实 —— 归属 T5
+- **L01** `emit_allure_review` 加降级标记 —— **已修**（statusDetails 前缀 + `atlas.knowledge_degraded` label，不另造伪 result）
 
 **其余 45 条**：登记为「不做 + 理由」，理由均在上表可核（引用代码注释原文 / AGENTS 条款 / 实测输出）。
 

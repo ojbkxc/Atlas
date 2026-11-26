@@ -3,7 +3,7 @@
 <p align="center">
   <a href="https://github.com/ojbkxc/Atlas"><img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License"></a>
-  <a href="#当前验证边界"><img src="https://img.shields.io/badge/tests-3327%20passed-brightgreen" alt="3327 passed"></a>
+  <a href="#当前验证边界"><img src="https://img.shields.io/badge/tests-3333%20passed-brightgreen" alt="3333 passed"></a>
   <img src="https://img.shields.io/badge/engine-Playwright-45edaa" alt="Playwright">
   <img src="https://img.shields.io/badge/self--healing-human--reviewed-orange" alt="Human-reviewed healing">
 </p>
@@ -628,8 +628,8 @@ PYTHONPATH=src python scripts/boundary_classify.py --diff incoming.diff --to-tow
   恢复）——已实测确认是环境侧，非代码问题。
   **仍未做**：写操作 flow / legacy 桥接轨 / `explore --auto` 真机；R2/R3/R5/R7 仍待授权。
 
-- 离线测试：**3327 passed / 0 failed**（Python 3.11；`PYTHONPATH=src python -m pytest -q`，
-  2026-11-25 实测——`--collect-only` 3328，其中 1 skipped 为条件跳过（本机装有 allure，
+- 离线测试：**3333 passed / 0 failed**（Python 3.11；`PYTHONPATH=src python -m pytest -q`，
+  2026-11-25 实测——`--collect-only` 3334，其中 1 skipped 为条件跳过（本机装有 allure，
   `tests/test_gen.py` 的「无 allure 形态」分支无法在本机构造；未装 allure 的 CI 上会实跑）；
   本波 **审计清单收口** +30 条新测试、净 passed +30（9 条「输入未校验→静默失效」全部落地闸门）：
   较上一收口位 2949（2026-11-16 实测）净 +35 且失败清零，本波 **缺陷修复**（代码分析逐条核出的

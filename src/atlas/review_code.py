@@ -1285,6 +1285,13 @@ def emit_allure_review(file_results: list[dict], out_dir: Path,
                     pass
 
     results_count = 0
+    # 降级事实的两种载法（台账 L01）：
+    #   ① **container**——契约字面要求的「容器级结果」。但 Allure 的 container
+    #      **不渲染成用例**，单靠它看不见，所以它只是结构承载。
+    #   ② **每个真实 result 的 statusDetails 前缀 + label**——真正能被看见的那一层。
+    # 两者都要：只做②会被问「容器呢」，只做①则等于没写。
+    emitted_uuids: list[str] = []
+    any_degraded = False
     for fr in file_results:
         uid = uuid.uuid4().hex
         f = fr.get("file", "unknown")
@@ -1310,8 +1317,18 @@ def emit_allure_review(file_results: list[dict], out_dir: Path,
         # 状态：有 critical/high → failed，否则 passed
         status = "failed" if max_severity in ("critical", "high") else "passed"
 
+        # 降级标记（台账 L01，上游 A-02 的留白）：本函数每文件一个 result、**没有容器概念**，
+        # 于是只看 allure 的 CI 看不到「knowledge 模式知识库不可用 → 选择器核对整段未执行」。
+        #
+        # 为什么不另造一个“降级容器/伪 result”：`*-result.json` 的消费方不止渲染器——
+        # `devops_sync.load_allure_results` 会把它当**一个用例**去同步，伪 result 会凭空
+        # 多出一条不存在的用例（红线 #7 反向：不能把没跑的东西说成跑了）。
+        # 所以把事实钉在**每个真实 result** 上：statusDetails 前缀（看报告的人先看到）
+        # + 专用 label（机器可筛）。降级是“本文件的评审降级了”，挂每个文件语义正确。
+        degraded = bool(fr.get("knowledge_degraded"))
+        prefix = "评审降级（knowledge 知识库不可用，选择器核对未执行）；" if degraded else ""
         status_details = _details(
-            f"{fr.get('finding_count', 0)} findings, score {total}/100",
+            f"{prefix}{fr.get('finding_count', 0)} findings, score {total}/100",
             f"file: {f}")
 
         # 维度 steps
@@ -1371,6 +1388,9 @@ def emit_allure_review(file_results: list[dict], out_dir: Path,
             {"name": "atlas.mode", "value": fr.get("mode", "static")},
             {"name": "atlas.ai_advisory", "value": "false"},
         ]
+        if degraded:
+            # 只在真降级时加：非降级评审不得凭空多出该 label（防噪声化，与 summary 侧同纪律）
+            labels.append({"name": "atlas.knowledge_degraded", "value": "true"})
         result = {
             "uuid": uid,
             "historyId": history_id,
@@ -1396,6 +1416,25 @@ def emit_allure_review(file_results: list[dict], out_dir: Path,
         result_path.write_text(
             json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
         results_count += 1
+        emitted_uuids.append(uid)
+        any_degraded = any_degraded or degraded
+
+    # 容器级结果：只在真降级时产出（未降级不得凭空多一个 container）。
+    # 放在循环后，因为 children 要引用全部 result uuid。
+    if any_degraded:
+        container = {
+            "uuid": uuid.uuid4().hex,
+            "name": "review-code（评审降级：knowledge 知识库不可用，选择器核对未执行）",
+            "description": (
+                "本次评审以 knowledge 模式请求运行，但知识库不可用，已降级为 static："
+                "SAFE-*/MAINT-* 的选择器核对**整段未执行**，findings 因此偏少、分数偏高。"
+                "降级事实同时标在每个 result 的 statusDetails 与 atlas.knowledge_degraded label 上。"),
+            "children": emitted_uuids,
+            "befores": [],
+            "afters": [],
+        }
+        (out_dir / f"atlas-{container['uuid']}-container.json").write_text(
+            json.dumps(container, ensure_ascii=False, indent=2), encoding="utf-8")
 
     return {"results": results_count, "out": str(out_dir)}
 

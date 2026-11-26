@@ -1058,3 +1058,39 @@ docstring**（解释旧缺陷时引用了 `"CUST0000001"`）。该规则的正�
 
 `pytest -q --collect-only` → 3328；`pytest -q` → **3327 passed / 0 failed / 1 skipped**。
 清点器 `D=21`（其中误匹配 1），grep 结果与台账逐条一致。
+
+## 3327 → 3333（2026-11-26，allure 降级标记落地 / T5）
+
+台账 L01 收口。上游 A-02 只把 `knowledge_degraded` 写进 `summary` 与 text 格式，
+**只看 allure 的 CI 看不到「选择器核对未执行」**——分数偏高、`--fail-under` 可能由红转绿。
+
+### 两种载法都要，缺一不算做完
+
+| 载体 | 作用 | 局限 |
+|---|---|---|
+| 每个 result 的 `statusDetails` 前缀 + `atlas.knowledge_degraded=true` label | **真正能被看见** | 散在每条结果上，没有「本次评审整体降级」的锚点 |
+| `*-container.json`（children 引用全部 result uuid） | 契约要求的**容器级**锚点 | Allure 的 container **不渲染成用例**，单独存在等于看不见 |
+
+所以两种都产出，并在代码注释里写明这个分工——否则下一个人只会看到「两处都写了」而不知道
+为什么必须两处都写。
+
+### 关键设计：不另造伪 result
+
+`*-result.json` 的消费方不止 allure 渲染器——`devops_sync.load_allure_results` 会把每个
+`*-result.json` 当成**一个用例**去同步。造一个「降级伪 result」会凭空多出一条不存在的用例，
+那是红线 #7 的反向违反（不能把没跑的东西说成跑了）。
+
+改为把事实挂在**每个真实 result** 上，语义也更准确：「本文件的这次评审降级了」。
+container 只放 `uuid/children/befores/afters`（+无害的 name/description），不塞私有字段。
+
+### 守卫（`tests/test_allure_degraded_marker.py`，6 条）
+
+降级→前缀+label / 正向对照：未降级不得出现 label / 端到端真跑 `review_code(mode=knowledge)`
+（插件解析必炸）→ 产物可读 / `load_allure_results` 仍读得到（加了 label 不破坏消费方）/
+降级→container 且 children == 全部 result uuid / 正向对照：未降级不得有 container。
+
+**变异实证**：移除 label 追加 → 2 条精确红（直接打穿 emit + 端到端），还原后 6 绿。
+
+### 验证
+
+`pytest -q --collect-only` → 3334；`pytest -q` → **3333 passed / 0 failed / 1 skipped**。
