@@ -909,3 +909,72 @@ allure 输出加一条容器级结果，属独立改动，不在本波内顺手�
 ### 验证
 
 `pytest -q --collect-only` → 3319；`pytest -q` → **3318 passed / 0 failed / 1 skipped**。
+
+## 3318 → 3325（2026-11-26，台账 F21 收口 / T2）
+
+台账 F21 = 唯一 medium `MAINT-003`（`plugins/demo/tasks.py` 写死样例客户号）。
+
+### 缺陷不是「写死了一个值」，是「用替身掩盖没给数据」
+
+```
+flow 的 select_customer 步没给 code/code_full
+  → 静默默认值 CUST0000001 生效
+  → 拿虚构样例客户去查真实系统
+  → payment_terms 取自错客户的 collectPayments
+  → 后续 PT 断言/金额/保存链全部建立在这个错客户上
+  → 全程无报错，结论是错的
+```
+
+与 `demo-025` 坑点同族（「盲选第一行导致客户与 PT 断言全部失真」）。AGENTS §1.6：
+数据缺失必须用 `EnvBlocked` 明确终止，禁止步骤内兜底。
+
+### 修法：两类「默认值」处置相反（这是最容易修反的地方）
+
+| 参数 | 属什么 | 处置 |
+|---|---|---|
+| `page_key` / `wh` / `target` | **结构旋钮**——缺了 pages.py 只抛裸 TypeError，看得出「调用形态不对」 | **保留**默认值 |
+| `code` / `code_full` | **业务数据**——缺了就静默查错客户，错误静默传播到后续断言 | **删除**默认值 + 入口 `EnvBlocked` |
+
+`_require_customer_code()` 在 `perform`（UI 腿）与 `_perform_api`（API 腿）两个入口都调，
+消息点名缺哪两个键并指向 §1.6——**不是**让人去猜 TypeError。
+
+**台账初稿的修法是错的，已更正**：初稿写「改走 `_session_default`」，但
+`session_defaults()` 只有 account/ou/division/language 四个**结构性会话坐标**，
+客户编号不属会话坐标——拿它当客户来源等于把业务数据塞进会话层，是另一个形态的错误。
+
+### 踩到的第二个坑：修好了反而多出一条 medium
+
+删掉代码里的字面量后，`MAINT-003` 从 `:255` 挪到了 `:188`——**命中了我自己写的
+docstring**（解释旧缺陷时引用了 `"CUST0000001"`）。该规则的正则是
+`['\"](?:SO|SO-|CUST|PT|DEMO)[-_]?\d{4,}['\"]`，要求**带引号**，而 docstring 里引用代码
+正好带引号。
+
+处置：**改自己的注释措辞，不改规则**。让 MAINT-003 跳过注释虽是「更准确」，但本目标明令
+「门禁不得放宽」，而减少 finding 的改动天然带放宽嫌疑——不值得为一句注释去动判据。
+
+### 守卫（`tests/test_select_customer_no_silent_default.py`，7 条）
+
+业务数据没有静默默认值 / 结构旋钮默认值**必须还在**（反向对照，防整块删掉）/
+缺编号 UI 腿与 API 腿都 `EnvBlocked`（消息含 `code`/`code_full`/`§1.6`，**不是** TypeError）/
+显式给 `code`、`code_full`、两者都给 三个正向对照。
+
+同时更新 `tests/test_plugin_and_legacy.py::test_core_tasks_carry_required_default_args`
+——它原来断言 `params["code"]` 为真，**编码的正是这个缺陷**；改为断言业务数据无静默默认、
+结构旋钮默认仍在。这不是放宽断言，是把断言改钉到修正后的契约上。
+
+### 台账对账机制（新增）
+
+修好的项会**从实测消失**，于是台账行数 > 实测条数恒成立，差额不得成为糊涂账。约定：
+
+```
+台账 F 行数 − 处置列标「已修」的条数 == 实测 findings 条数
+```
+
+`scripts/quality_inventory.py` 每次跑都验这个恒等式，不一致 **exit 1**。
+本次输出：`台账F=27 已修=1 实测F=26 → OK`。「已修」不从台账删行——删了下一波会把
+它当新问题重报，也丢掉「曾经真存在过、修法是什么、守卫在哪」的记录。
+
+### 验证
+
+`pytest -q --collect-only` → 3326；`pytest -q` → **3325 passed / 0 failed / 1 skipped**。
+`atlas review-code src` → **0 critical / 0 high / 0 medium**（severity 分布只剩 26 条 low）。

@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 from typing import Any
 from ...core import Channel, Task, TaskMetadata
+from ...failures import EnvBlocked
 
 # session.json 是虚构示例默认值；指向真实业务时用环境变量整体覆盖（与 bridge 映射同精神：
 # 引擎/仓库零真实字面量，真实值只在本机 .env 里）。
@@ -181,7 +182,34 @@ class SelectCustomerTask(DemoTask):
     supports_api = True
     api_leg_side_effect_free = True
 
+    def _require_customer_code(self) -> str:
+        """客户编号是**业务数据**，缺了就明确终止，绝不默认（AGENTS §1.6）。
+
+        改前 `core_tasks()` 给它塞了写死的虚构样例客户编号：flow 不提供客户时
+        就静默拿那个替身去查真实系统——查错客户，而 `payment_terms` 与后续断言
+        全部建立在这个错客户上（`demo-025` 坑点同族：盲选导致客户与 PT 断言全部失真）。
+
+        为什么不能用 `_session_default` 兼容：会话默认值只有 account/ou/division/language
+        四个结构性坐标，**客户编号不属会话坐标**——它是每一步的业务入参。数据缺失不是
+        “参数缺省”，按 §1.6 用 `EnvBlocked` 明确终止，而不是编一个替身。
+        """
+        code = str(self.params.get("code") or self.params.get("code_full") or "").strip()
+        if code:
+            return code
+        raise EnvBlocked(
+            "select_customer 未提供客户编号（code/code_full 都为空）——"
+            "客户是业务数据，Atlas 不提供静默默认值（AGENTS §1.6 禁止步骤内数据兜底）："
+            "请在 flow 的该步参数里显式给 code/code_full"
+            "（样例见 examples/atlas_core_verify.yaml），或由上游 task 的 produces 注入")
+
+    def perform(self, actor) -> Any:
+        # UI 腿：`pages.py` 缺位置参只会抛裸 TypeError（看不出是客户编号缺失），
+        # 先点名再叫父类。这是“数据缺失用 EnvBlocked 明确终止”的唯一入口。
+        self._require_customer_code()
+        return super().perform(actor)
+
     def _perform_api(self, actor) -> Any:
+        self._require_customer_code()
         api = getattr(actor, "demo_api", None)
         if api is None:
             raise NotImplementedError("未装配 DemoApi")
@@ -222,9 +250,13 @@ class ReadPtTask(DemoTask):
 
 
 def core_tasks(pages_path: Path | None = None) -> list[DemoTask]:
-    # 末尾第 9 项为业务默认参数：pages.py 的必需位置参数必须有默认值，
-    # 否则 agent/DSL 省略参数时会在真实执行阶段 TypeError。
-    # select_customer / read_pt 用具体子类以实现 channel=auto 的 API 路由。
+    # 「必需位置参数”要分两类，处置相反（MAINT-003 medium 的根因就是没分）：
+    #   ① **结构旋钮**（`page_key`/`wh`/`target`）——缺了让 pages.py 裸 TypeError，看得出
+    #      是“调用形态不对”；给默认值是正当的，引擎/DSL 省略参数时有个安全形态。
+    #   ② **业务数据**（客户编号）——缺了静默默认就是“拿虚拟客户查真实系统”，
+    #      且错误会静默传到 PT 与后续断言（`demo-025` 坑点）。按 AGENTS §1.6 禁止兜底。
+    # 所以 `select_customer` / `read_pt` 用具体子类（实现 channel=auto 的 API 路由），
+    # 客户编号**不给默认值**：缺失时由 `SelectCustomerTask._require_customer_code` 抛 EnvBlocked。
     specs = [
         ("open_doc_list", "打开业务单据列表", (), ("doc_list_ready",), Channel.AUTO, "", "", True,
          {"page_key": "sales_order"}),
@@ -252,7 +284,7 @@ def core_tasks(pages_path: Path | None = None) -> list[DemoTask]:
         requires=("new_document_ready",), produces=("customer",), channel=Channel.AUTO,
         api_operation="customer_detail", ui_fallback="select_customer", read_only=False,
         tags=("select_customer",))
-    tasks.insert(2, SelectCustomerTask(select_meta, pages_path, defaults={"code": "CUST0000001", "code_full": "CUST00000010001"}))
+    tasks.insert(2, SelectCustomerTask(select_meta, pages_path))
     read_pt_meta = TaskMetadata(domain="demo", intent="读取 Payment Terms",
         requires=("customer",), produces=("payment_terms",), channel=Channel.AUTO,
         api_operation="customer_detail", ui_fallback="read_pt", read_only=True,

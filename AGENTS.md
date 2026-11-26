@@ -72,14 +72,14 @@ PYTHONPATH=src python -m compileall -q src
 PYTHONPATH=src python -m atlas doctor
 ```
 
-- 当前基线：**3318 passed**（逐波历史链见 [docs/verification-history.md](docs/verification-history.md)；本文件只留活约束与四处计数锚点）
+- 当前基线：**3325 passed**（逐波历史链见 [docs/verification-history.md](docs/verification-history.md)；本文件只留活约束与四处计数锚点）
 - **DST 语义是设计而非缺陷**（2026-11-24 实探并锁死）：cron 分支用 `wall_age`（墙钟差）、
   `once` 分支用绝对差（`schedule.at` 必须带偏移）；缺口日两者恰差一个缺口小时。
   缺口语义 = next_slot 返回「幽灵墙钟 + 顺延瞬间」（`02:30+01:00` 实指本地 `03:30+02:00`）。
   **别「统一 age 口径」**——cron 表达的是「当地几点」，统一成绝对差会在缺口/回拨日把
   「准点 vs 补跑」判错。判据：`tests/test_cron_dst_semantics.py`（含决策层行为面）。
 - **`astimezone(同一 ZoneInfo)` 走恒等短路**：不做墙钟重算，所以「墙钟→瞬间→墙钟」自检
-  必须经 UTC 往返（`dt.astimezone(utc).astimezone(tz)`），否则恒稳定假绿。（逐波历史链 1448 → 3318 见 [docs/verification-history.md](docs/verification-history.md)；本文件只留活约束与四处计数锚点，过程叙事搬去该文档。单文件 95KB 会超注入预算，§3/§4/§5 被截掉比缺历史更危险）。
+  必须经 UTC 往返（`dt.astimezone(utc).astimezone(tz)`），否则恒稳定假绿。（逐波历史链 1448 → 3325 见 [docs/verification-history.md](docs/verification-history.md)；本文件只留活约束与四处计数锚点，过程叙事搬去该文档。单文件 95KB 会超注入预算，§3/§4/§5 被截掉比缺历史更危险）。
 - **`run.status=timeout` → allure `broken` 是契约，别改成 failed/interaction**（2026-11-24 审计：
   我一度以为是「归因被写成 unknown」，加了 timeout→failed 分支，被**三处既有测**当场挡回：
   `test_waiting_operational.py::test_allure_unknown_status_still_broken[timeout]`、

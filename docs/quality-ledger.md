@@ -32,10 +32,29 @@ file:line 仍可解析、D 项的标记仍在——任何一侧漂移都会变�
 
 | 类 | 数量 | 来源 |
 |---|---|---|
-| F 项（review-code findings） | **27** | `atlas review-code src --format json` |
+| F 项（review-code findings） | **27** | `atlas review-code src --format json`（收口后为 **27 − 已修**） |
 | D 项（TODO/FIXME/XXX/待补/留白 grep 命中） | **21** | `src/atlas/**/*.py`（其中 **1 条为误匹配**，见 D21） |
 | L 项（已知留白） | **2** | allure 降级标记 / Docker·compose·CI 未实测 |
 | **合计** | **50** | — |
+
+### 状态对账（修完的项会从实测消失，不靠目测）
+
+一条问题**修好之后就不再出现在 `review-code` 的 findings 里**，于是台账行数（历史全量）
+与实测条数必然出现差额。差额不得成为糊涂账，因此约定：
+
+```
+台账 F 行数 − 处置列标注「已修」的条数 == 实测 findings 条数
+```
+
+这个恒等式由 `scripts/quality_inventory.py` 每次跑都验（不一致直接 exit 1）：
+
+| 时点 | 台账 F | 已修 | 实测 F | 恒等式 |
+|---|---|---|---|---|
+| 建台账（2026-11-26） | 27 | 0 | 27 | 27 − 0 = 27 ✓ |
+| T2 收口（F21 已修） | 27 | 1 | 26 | 27 − 1 = 26 ✓ |
+
+**「已修」不等于「从台账删掉」**：删掉会让下一波清点把它当新问题重报，也会丢掉
+「这条曾经真存在过、修法是什么、守卫在哪」的记录。
 
 **判定分布**：
 
@@ -96,7 +115,7 @@ file:line 仍可解析、D 项的标记仍在——任何一侧漂移都会变�
 
 | 编号 | 位置 | 判定 | 处置 | 证据 |
 |---|---|---|---|---|
-| **F21** | `plugins/demo/tasks.py:255` | **真缺陷** | **修** | `SelectCustomerTask(..., defaults={"code": "CUST0000001", "code_full": "CUST00000010001"})`——写死样例客户号。flow 不提供 customer 时**静默**用这个客户，属 AGENTS §1.6「禁止步骤内数据兜底」同族。项目已有正确路径：同文件 `overlay_session()` / `_session_default()`（第 15–20、68–80 行）从 `DemoPlugin.session_defaults()` 取值。 |
+| **F21** | `plugins/demo/tasks.py:287` | **真缺陷** | **已修** | `SelectCustomerTask(..., defaults={"code": "CUST0000001", ...})`——写死样例客户号，flow 不提供客户时**静默**拿替身去查真实系统（AGENTS §1.6「禁止步骤内数据兜底」同族，`demo-025` 坑点同族）。**修法修正**：台账初稿写「改走 `_session_default`」是**错的**——`session_defaults()` 只有 account/ou/division/language 四个**结构性坐标**，客户编号不属会话坐标，拿它当来源等于把业务数据塞进会话层。实际修法：删掉写死的默认值 + 新增 `_require_customer_code()` 在 `perform`/`_perform_api` 入口点名缺失并抛 `EnvBlocked`（节 6：数据缺失明确终止，不编替身）。结构旋钮（`page_key`/`wh`/`target`）的默认值**保留**。守卫：`tests/test_select_customer_no_silent_default.py`（4 条，含反向对照「结构旋钮默认值必须还在」）。 |
 
 ### SAFE-001-COMMENT（6 条，全部为文档噪声）
 
@@ -165,7 +184,7 @@ file:line 仍可解析、D 项的标记仍在——任何一侧漂移都会变�
 
 （以下为**清单引用**，不重复台账条目；条目的完整记录在上三节。）
 
-- **F21** `tasks.py:255` 写死样例客户号 → 改走 `overlay_session` / `_session_default` —— 归属 T2
+- **F21** `tasks.py:287` 写死样例客户号 → **已修**（删默认值 + `_require_customer_code()` 抛 `EnvBlocked`；守卫 `tests/test_select_customer_no_silent_default.py`） —— 归属 T2
 - **F05** `cli.py:1291` 补理由注释（不改行为） —— 归属 T3
 - **F06** `cli.py:1295` 补理由注释（不改行为） —— 归属 T3
 - **F12** `runtime.py:517` 补理由注释（不改行为） —— 归属 T3

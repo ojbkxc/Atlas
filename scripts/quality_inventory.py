@@ -31,7 +31,11 @@ SRC = REPO / "src" / "atlas"
 REPORTS = REPO / "reports"
 RC_JSON = REPORTS / "_rc.json"
 OUT = REPORTS / "quality-inventory.md"
+LEDGER = REPO / "docs" / "quality-ledger.md"
 BS = chr(92)
+
+# 台账条目行：| F01 | `path:line` | … / | **F21** | …（只认行首 `|` 的表格行）
+_LEDGER_ROW = re.compile(r"^\|\s*\**([FD]\d{2})\**\s*\|", re.M)
 
 
 def _norm(p: str) -> str:
@@ -109,6 +113,20 @@ def whitespace_probes() -> list[dict]:
     ]
 
 
+def ledger_denominator() -> tuple[int, int]:
+    """从台账读（F 行数, 其中标「已修」的条数）。
+
+    修好的问题不再出现在 review-code 的 findings 里，所以台账行数会永远≥实测条数。
+    差额必须可核：恒等式 `台账F − 已修 == 实测F`，不一致就 exit 1。否则「修完就
+    消失」会变成糊涂账：既说不清修了几条，也看不出有没有修了却漏登台账。
+    """
+    if not LEDGER.is_file():
+        return 0, 0
+    lines = LEDGER.read_text(encoding="utf-8").splitlines()
+    f_lines = [ln for ln in lines if re.match(r"^\|\s*\**F\d{2}\**\s*\|", ln)]
+    return len(f_lines), sum(1 for ln in f_lines if "已修" in ln)
+
+
 def main() -> None:
     data = run_review_code()
     f_rows = findings(data)
@@ -142,7 +160,16 @@ def main() -> None:
         out.append(f"\n- **{w['id']}** {w['name']}\n  - probe: `{w['probe']}`\n")
 
     OUT.write_text("".join(out), encoding="utf-8")
+
+    ledger_f, ledger_fixed = ledger_denominator()
+    reconciled = (ledger_f - ledger_fixed) == len(f_rows) if ledger_f else True
     print(f"F={len(f_rows)} D={len(t_rows)} L={len(w_rows)} total={total} -> {OUT}")
+    print(f"对账: 台账F={ledger_f} 已修={ledger_fixed} 实测F={len(f_rows)}"
+          f" → {'OK' if reconciled else 'MISMATCH'}")
+    if not reconciled:
+        print(f"恒等式破了：台账F {ledger_f} - 已修 {ledger_fixed} != 实测F {len(f_rows)}。"
+              f"多半是修了但没在台账标「已修」，或台账行被删了。", file=sys.stderr)
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

@@ -44,15 +44,24 @@ def test_cli_tasks_do_not_need_credentials(tmp_path, capsys):
 
 
 def test_core_tasks_carry_required_default_args():
-    """pages.py 的必需位置参数必须有默认值，否则 agent/DSL 真实执行会 TypeError。"""
+    """**结构旋钮**必须有默认值；**业务数据**则相反（MAINT-003 medium 的收口）。
+
+    两类的处置是**相反**的，不能一刀切：
+    - `page_key`/`wh`/`target` 是结构旋钮——缺了让 pages.py 裸 TypeError（看得出“调用
+      形态不对”），给默认值正当；
+    - 客户编号是业务数据——静默默认会拿**虚构样例客户**去查真实系统，错误还静默传到
+      payment_terms 与后续断言（demo-025 坑点）。故按 AGENTS §1.6 禁止兜底。
+    """
     from atlas.dsl import TaskRegistry
     from atlas.plugins.demo import DemoPlugin
     registry = TaskRegistry()
     DemoPlugin().register_tasks(registry)
     assert registry.create("open_doc_list").params["page_key"]
     assert registry.create("click_new").params["page_key"]
-    assert registry.create("select_customer").params["code"]
     assert registry.create("ensure_warehouse").params["wh"]
+    # 业务数据：**不**许有静默默认值（改前这里是 CUST0000001/CUST00000010001）
+    assert "code" not in registry.create("select_customer").params
+    assert "code_full" not in registry.create("select_customer").params
 
 
 def test_registry_rebuild_keeps_defaults_after_clone():
