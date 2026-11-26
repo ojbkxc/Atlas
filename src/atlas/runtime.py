@@ -515,6 +515,9 @@ class DemoRuntime:
             page.wait_for_selector(indicator, state="visible", timeout=8000)
             return  # 顶栏已渲染（绝大多数情况），零开销通过
         except Exception:
+            # 收尾吞（收口台账 F12）：这是**快路径探测**，失败不是结论——下面会重载
+            # 两轮并由 `wait_for_selector` 重判，两轮都失败时由下方统一报真因。此处抛出
+            # 会把「顶栏还没渲染」提前判成失败，掩盖真正该报的原因。
             pass
         for attempt in range(2):
             try:

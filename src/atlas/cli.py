@@ -1289,10 +1289,16 @@ def _kill_process_tree(proc: subprocess.Popen) -> None:
             except (ProcessLookupError, PermissionError):
                 pass   # 进程已退出/组不可达：目标已达成
     except Exception:
+        # 收尾吞（收口台账 F05）：读 `proc.pid` / `getpgid` / `killpg` 任一环节抛错
+        # 都说明「树杀这条路走不通」，而目标（进程死）由下一行 `proc.kill()` 兜底达成。
+        # 不吞会把「收尾失败」顶成「用例失败」，归因从业务缺陷漂成进程管理问题。
         pass
     try:
         proc.kill()   # 兜底：直接子进程本体（树杀失败的最后一手）
     except Exception:
+        # 收尾吞（收口台账 F06）：最后一手。进程可能已自行退出（ProcessLookupError），
+        # 也可能权限不足——两种都改变不了「用例已超时」这个已成立的结论。再抛只会让
+        # 真因从「用例跑不完」漂成「杀进程失败」。
         pass
 
 

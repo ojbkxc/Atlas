@@ -59,6 +59,16 @@ def _l_ids() -> list[str]:
     return [f"L{m.group(1)}" for m in _L_ROW.finditer(_LEDGER.read_text(encoding="utf-8"))]
 
 
+def _loc_rows_with_text() -> list[tuple[str, str, int, str]]:
+    """带整行原文的条目（需要用处置列判断状态时用）。"""
+    out = []
+    for ln in _LEDGER.read_text(encoding="utf-8").splitlines():
+        m = _LOC_ROW.match(ln)
+        if m:
+            out.append((m.group(1), m.group(2), int(m.group(3)), ln))
+    return out
+
+
 def _problems(rows: list[tuple[str, str, int]]) -> list[str]:
     """逐条核 file:line 可解析 + D 项标记仍在。返回问题描述列表（空=全好）。"""
     out: list[str] = []
@@ -121,6 +131,27 @@ def test_todo_locations_still_carry_a_marker():
     bad = [p for p in _problems([r for r in _loc_rows() if r[0].startswith("D")])
            if p.startswith("D")]
     assert not bad, "D 项位置已无待办标记（要么标记被删、要么台账没跟）：\n" + "\n".join(bad)
+
+
+def test_patched_rows_carry_rationale():
+    """标 `已补` 的条目，其位置附近**必须**有紧邻的理由注释。
+
+    为什么单钉这条：`已补` 不进对账恒等式（它不消除 finding，只降低「理由不可核」），
+    于是它成了最容易退化成一词空话的状态——「我补了」不可核就等于没补。这里把
+    「补了」变成可核事实：注释必须在 `except` 行上溯 3 行或 body 首行内。
+    """
+    patched = [r for r in _loc_rows_with_text() if "已补" in r[3]]
+    if not patched:
+        pytest.skip("台账当前没有已补条目（F05/F06/F12 收口后才会出现）")
+    offenders = []
+    for entry, path, line, _ in patched:
+        lines = (_SRC / path).read_text(encoding="utf-8").splitlines()
+        window = lines[max(0, line - 4):min(len(lines), line + 2)]
+        if not any(ln.lstrip().startswith("#") for ln in window):
+            offenders.append(f"{entry}: src/atlas/{path}:{line} 附近无理由注释")
+    assert not offenders, (
+        "台账标了已补但代码里找不到紧邻的理由注释（「已补」退化成空话）：\n"
+        + "\n".join(offenders))
 
 
 # ── 5：D21 的反向断言 ────────────────────────────────────────────────────
