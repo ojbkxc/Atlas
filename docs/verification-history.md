@@ -1130,3 +1130,50 @@ compose 命令一致。**它不验镜像能否构建**——把这两件事混�
 ### 验证
 
 `pytest -q` → 3333 passed / 0 failed / 1 skipped（计数不变，本笔无新增测试）。
+
+## 3333 → 3339（2026-11-26，回潮守卫 + 门禁不放宽复核 / T7）
+
+本目标是「每一项已知问题都有处置」。但**「处置过」不等于「不会反弹」**，更不等于
+「没人把门禁调松」。这笔补两层防伪：**回潮守卫**（每类真缺陷都有会变红的测）+ **门禁不放宽**。
+
+### 一、逐条核 diff：没有任何判据被改松
+
+从 `15c9ec6`（目标起点，即上一笔已提交状态）到本笔全额核过：
+
+| 判据 | 结论 | 证据 |
+|---|---|---|
+| CI `ruff check … --select` | **未改** | `git diff 15c9ec6 -- .github/workflows/` 无 ruff 行改动 |
+| review-code 规则档位 | **无降档** | diff 里只有注释新增，无 severity 变更行 |
+| `fail_under` 类闸 | **只更严** | 唯一实质改动 `avg_score → raw_avg`（79.6 现在会红）+ 新增 0..100 值域闸 |
+| 声明式 skip/xfail | **未新增** | 无条件 `skip`/`xfail` = 0；`skipif` = 6（条件跳过，基线冻结） |
+
+### 二、新增守卫 `tests/test_gate_not_loosened.py`（6 条）
+
+这类放宽**不会让任何既有测试变红**（它们改的是「什么算问题」而不是「代码对不对」），
+所以必须单独钉住：
+
+1. `test_ci_ruff_select_list_not_reduced`：两处 `--select` 都是 `{F401,F841,F811,E402}` 的**超集**
+   （加严允许，缩水禁止）；
+2. `test_ci_required_doctor_checks_present`：`docker_assets_consistent` /
+   `boundary_assets_consistent` 仍在 `required` 元组里（防被挪成「只打印不判定」）；
+3. `test_review_code_gate_severities_not_downgraded`：18 条 critical/high 规则严重度 rank 只许升；
+4. `test_no_declarative_skip_or_xfail`：无条件 skip/xfail 冻结 0、`skipif` 冻结 6；
+5. `test_frozen_snapshot_matches_reality`：冻结表与现状必须一致——有意升降档必须同步改表
+   （这是**显式决策点**，不是自动放过）；
+6. `test_guard_can_still_catch_loosening`：**自证**——缩水样本必须被点名、加严样本必须放行。
+
+**变异实证**：把 CI 第一处 `--select F401,F841,F811,E402` 改成 `F401,F841`
+→ `test_ci_ruff_select_list_not_reduced` 精确点名「少了 ['E402','F811']」；还原后 6 绿。
+F21 的回退变异同轮验过：还原写死客户号 → 2 条红（新守卫 + 改钉后的 legacy 测），还原后绿。
+
+### 三、踩到的两个自伤
+
+1. 首版把 `skipif` 也算「永久跳过」并要求 0 → 6 条合法的平台/版本条件跳过把守卫自己搞红。
+   改为**分类冻结基线**（skip=0 / xfail=0 / skipif=6）：条件跳过合法，但涨一条就是一次
+   显式决策。
+2. 首版扫描把自己也扫了——本文件 docstring 里提到标记名就成违规。加**排除自身**，
+   并把自证条款改成不靠字面量。
+
+### 验证
+
+`pytest -q --collect-only` → 3340；`pytest -q` → **3339 passed / 0 failed / 1 skipped**。
