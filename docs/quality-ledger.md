@@ -212,7 +212,7 @@ file:line 仍可解析、D 项的标记仍在——任何一侧漂移都会变�
 | 编号 | 项 | 判定 | 处置 | 证据 / 理由 |
 |---|---|---|---|---|
 | **L01** | allure 降级标记（`emit_allure_review` 无容器概念） | 真缺口 | **已修** | 上一波 A-02 只把 `knowledge_degraded` 写进 `summary` 与 text 格式；`emit_allure_review(file_results, out_dir)` 每文件一个 result、无 summary/容器，**只看 allure 的 CI 看不到「选择器核对未执行」**。修法：把事实钉在**每个真实 result** 上（`statusDetails` 前缀「评审降级（…选择器核对未执行）」+ label `atlas.knowledge_degraded=true`，仅降级时加）。**不另造伪 result**：`devops_sync.load_allure_results` 会把每个 `*-result.json` 当一个用例同步，伪 result 等于凭空多一条不存在的用例（红线 #7 反向）。守卫：`tests/test_allure_degraded_marker.py` 4 条。 |
-| **L02** | Docker / compose / CI 未实测 | 环境未实测 | **不做（登记）** | 实测 `docker --version` → `command not found`；本机无 Docker，无法真实构建镜像或跑 compose。**绝不伪造通过**（AGENTS §1.15：必须真实执行并归档才能声称跨平台完成）。复现命令：`docker build -t atlas . && docker compose up --abort-on-container-exit`。CI 部分改为**本地核对判据一致性**（读 `.github/workflows/*.yml` 与本地命令逐条比对），不声称「CI 已绿」。 |
+| **L02** | Docker / compose / CI 未实测 | 环境未实测（**已拆分**） | **不做（登记）** | **必须拆成两件事**，否则会把「资产一致」冒充成「能构建」：<br>**① 资产一致性——已验证**（不是留白）：`Dockerfile` 可读且引用的 `pyproject.toml`/`requirements.txt`/`examples/smoke_browser.py` 均存在、`CMD` 与 compose 命令一致。实测 `atlas doctor --format json` → `docker_assets_consistent=True`、`docker_cmd_matches_compose=True`、`docker_ref_missing=None`；CI 把它列为**必检项**。<br>**② 镜像真构建 / compose up——未实测**：`command -v docker` → NOT FOUND，本机无 Docker。**绝不伪造通过**（AGENTS §1.15：必须真实执行并归档才能声称跨平台完成）。复现命令：`docker build -t atlas . && docker compose up --abort-on-container-exit`。<br>**CI 不声称「已绿」**：只做本地判据一致性核对，见下节。 |
 
 ---
 
@@ -227,6 +227,25 @@ file:line 仍可解析、D 项的标记仍在——任何一侧漂移都会变�
 - **L01** `emit_allure_review` 加降级标记 —— **已修**（statusDetails 前缀 + `atlas.knowledge_degraded` label，不另造伪 result）
 
 **其余 45 条**：登记为「不做 + 理由」，理由均在上表可核（引用代码注释原文 / AGENTS 条款 / 实测输出）。
+
+---
+
+## 四之二、CI 判据一致性核对（L02 的「CI 部分」）
+
+**不声称「CI 已绿」**——本机只有 Windows 3.11，CI 是 ubuntu 3.11/3.12/3.13 + windows 3.13。
+能做的只有「判据是否同形」与「本地能跑的那几条是否真绿」：
+
+| CI 判据（`.github/workflows/ci.yml`） | 本地核对结果 | 可否本地验证 |
+|---|---|---|
+| `ruff check src tests scripts --select F401,F841,F811,E402` | **All checks passed** | ✓ 完全 |
+| `pytest -q` | **3333 passed / 1 skipped / 0 failed** | ✓ 仅 3.11·Windows |
+| `compileall -q src scripts examples` | **rc 0** | ✓ 完全 |
+| doctor 必检项 `docker_assets_consistent` / `boundary_assets_consistent` | 两者 **True** | ✓ 完全 |
+| headless browser smoke（`examples/smoke_browser.py`） | 未跑（需 Chromium 安装与无头环境） | ✗ 未验 |
+| ubuntu + 3.11/3.12/3.13 矩阵 | 本机无 | ✗ 未验 |
+
+**结论**：判据同形、本地可验的全绿；**跨版本（3.12/3.13）与跨 OS（ubuntu）仍为未验**——如实登记，不拿
+「本地全绿」冒充「CI 已绿」。这也是 AGENTS §1.15「禁止伪造跨平台验收」的字面要求。
 
 ---
 

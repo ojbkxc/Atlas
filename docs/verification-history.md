@@ -1094,3 +1094,39 @@ container 只放 `uuid/children/befores/afters`（+无害的 name/description）
 ### 验证
 
 `pytest -q --collect-only` → 3334；`pytest -q` → **3333 passed / 0 failed / 1 skipped**。
+
+## 3333（2026-11-26，Docker·CI 未实测处置 / T6）——计数不变，只补登记
+
+台账 L02。**这笔不改任何代码，只把「未实测」拆成可核的两件事**，因为原文写法有把
+「资产一致」冒充成「能构建」的风险。
+
+### 拆法
+
+| 项 | 状态 | 依据 |
+|---|---|---|
+| ① Docker **资产一致性** | **已验证**（不是留白） | `atlas doctor --format json` → `docker_assets_consistent=True`、`docker_cmd_matches_compose=True`、`docker_ref_missing=None`；CI 列为必检项 |
+| ② **镜像真构建 / compose up** | **未实测** | `command -v docker` → NOT FOUND；复现命令 `docker build -t atlas . && docker compose up --abort-on-container-exit` |
+
+读 `src/atlas/cli.py:432-447` 确认 `docker_assets_consistent` 只验三件事：Dockerfile 可读、
+它引用的 `pyproject.toml`/`requirements.txt`/`examples/smoke_browser.py` 存在、`CMD` 与
+compose 命令一致。**它不验镜像能否构建**——把这两件事混成一句「docker 已检查」就是过度声称。
+
+### CI 判据一致性（不声称「CI 已绿」）
+
+本机只有 Windows 3.11；CI 是 ubuntu 3.11/3.12/3.13 + windows 3.13。
+
+| CI 判据 | 本地结果 | 可否本地验证 |
+|---|---|---|
+| `ruff check … --select F401,F841,F811,E402` | All checks passed | ✓ 完全 |
+| `pytest -q` | 3333 passed / 1 skipped / 0 failed | ✓ 仅 3.11·Windows |
+| `compileall -q src scripts examples` | rc 0 | ✓ 完全 |
+| doctor 必检项（docker/boundary 资产一致） | 两者 True | ✓ 完全 |
+| headless browser smoke | 未跑 | ✗ 需 Chromium |
+| ubuntu × 3.11/3.12/3.13 矩阵 | 本机无 | ✗ 未验 |
+
+结论：**判据同形、本地可验的全绿；跨版本与跨 OS 仍为未验**——这正是 AGENTS §1.15
+「禁止伪造跨平台验收」要守的那条线。
+
+### 验证
+
+`pytest -q` → 3333 passed / 0 failed / 1 skipped（计数不变，本笔无新增测试）。
